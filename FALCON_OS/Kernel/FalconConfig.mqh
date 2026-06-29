@@ -101,7 +101,9 @@ input double  InpTalonBufATR      = 0.35; // Buffer beyond the structural pivot 
 input double  InpTalonBaseATR     = 2.5;  // Base trail distance far from target (ATR)
 input double  InpTalonConvSpanATR = 6.0;  // Distance-to-target (ATR) over which the trail converges
 input double  InpTalonMinTighten  = 0.25; // Tightest trail fraction near target / terminal (0..1)
-input double  InpTalonBeATR        = 1.0; // Favorable excursion (ATR) that earns the breakeven lock
+input double  InpTalonBeATR        = 1.6; // Favorable excursion (ATR) that earns the breakeven lock
+input double  InpArcPartialFrac    = 0.33;// Fraction banked when price REACHES the curve destination (0 = let it all run)
+input double  InpArcPartialMinATR  = 1.5; // Min favorable excursion (ATR) before any ARC partial is allowed
 
 input string  __sep_viz         = "════════ VISUALIZATION ════════"; // ──
 input bool    InpShowDashboard  = true;  // Show unified dashboard
@@ -147,6 +149,7 @@ struct FalconConfig
    // TALON grip (breakeven + trail)
    bool   useTalon;  int talonStructLen;
    double talonBufATR, talonBaseATR, talonConvSpanATR, talonMinTighten, talonBeATR;
+   double arcPartialFrac, arcPartialMinATR;
    // viz
    bool   showDashboard, verboseLog;  int dashboardTab;
    bool   showHUD;
@@ -233,6 +236,8 @@ void FalconConfigInit()
    g_cfg.talonConvSpanATR = InpTalonConvSpanATR;
    g_cfg.talonMinTighten  = InpTalonMinTighten;
    g_cfg.talonBeATR       = InpTalonBeATR;
+   g_cfg.arcPartialFrac   = InpArcPartialFrac;
+   g_cfg.arcPartialMinATR = InpArcPartialMinATR;
 
    g_cfg.showDashboard    = InpShowDashboard;
    g_cfg.showHUD          = InpShowHUD;

@@ -5,7 +5,7 @@
 //|   Risk: PYRO thermal + TALON curve-convergent structural grip.   |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "3.27"
+#property version   "3.28"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -115,7 +115,9 @@ input double  InpTalonBufATR      = 0.35; // Buffer beyond the structural pivot 
 input double  InpTalonBaseATR     = 2.5;  // Base trail distance far from target (ATR)
 input double  InpTalonConvSpanATR = 6.0;  // Distance-to-target (ATR) over which the trail converges
 input double  InpTalonMinTighten  = 0.25; // Tightest trail fraction near target / terminal (0..1)
-input double  InpTalonBeATR        = 1.0; // Favorable excursion (ATR) that earns the breakeven lock
+input double  InpTalonBeATR        = 1.6; // Favorable excursion (ATR) that earns the breakeven lock
+input double  InpArcPartialFrac    = 0.33;// Fraction banked when price REACHES the curve destination (0 = let it all run)
+input double  InpArcPartialMinATR  = 1.5; // Min favorable excursion (ATR) before any ARC partial is allowed
 
 input string  __sep_viz         = "════════ VISUALIZATION ════════"; // ──
 input bool    InpShowDashboard  = true;  // Show unified dashboard
@@ -161,6 +163,7 @@ struct FalconConfig
    // TALON grip (breakeven + trail)
    bool   useTalon;  int talonStructLen;
    double talonBufATR, talonBaseATR, talonConvSpanATR, talonMinTighten, talonBeATR;
+   double arcPartialFrac, arcPartialMinATR;
    // viz
    bool   showDashboard, verboseLog;  int dashboardTab;
    bool   showHUD;
@@ -247,6 +250,8 @@ void FalconConfigInit()
    g_cfg.talonConvSpanATR = InpTalonConvSpanATR;
    g_cfg.talonMinTighten  = InpTalonMinTighten;
    g_cfg.talonBeATR       = InpTalonBeATR;
+   g_cfg.arcPartialFrac   = InpArcPartialFrac;
+   g_cfg.arcPartialMinATR = InpArcPartialMinATR;
 
    g_cfg.showDashboard    = InpShowDashboard;
    g_cfg.showHUD          = InpShowHUD;
@@ -5347,9 +5352,12 @@ void SymphonyManageExits()
    double atrNow   = FalconATR(shiftNow);
    if(atrNow<=0.0) atrNow=FalconATR(0);
 
-   // --- 1) ARC exhaustion flags ---
-   bool arcExhaustLong  = (sym_mode == 1  && sym_arcLong  > 0.0 && closeNow >= (sym_arcLong  - g_cfg.arcToleranceAtr * atrNow));
-   bool arcExhaustShort = (sym_mode == -1 && sym_arcShort > 0.0 && closeNow <= (sym_arcShort + g_cfg.arcToleranceAtr * atrNow));
+   // --- 1) ARC exhaustion flags (measured against the genuine curve DESTINATION,
+   //         not the time-evolving arc that sits near the origin early) ---
+   double destL = Sym_DestLong();
+   double destS = Sym_DestShort();
+   bool arcExhaustLong  = (sym_mode == 1  && destL > 0.0 && closeNow >= (destL - g_cfg.arcToleranceAtr * atrNow));
+   bool arcExhaustShort = (sym_mode == -1 && destS > 0.0 && closeNow <= (destS + g_cfg.arcToleranceAtr * atrNow));
 
    // --- 2) INSTITUTIONAL BANDS ---
    double instLevelL = (sym_longInducPrice != 0.0 ? sym_longInducPrice : (sym_anchorHigh > 0.0 ? sym_anchorHigh : 0.0));
@@ -5413,6 +5421,30 @@ void SymphonyManageExits()
 }
 
 //==================================================================
+// CURVE DESTINATION — the genuine FIXED projected target of the impulse.
+//   destLong  = anchorLow  + impulse * arcExtMult   (the curve's high target)
+//   destShort = anchorHigh - impulse * arcExtMult   (the curve's low target)
+//
+//   NOTE: this is NOT sym_arcLong/sym_arcShort. Those are the TIME-EVOLVING
+//   arc curve, which sits near the impulse ORIGIN early in a move (t→0) and
+//   would sit BELOW price — using it as a harvest/convergence trigger banks
+//   winners the instant they open. The grip and the partial must converge on
+//   the real destination, so winners are allowed to travel to the target.
+//==================================================================
+double Sym_DestLong()
+{
+   double imp = sym_anchorHigh - sym_anchorLow;
+   if(sym_mode!=1 || imp<=0.0) return(0.0);
+   return(sym_anchorLow + imp*g_cfg.arcExtMult);
+}
+double Sym_DestShort()
+{
+   double imp = sym_anchorHigh - sym_anchorLow;
+   if(sym_mode!=-1 || imp<=0.0) return(0.0);
+   return(sym_anchorHigh - imp*g_cfg.arcExtMult);
+}
+
+//==================================================================
 // TALON GRIP — curve-convergent STRUCTURAL trailing + earned breakeven
 //   Replaces basic ATR trailing. Operates at the CAMPAIGN (basket) level:
 //   one grip for the whole directional fleet, off blended cost. The stop is
@@ -5461,25 +5493,37 @@ void TalonManageSide(const int dir,const FalconThermalCampaign &c,
    bool   beLocked = (dir==DIR_LONG ? talon_beLong : talon_beShort);
    double beFloor  = (dir==DIR_LONG ? E+atr*0.05 : E-atr*0.05);
 
-   // 3) CURVE CONVERGENCE — contract the trail as we approach the destination
-   double target = (dir==DIR_LONG ? (sym_arcLong >0.0 ? sym_arcLong  : g_state.wave.objective)
-                                  : (sym_arcShort>0.0 ? sym_arcShort : g_state.wave.objective));
+   // 3) CURVE CONVERGENCE — wide far from the destination (let winners run),
+   //    contracts ONLY on the final approach. The destination is the FIXED
+   //    curve target (Sym_Dest*), never the time-evolving arc that sits near
+   //    the origin early in the move.
+   double target = (dir==DIR_LONG ? Sym_DestLong() : Sym_DestShort());
+   if(target<=0.0) target = g_state.wave.objective;
    double distATR = (target>0.0 ? MathAbs(target-price)/atr : 999.0);
    double geom    = FalconClamp(g_state.convexity.geometryCapacity/100.0,0.0,1.0);
-   double convFrac= FalconClamp(MathMin(distATR/MathMax(g_cfg.talonConvSpanATR,1e-6), geom),
-                                g_cfg.talonMinTighten, 1.0);
 
-   // 4) PHASE / THERMAL terminal hard-tighten
-   bool terminal = (dir==DIR_LONG  && g_state.wave.phase==PH_NEW_HIGH)
-                || (dir==DIR_SHORT && g_state.wave.phase==PH_NEW_LOW)
-                || (c.favorableATR>0.0 && c.coolingRate<0.0);
+   // base: far => convFrac→1 (full base trail); near => convFrac→minTighten.
+   double convFrac = FalconClamp(distATR/MathMax(g_cfg.talonConvSpanATR,1e-6),
+                                 g_cfg.talonMinTighten, 1.0);
+   bool approaching = (distATR < g_cfg.talonConvSpanATR);
+   // geometry can ONLY tighten further once we are genuinely approaching the
+   // destination — never strangle a young winner that is still far from target.
+   if(approaching)
+      convFrac = FalconClamp(MathMin(convFrac, MathMax(geom, g_cfg.talonMinTighten)),
+                             g_cfg.talonMinTighten, 1.0);
+
+   // 4) TERMINAL hard-tighten — only at the true terminal phase AND in the final
+   //    approach. (Removed the single-bar coolingRate<0 trigger: one pullback bar
+   //    was slamming the trail and stopping out healthy winners on noise.)
+   bool terminal = ((dir==DIR_LONG  && g_state.wave.phase==PH_NEW_HIGH)
+                  || (dir==DIR_SHORT && g_state.wave.phase==PH_NEW_LOW))
+                  && distATR < g_cfg.talonConvSpanATR*0.5;
    if(terminal) convFrac = g_cfg.talonMinTighten;
    double trailDist = atr*g_cfg.talonBaseATR*convFrac;
    double convSL    = (dir==DIR_LONG ? price-trailDist : price+trailDist);
 
    // 5) COMPOSE — ride structure; in the terminal approach take the tighter of
    //    structure vs convergence; floor at earned breakeven; ratchet only.
-   bool approaching = (distATR < g_cfg.talonConvSpanATR);
    double cand = structuralSL;
    if(approaching || terminal)
       cand = (dir==DIR_LONG ? MathMax(cand,convSL) : MathMin(cand,convSL));
@@ -5538,13 +5582,25 @@ void TalonGrip()
 }
 
 //==================================================================
-// ARC PARTIAL — bank 50% of each leg when price reaches the projected
-// ARC curve destination (separate, complementary harvest).
+// ARC PARTIAL — bank a fraction of each leg ONLY when price actually REACHES
+// the genuine curve destination (Sym_Dest*), and only after a minimum
+// favorable excursion. This no longer fires off the time-evolving arc (which
+// sits near the origin early and used to half-close every winner instantly).
+// Set InpArcPartialFrac=0 to let the whole position run to the trail.
 //==================================================================
 void SymphonyArcPartial()
 {
-   double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
-   double ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
+   double frac = g_cfg.arcPartialFrac;
+   if(frac<=0.0) return;                       // disabled => let it all run
+
+   double atr = FalconATR(1); if(atr<=0.0) atr=FalconATR(0);
+   if(atr<=0.0) return;
+   double bid = SymbolInfoDouble(_Symbol,SYMBOL_BID);
+   double ask = SymbolInfoDouble(_Symbol,SYMBOL_ASK);
+   double destL = Sym_DestLong();
+   double destS = Sym_DestShort();
+   double minMove = atr*g_cfg.arcPartialMinATR;
+
    int total=PositionsTotal();
    for(int i=0;i<total;i++)
    {
@@ -5554,12 +5610,13 @@ void SymphonyArcPartial()
       if(PositionGetInteger(POSITION_MAGIC)!=g_cfg.magic) continue;
       long   type=PositionGetInteger(POSITION_TYPE);
       double vol =PositionGetDouble(POSITION_VOLUME);
+      double open=PositionGetDouble(POSITION_PRICE_OPEN);
       int    slot=EE_TPSlot((long)ticket);
-      if(ee_tpStage[slot]>=1) continue;
-      if(type==POSITION_TYPE_BUY && sym_arcLong>0.0 && bid>=sym_arcLong)
-      { if(EE_ClosePartial(ticket,vol*0.5)) ee_tpStage[slot]=1; }
-      if(type==POSITION_TYPE_SELL&& sym_arcShort>0.0 && ask<=sym_arcShort)
-      { if(EE_ClosePartial(ticket,vol*0.5)) ee_tpStage[slot]=1; }
+      if(ee_tpStage[slot]>=1) continue;        // already banked this leg
+      if(type==POSITION_TYPE_BUY  && destL>0.0 && bid>=destL && (bid-open)>=minMove)
+      { if(EE_ClosePartial(ticket,vol*frac)) ee_tpStage[slot]=1; }
+      if(type==POSITION_TYPE_SELL && destS>0.0 && ask<=destS && (open-ask)>=minMove)
+      { if(EE_ClosePartial(ticket,vol*frac)) ee_tpStage[slot]=1; }
    }
 }
 
