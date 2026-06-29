@@ -1,0 +1,35 @@
+{
+  "id": "FEAT-002",
+  "type": "feat",
+  "description": "Part 2 - Multi-Timeframe Structure Engine (f_se port from Letra/F16). Creates the fixed-timeframe structure engine that runs on M1/M3/M5/M15/H1/H4 independently. This is the backbone from Letra 37 that provides per-timeframe wave direction, lifecycle phase (14 canonical phases), swing structure, BOS/CHoCH, point-4 origin, invalidation, targets, and wave progress. Ported to MQL5 using iCustom-style multi-timeframe data access.",
+  "status": "in_progress",
+  "steps": [
+    "Create file /projects/sandbox/combo/MasterAlgo_Part2_MTFStructure.mq5",
+    "Define the SE_Result struct to hold all outputs from a single timeframe's structure engine: dir, phase, swingHigh, swingLow, prevSwingHigh, prevSwingLow, bosDir, chochDir, p4High, p4Low, invalidation, target, flipTop, flipBot, frzScore, waveProgress, convexityMaturity, modelFit, compression, recursionBreaks, recursionDominance",
+    "Define input parameters for the structure engine: pivotLen(5), structLen(10), atrLen(14), effThresh(0.65), dispThresh(1.5), convMult(0.01), impulseAtrMult(1.5), chochBufferATR(0.75), effLen(10)",
+    "Implement f_se_compute() function that takes OHLC arrays for a given timeframe and computes: physics (ATR, velocity, acceleration, convexity, efficiency, displacement), swings (pivothigh/low detection), pivot memory, BOS/CHoCH detection, impulse detection, direction/point4/invalidation/target state machine (spawn logic with order-block sizing), lifecycle state machine (monotonic phases 0-13 with structure+momentum+physics triple confirmation), wave progress percentage, convexity maturity, model fit score",
+    "Implement the 14-phase lifecycle state machine inside f_se_compute: Phase 0=Point4Origin, 1=Expansion, 2=ExpPreConvexity, 3=ExpInduction, 4=ExpLiquidity, 5=NewHigh(6=NewLow), 7=Transition, 8=Retracement, 9=HTFFlipZone, 10=Induction, 11=Liquidation, 12=TerminalCurve, 13=DemandReturn(14=SupplyReturn). Each transition requires triple confirmation: structure event + momentum condition + physics condition",
+    "Implement the exported LIVE phase overlay (not just monotonic latch): momentum exhaustion -> Absorption, momentum counter with transfer -> Retracement family, momentum expansion strong -> stays at current phaseState or advances",
+    "Implement MTF data fetching: create handles for iClose/iHigh/iLow/iTime on each of the 6 fixed timeframes (M1, M3, M5, M15, H1, H4), copy bars into local arrays, run f_se_compute() on each",
+    "Store results in global SE_Result arrays: g_se[6] indexed by timeframe enum (TF_M1=0, TF_M3=1, TF_M5=2, TF_M15=3, TF_H1=4, TF_H4=5)",
+    "Implement f_waveDirByOrigin(originPrice, fallbackDir) - live direction based on close vs origin price",
+    "Implement fractal stack alignment calculation: count bull/bear directions across all 6 timeframes, compute fractalStackDir and fractalStackScore",
+    "Add the phase string helper f_phaseStr(phaseCode) returning canonical lifecycle name"
+  ],
+  "acceptance_criteria": [
+    "File exists at /projects/sandbox/combo/MasterAlgo_Part2_MTFStructure.mq5",
+    "SE_Result struct contains all 21 output fields",
+    "f_se_compute implements the full lifecycle state machine with all 14 phases",
+    "Each phase transition has explicit structure + momentum + physics conditions",
+    "MTF data fetching uses proper MQL5 CopyClose/CopyHigh/CopyLow/CopyTime calls",
+    "Fractal stack alignment computes direction consensus across 6 timeframes",
+    "Code is syntactically valid MQL5"
+  ],
+  "verification": [
+    "Read the output file and verify all 14 lifecycle phases are implemented",
+    "Verify MTF handles are created for all 6 timeframes",
+    "Check that the triple-confirmation gate exists for each phase transition"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}
