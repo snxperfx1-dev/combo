@@ -1,0 +1,30 @@
+{
+  "id": "FEAT-008",
+  "type": "feat",
+  "description": "Create Part8_Execution.mqh - Order execution (IOC raw MqlTradeRequest), position management, and trade flow orchestration. Includes Symphony's SendMarketOrder, ClosePositionPartial/Full, plus per-campaign (per-direction) position tracking for the hedging account model.",
+  "status": "completed",
+  "steps": [
+    "Create Part8_Execution.mqh at the repo root",
+    "Port SendMarketOrder() from Symphony: MqlTradeRequest with TRADE_ACTION_DEAL, IOC filling, deviation 20, direction-based price (ask for buy, bid for sell), stop loss setting, magic number, comment",
+    "Port ClosePositionPartial() from Symphony: select by ticket, verify symbol/magic, determine close direction (opposite of position type), IOC filling",
+    "Port ClosePositionFull() from Symphony: wrapper that gets volume and calls partial",
+    "Implement ExecuteTrading() - the modified entry function: Check if probabilistic entry conditions are met (entryProb > threshold from Part7). If yes AND Symphony Phase 3 or 4 is active AND IsTradeTime() AND one-trade-per-direction-per-bar guard: compute entry price (close), stop loss (anchorLow - ATR*0.25 for longs, anchorHigh + ATR*0.25 for shorts), lots (ComputeLots), send order with appropriate comment",
+    "Implement per-campaign position tracking: collect all positions by magic number, separate into long campaign and short campaign arrays. Track per-campaign metrics (total lots, average entry, unrealized PnL). This replaces DRDWCT but preserves the multi-campaign hedging model.",
+    "Implement basic position management: If trade-alive judgement from Part6 says DEAD, close positions in that direction. If WEAKENING, trail stop to breakeven. If MANAGE/EXIT from Senseei, close profitable positions."
+  ],
+  "acceptance_criteria": [
+    "Part8_Execution.mqh exists with valid MQL5 syntax",
+    "SendMarketOrder matches Symphony's IOC pattern exactly",
+    "ClosePositionPartial/Full match Symphony exactly",
+    "ExecuteTrading uses probabilistic gate + phase check + time check",
+    "Per-campaign tracking separates long/short positions correctly",
+    "Position management responds to curve-alive and Senseei states"
+  ],
+  "verification": [
+    "Read the file and verify order execution matches Symphony sections 12, 15",
+    "Verify entry requires both phase condition AND probability gate",
+    "Verify position management uses curve-alive/Senseei outputs"
+  ],
+  "blocked_reason": null,
+  "findings": "Part8_Execution.mqh created at 404 lines. All braces (33/33), parentheses (172/172), and brackets (23/23) balanced. Contains: SendMarketOrder() ported verbatim from Symphony section 12 with IOC filling, deviation 20, direction-based price. ModifyPositionSL() with TRADE_ACTION_SLTP. CollectPositionsByDirection() for per-campaign position tracking. ExecuteTrading() with IsMasterEntrySignal() probabilistic gate (phase 3/4 + Senseei + entryProb + time) plus per-bar-per-direction guard, computes lots via ComputeLots(), P3 and P4 entries for both long and short with breakout confirmation for P4. ManagePositions() responds to curve-alive verdict: DEAD closes all positions in dying direction, WEAKENING moves SL to breakeven for profitable positions, Senseei MANAGE closes positions that have reached 1.5x impulse from entry. ClosePositionPartial/Full were NOT duplicated here as they already exist in Part2_PhaseEngine.mqh (placed there for the ARC exit system). A comment references their location. No duplicate symbols with Parts 1-7. All referenced globals and functions verified to exist in prior parts. This file should be included after Part7_Senseei.mqh in the main EA."
+}
