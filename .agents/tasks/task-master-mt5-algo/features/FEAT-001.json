@@ -1,0 +1,30 @@
+{
+  "id": "FEAT-001",
+  "type": "feat",
+  "description": "Part 1 - Core Infrastructure and Phase Engine. Creates the foundation MQL5 file with: series buffers, input parameters, global state variables, helper functions (ATR, pivots, new bar detection), the complete 4-phase curvature-based phase engine from Symphony (impulse detection, phase transitions 1-4 for both long/short, flipzone/inducement logic, pre-convexity flags), and the ARC v2 convexity calculation. This is the Symphony base minus the risk engine.",
+  "status": "in_progress",
+  "steps": [
+    "Create file /projects/sandbox/combo/MasterAlgo_Part1_PhaseEngine.mq5",
+    "Include the MQL5 property header and Trade library include",
+    "Port the series buffer system from Symphony (RefreshSeries with gCloseSeries/gHighSeries/gLowSeries/gTimeSeries, #define macros)",
+    "Define all input parameters: Core Engine (PivotLen, ATRLen, ImpulseAtrMult, RetrMin, RetrMax, InducLookbackBars, InducZoneATRWidth), ARC v2 (ArcHorizonBars, ConvPower, ArcExtMult), ARC Exit Controls (OuterBandAtrMult, ArcToleranceAtr), Trading Layer (RiskPercent, Magic), Timing (TargetGMT)",
+    "Define all global state variables for the phase engine: pivot history (g_lastPivotPrice/Dir/Shift, g_prevPivotPrice/Dir/Shift), impulse/mode (g_mode, g_anchorHigh/Low/Shift), phases (g_phaseShort/Long, g_prevPhaseShort/Long), flipzone/inducement (g_shortInducPrice/Low/High, g_longInducPrice/Low/High), pre-conv flags, ARC state, outer-band sweep flags, bar detection vars",
+    "Implement helper functions: IsNewBar(), GetATR(shift), GetATRSmooth(shift, len), IsPivotHigh(c), IsPivotLow(c), IsTradeTime() with London+US session windows",
+    "Implement UpdatePhaseEngine() - the complete 4-phase state machine including: pivot detection at centerShift, SHORT impulse detection (high->low exceeding ATR*mult), LONG impulse detection (low->high), pivot history persistence, impulse invalidation logic, phase calculation for short side (retracement fraction mapping to phases 1-4 with inducement zone checks and pre-conv gating), phase calculation for long side (mirror), previous phase tracking",
+    "Implement UpdateARC() - convexity arc calculation for both long (from anchorLow projected high) and short (from anchorHigh projected low) using power-curve formula with horizon normalization"
+  ],
+  "acceptance_criteria": [
+    "File exists at /projects/sandbox/combo/MasterAlgo_Part1_PhaseEngine.mq5",
+    "All input parameters are defined with appropriate types and default values matching Symphony",
+    "Phase engine logic correctly implements the 4-phase state machine with all guards (retracement bounds, inducement zone check, pre-convexity gating)",
+    "ARC calculation uses the convexity power formula with proper time normalization",
+    "Code compiles syntactically as valid MQL5 (C-like syntax, proper semicolons, braces, types)"
+  ],
+  "verification": [
+    "Read the output file and verify it contains all required sections",
+    "Check that function signatures match MQL5 conventions (return types, parameter types)",
+    "Verify the phase state machine has all transition conditions from Symphony"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}
