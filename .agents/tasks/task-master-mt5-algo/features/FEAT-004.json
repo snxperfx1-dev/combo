@@ -1,0 +1,39 @@
+{
+  "id": "FEAT-004",
+  "type": "feat",
+  "description": "Part 4 - Curve Object, Campaign Ownership, Time Intelligence, and Execution Engine. Ports the F72 Curve Object/Tree (recursive ownership with energy dynamics), Campaign Ownership (terminal vs expansion), Participant interference zones, Time Intelligence Engine (5-cycle stack from MN/W/D/H4/H1), and the master execution logic that combines Symphony's precise Phase 3+4 entries with the intelligence-gated execution from Letra/F16. Includes lot sizing, order execution, and the composite ARC+institutional exit system.",
+  "status": "completed",
+  "steps": [
+    "Create file /projects/sandbox/combo/MasterAlgo_Part4_ExecutionEngine.mq5",
+    "Define the Curve struct: dir, origin, extreme, dispATR, eIn, eDiss, eRes, convex, compress, maturity",
+    "Define the CurveNode struct: id, parent, dir, origin, extreme, energy, alive, depth, state, bar, comp, mat, srcTf",
+    "Implement the Curve Object computation: populate gCurve from M5 engine outputs (direction, origin=se5_inv, extreme=cycleHigh/Low, displacement in ATR, energy from EDE, convexity, compression, maturity from wave progress)",
+    "Implement the Curve Tree: event-generated recursive CurveNodes spawned on Phase-2 CHoCH against the owning node, energy rises on progress/decays when stalled, ownership via Principle 8 (shallowest with energy), compression-based recursion budget (1-4 depth), node state via f_nodeState mapping energy/lifecycle/depth to phase labels",
+    "Implement Compression Persistence (F72 Principle 10): compression force calculation, PERSISTING/NEUTRAL/LEAKING states, ownership migration band (0.5-0.618 retracement)",
+    "Implement 'Is Trade Alive?' judgment: life score combining compression force + residual energy + retrace depth + recursion completion + progression boost + HTF parent threat, ALIVE/WEAKENING/DEAD classification",
+    "Implement Narrative Lineage: track sequence of entry curves, SUPPORT/DEGRADE voting per pullback, CONVERGING/DIVERGING sequence detection, chain vitality score",
+    "Implement Campaign Ownership: campaign state (TERMINAL vs EXPANSION), location tracking, participant interference zones (0.618/0.70/0.786 + flip level)",
+    "Implement Time Intelligence Engine: fetch MN/W/D/H4/H1 OHLC ranges via request.security equivalent (iClose/iHigh/iLow on higher TFs), compute per-cycle bias/elapsed/state/completion/liquidity-taken, cycle alignment (timeDir/timeAlign/timeConflict), H1 timing sequence",
+    "Implement the Master Execution Logic: combine Symphony Phase 3+4 entry conditions with intelligence gates from Letra/F16. Entry requires: (a) Symphony phase 3 or 4 active (from Part 1 phase engine), (b) Senseei action is ATTACK or PREPARE (from Part 3), (c) fractalStackDir agrees with trade direction, (d) ERF entry gate passes (erf_tradeReadiness >= threshold), (e) liquidation wave is NOT active (or objective arrived), (f) IsTradeTime() passes. Stop loss = Symphony anchor +/- 0.25 ATR",
+    "Port the lot sizing engine (ComputeLots) from Symphony unchanged - distance-based for XAUUSD model",
+    "Port the raw order execution (SendMarketOrder, ClosePositionPartial, ClosePositionFull) from Symphony unchanged - IOC filling",
+    "Implement the composite exit system: ARC exhaustion + institutional outer-band sweep + phase-trend-end, enriched with intelligence: also exit when (a) Senseei action flips to MANAGE/EXIT, (b) curve life drops to DEAD, (c) ERF resolution state becomes RESOLVED"
+  ],
+  "acceptance_criteria": [
+    "File exists at /projects/sandbox/combo/MasterAlgo_Part4_ExecutionEngine.mq5",
+    "Curve Object and Tree are implemented with energy dynamics and ownership resolution",
+    "Campaign state machine distinguishes TERMINAL vs EXPANSION correctly",
+    "Time Intelligence computes 5-cycle OHLC with bias/alignment/conflict",
+    "Entry logic gates Symphony Phase 3+4 with intelligence conditions",
+    "Exit logic combines ARC+institutional with intelligence-based exits",
+    "Lot sizing and order execution match Symphony exactly",
+    "Code is syntactically valid MQL5"
+  ],
+  "verification": [
+    "Read the output file and verify Curve Tree spawns on CHoCH against owner",
+    "Verify entry logic requires both phase 3/4 AND intelligence gates",
+    "Check exit system has both ARC-based and intelligence-based conditions"
+  ],
+  "blocked_reason": null,
+  "findings": "File created at 1579 lines. All braces/parens/brackets balanced. Contains: 6 input params, 3 structs (CurveObject, CurveNode, TimeCycle), 19 functions. Curve Object populates from M5 SE_Result (dir, invalidation=origin, swingHigh/Low=extreme, EDE energy, wave progress). Curve Tree implements event-generated recursion: CHoCH against owning node spawns child, energy +7 on progress / -2 on stall, Principle 8 ownership (shallowest with energy >= 12), compression-based budget (1-4 depth), f_nodeState maps to 10 phase labels. Compression Persistence (F72 P10) with PERSISTING/NEUTRAL/LEAKING. Is Trade Alive combines cpForce*0.45 + eRes*0.30 + tightening bonus - recursion penalty - leaking penalty + progression boost + retrace adjustment -> ALIVE/WEAKENING/DEAD. Narrative Lineage tracks SUPPORT/DEGRADE votes per pullback, CONVERGING/DIVERGING sequence, chain vitality across curves. Campaign Ownership: TERMINAL (at HTF zone or terminal phase) vs EXPANSION, with location tracking. Participant interference zones at 0.618/0.70/0.786/flip from curve extreme-to-origin. Time Intelligence: 5-cycle stack (MN/W/D/H4/H1) via iOpen/iHigh/iLow, bias/elapsed/state/completion/liquidity-taken per cycle, aggregate timeDir/timeAlign/timeConflict, H1 timing sequence. Entry logic gates Symphony Phase 3+4 with 7 intelligence conditions: (a) Senseei ATTACK/PREPARE, (b) fractal stack agrees, (c) ERF confidence >= 35, (d) liquidation wave not blocking, (e) IsTradeTime, (f) curve life not DEAD, (g) time direction not severely conflicting. Exit system combines Symphony ARC+institutional+phase-change with intelligence exits (2 of 3: Senseei MANAGE/WAIT, curve DEAD, ERF RESOLVED). Lot sizing and order execution ported from Symphony unchanged. No OnInit/OnTick/OnDeinit. References Part 1: g_mode, g_phaseShort/Long, g_anchorHigh/Low, g_arcLong/Short, IsTradeTime, GetATR, InpRiskPercent, InpMagic, g_lastLong/ShortTradeTime, induc zones, outer breach flags. References Part 2: g_se[], SE_Result, TF_M5/H1/H4, g_fractalStackDir. References Part 3: g_senseei_action, g_erf_confidence, g_liqg_active/objArrival, g_ede_expansionEnergy/dissipatedEnergy/state, g_re_residualEnergyScore/resolutionState, g_convexityMaturity, g_waveProgress."
+}
