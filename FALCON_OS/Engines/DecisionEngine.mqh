@@ -42,25 +42,28 @@ string DE_OppGrade(const int master, const double conflict, const double opp)
 // gating ONLY on continuous probabilities (never on a phase label).
 //------------------------------------------------------------------
 int DE_ChiefStrategist(const int master,const double conflict,const double confidence,
-                       const double threat,const string oppGrade,const double execProb,
-                       const int resCode)
+                       const double threat,const string oppGrade,const int resCode)
 {
-   bool strongOpp = (oppGrade=="STRONG" || oppGrade=="EXCEPTIONAL");
-   bool goodOpp   = (oppGrade=="GOOD"   || oppGrade=="STRONG" || oppGrade=="EXCEPTIONAL");
-   bool confOk    = (confidence>=g_cfg.minConf);
-   bool threatOk  = (threat<g_cfg.maxThreat);
-   bool probArmed = (execProb>=g_cfg.execProbArm);
+   FalconEntryCycle ec = g_state.entryCycle;
+   bool gatesOk = (conflict<=g_cfg.maxConflict && confidence>=g_cfg.minConf && threat<g_cfg.maxThreat);
+   bool decentOpp = (oppGrade=="GOOD" || oppGrade=="STRONG" || oppGrade=="EXCEPTIONAL");
 
-   // A GOOD-or-better opportunity with healthy confidence and low threat is
-   // tradeable. STRONG/EXCEPTIONAL simply arm faster. (Phases never gate this.)
-   bool tradeable = (goodOpp && confOk && threatOk);
+   if(resCode==RES_RESOLVED) return(ACT_EXIT);   // energy spent -> bank
 
-   if(master==DIR_NONE)                 return(ACT_WAIT);
-   if(conflict>g_cfg.maxConflict)       return(ACT_WAIT);
-   if(resCode==RES_RESOLVED)            return(ACT_EXIT);        // energy spent -> bank
-   if(tradeable && probArmed)           return(master==DIR_LONG?ACT_BUY:ACT_SELL);
-   if(tradeable)                        return(ACT_ATTACK);      // armed, probability building
-   if(goodOpp || strongOpp)             return(ACT_PREPARE);
+   // EXECUTE only when the ENTRY CYCLE has begun, in the terminal zone, in the
+   // continuation/return direction. This is the build-vs-execute distinction:
+   // no entries during expansion/transition/retracement (the building side).
+   if(ec.entryCycleActive && ec.entryDir!=DIR_NONE && gatesOk)
+      return(ec.entryDir==DIR_LONG ? ACT_BUY : ACT_SELL);
+
+   // In the terminal zone but the entry cycle has not started yet -> armed/waiting.
+   if(ec.terminal && (ec.readiness==ER_PRE_ENTRY || ec.readiness==ER_BUILDING))
+      return(ACT_ATTACK);
+
+   // Approaching the terminal, or a decent directional opportunity is forming.
+   if(ec.terminal || ec.readiness==ER_EARLY || (master!=DIR_NONE && decentOpp))
+      return(ACT_PREPARE);
+
    return(ACT_WAIT);
 }
 
@@ -186,17 +189,21 @@ void DecisionEngineRun()
    //==============================================================
    // VERDICT — Chief Strategist (base) then Campaign AI (overlay).
    //==============================================================
-   int action = DE_ChiefStrategist(master,conflict,confidence,threat,oppGrade,
-                                    x.executionProbability,resCode);
-   action     = DE_CampaignAI(action,master,threat);
+   int action = DE_ChiefStrategist(master,conflict,confidence,threat,oppGrade,resCode);
+
+   // when the entry cycle is active, the EXECUTION direction is the entry-cycle
+   // direction (continuation/return), not the raw 4-voter master.
+   int execMaster = (g_state.entryCycle.entryCycleActive && g_state.entryCycle.entryDir!=DIR_NONE)
+                    ? g_state.entryCycle.entryDir : master;
+   action     = DE_CampaignAI(action,execMaster,threat);
 
    // commit the meta scores first so Master Chief reads/writes the shared intel
    g_state.intel = x;
-   action        = DE_MasterChief(action,master);   // may downgrade BUY/SELL -> ATTACK
+   action        = DE_MasterChief(action,execMaster); // may downgrade a fire -> PREPARE
    g_state.intel.finalDecision = FalconActionStr(action);
 
    g_state.exec.action = action;
-   g_state.exec.master = master;
+   g_state.exec.master = execMaster;
 
    if(action!=de_prevAction)
    {

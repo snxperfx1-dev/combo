@@ -349,12 +349,13 @@ void EE_HandleEntries(const EE_Market &m)
    int master=g_state.exec.master;
    datetime barTime=gTime[0];
 
-   // Firing actions: BUY / SELL / ATTACK / SCALE all enter in the master
-   // direction. ATTACK is the Senseei "take the shot" verdict (the Master Chief
-   // has already vetoed it down to PREPARE if conviction was lacking).
-   // PREPARE / WAIT / NO_TRADE / DEFEND / EXIT do not open new positions here.
-   bool wantBuy  = ((action==ACT_BUY||action==ACT_ATTACK||action==ACT_SCALE) && master==DIR_LONG);
-   bool wantSell = ((action==ACT_SELL||action==ACT_ATTACK||action==ACT_SCALE) && master==DIR_SHORT);
+   // Firing actions: BUY / SELL / SCALE enter in the (entry-cycle) master
+   // direction. BUY/SELL are now emitted ONLY when the Entry Cycle Engine
+   // reports the entry cycle is active in the terminal zone, so they are the
+   // precise execution signals. ATTACK = in terminal, armed, waiting for the
+   // cycle to begin -> does NOT fire. PREPARE/WAIT/NO_TRADE/DEFEND/EXIT fire nothing.
+   bool wantBuy  = ((action==ACT_BUY||action==ACT_SCALE) && master==DIR_LONG);
+   bool wantSell = ((action==ACT_SELL||action==ACT_SCALE) && master==DIR_SHORT);
 
    if(!wantBuy && !wantSell) return;
    if(!EE_IsTradeTime()) return;

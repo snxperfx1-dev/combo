@@ -4,7 +4,7 @@
 //|   SINGLE-FILE BUILD (kernel + 6 engines + EA, auto-combined).     |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "1.05"
+#property version   "2.00"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -300,6 +300,26 @@ enum FALCON_EXIT_STATE
    XS_DEFEND        = 4,
    XS_TRAIL_STOP    = 5,
    XS_DD_FLATTEN    = 6
+};
+
+// Compression regime — controls recursion size/count near terminals
+enum FALCON_COMPRESSION
+{
+   COMP_LOW     = 0,
+   COMP_MEDIUM  = 1,
+   COMP_HIGH    = 2,
+   COMP_EXTREME = 3
+};
+
+// Entry readiness — the build-vs-execute ladder (the core distinction)
+enum FALCON_ENTRY_READINESS
+{
+   ER_NOT_READY    = 0,   // building, far from terminal
+   ER_EARLY        = 1,   // building, approaching terminal
+   ER_BUILDING     = 2,   // in terminal zone, sequence forming
+   ER_PRE_ENTRY    = 3,   // induction/liquidation underway
+   ER_ENTRY_ACTIVE = 4,   // entry cycle has begun -> EXECUTE
+   ER_TERMINAL     = 5     // return confirmed / done
 };
 
 //==================================================================
@@ -709,6 +729,29 @@ struct FalconExecution
 };
 
 //==================================================================
+// SUB-STATE : ENTRY CYCLE  (the build-vs-execute brain)
+//   Answers the four questions that matter more than "what phase?":
+//     1) Who owns price?  2) Building or terminal?
+//     3) How much curve remains?  4) How many recursions are possible?
+//==================================================================
+struct FalconEntryCycle
+{
+   bool   building;            // still expansion/transition/retracement
+   bool   terminal;            // in the terminal region (HTF flip / supply-demand)
+   bool   transitionComplete;  // the HIGH transition (dominance transfer) finished
+   int    compressionRegime;   // FALCON_COMPRESSION
+   double remainingBudget;     // remaining curve capacity (geometry)
+   double expectedDepth;       // recursions physically possible from here (0..4)
+   int    recursionDepth;      // recursive CHoCH cycles seen so far
+   int    readiness;           // FALCON_ENTRY_READINESS
+   bool   entryCycleActive;    // THE GO — the entry cycle has begun
+   int    entryDir;            // FALCON_DIR direction to enter (continuation/return)
+   int    ownerTF;             // dominant timeframe index (who owns price)
+   double ownerPct[7];         // ownership distribution across rungs
+   double entryCycleProb;      // 0..1 continuous entry-cycle conviction
+};
+
+//==================================================================
 // MASTER STATE
 //==================================================================
 struct FalconMarketState
@@ -742,6 +785,7 @@ struct FalconMarketState
    FalconCampaign     campaign;
    FalconParticipants participants;
    FalconIntelligence intel;
+   FalconEntryCycle   entryCycle;
    FalconExecution    exec;
 };
 
@@ -818,6 +862,30 @@ string FalconExitStateStr(const int x)
       case XS_TRAIL_STOP:    return("trail stop");
       case XS_DD_FLATTEN:    return("drawdown flatten");
       default:               return("none");
+   }
+}
+
+string FalconReadinessStr(const int r)
+{
+   switch(r)
+   {
+      case ER_EARLY:        return("EARLY");
+      case ER_BUILDING:     return("BUILDING");
+      case ER_PRE_ENTRY:    return("PRE-ENTRY");
+      case ER_ENTRY_ACTIVE: return("ENTRY ACTIVE");
+      case ER_TERMINAL:     return("TERMINAL/DONE");
+      default:              return("NOT READY");
+   }
+}
+
+string FalconCompressionStr(const int c)
+{
+   switch(c)
+   {
+      case COMP_MEDIUM:  return("MEDIUM");
+      case COMP_HIGH:    return("HIGH");
+      case COMP_EXTREME: return("EXTREME");
+      default:           return("LOW");
    }
 }
 
@@ -2854,6 +2922,89 @@ void IE_Validation(FalconIntelligence &x)
    ie_prevPredDir   = (x.predictionPrice!=0 ? (x.predictionPrice>close1?DIR_LONG:DIR_SHORT) : DIR_NONE);
 }
 
+//------------------------------------------------------------------
+// ENTRY CYCLE ENGINE — the build-vs-execute brain (F72 model).
+//   Markets are recursive curves. The job is NOT "what phase?" but:
+//   who owns price, are we BUILDING or TERMINAL, how much curve
+//   remains, and HAS THE ENTRY CYCLE BEGUN. Entries only occur in the
+//   terminal region (the wave's own HTF flip / supply-demand), after
+//   the recursive transition matures — never during expansion. This
+//   is what stops the engine chasing an expansion into the opposite
+//   extreme (e.g. shorting the demand low).
+//------------------------------------------------------------------
+void IE_EntryCycle(FalconIntelligence &x)
+{
+   FalconEntryCycle ec;
+   FalconWave  w  = g_state.wave;
+   FalconPhysics p= g_state.physics;
+   FalconConvexity cv=g_state.convexity;
+   FalconSupplyDemand sd=g_state.supplyDemand;
+   FalconHTF h=g_state.htf;
+   double atr=MathMax(p.atr,1e-10);
+
+   // --- COMPRESSION REGIME (matters most near terminals) ---
+   double comp=p.compression;
+   ec.compressionRegime = comp<25?COMP_LOW : comp<50?COMP_MEDIUM : comp<75?COMP_HIGH : COMP_EXTREME;
+
+   // --- CURVE OWNERSHIP (who owns price) ---
+   ec.ownerTF = h.ownerTF;
+   for(int i=0;i<7;i++) ec.ownerPct[i]=0.0;
+   int agree=0;
+   for(int i=0;i<7;i++) if(h.dir[i]==h.stackDir && h.stackDir!=DIR_NONE) agree++;
+   for(int i=0;i<7;i++)
+      ec.ownerPct[i] = (agree>0 && h.dir[i]==h.stackDir)? (100.0/agree) : 0.0;
+
+   // --- TRANSITION COMPLETE (the high transition / dominance transfer) ---
+   ec.transitionComplete = (w.dominanceTransfer>=50.0);
+
+   // --- BUILDING vs TERMINAL ---
+   // Terminal = price has reached the wave's own terminal region: the HTF
+   // flip-zone phase band (9..14) OR sitting inside the matching supply/demand.
+   bool terminalPhase = (w.phase>=PH_HTF_FLIP_ZONE);
+   bool inZone        = (sd.activeZone!=DIR_NONE);
+   ec.terminal  = (terminalPhase || inZone);
+   ec.building  = !ec.terminal;
+
+   // --- REMAINING CURVE BUDGET + EXPECTED RECURSION DEPTH ---
+   // budget = distance-to-target / convexity-width / compression. High
+   // compression shrinks the budget -> fewer/smaller recursions (failure
+   // swing + tiny cycles); low compression -> big loops.
+   double dist = (w.objective!=0)? MathAbs(w.objective-gClose[1])/atr : MathMax(cv.geometryCapacity/25.0,0.1);
+   double cw   = MathMax(cv.convexityWidth/atr, 0.25);
+   double compFactor = 1.0 + comp/50.0;
+   ec.remainingBudget = dist/(cw*compFactor);
+   ec.expectedDepth   = FalconClamp(ec.remainingBudget, 0, 4);
+   ec.recursionDepth  = w.recursionBreaks;
+
+   // --- READINESS LADDER ---
+   int rd;
+   if(ec.building && w.completion<60.0)              rd=ER_NOT_READY;
+   else if(ec.building)                              rd=ER_EARLY;
+   else if(w.phase==PH_HTF_FLIP_ZONE)                rd=ER_BUILDING;
+   else if(w.phase==PH_INDUCTION||w.phase==PH_LIQUIDATION) rd=ER_PRE_ENTRY;
+   else if(w.phase==PH_TERMINAL_CURVE||w.phase==PH_DEMAND_RETURN||w.phase==PH_SUPPLY_RETURN) rd=ER_ENTRY_ACTIVE;
+   else                                              rd=ER_BUILDING;
+   // COMPRESSION SHORTCUT: in a tight terminal a failure-swing + a recursion
+   // is the whole entry cycle — arm sooner (no room for big loops).
+   if(ec.terminal && ec.compressionRegime>=COMP_HIGH && ec.recursionDepth>=1
+      && w.phase>=PH_INDUCTION && rd<ER_ENTRY_ACTIVE)
+      rd=ER_ENTRY_ACTIVE;
+   ec.readiness = rd;
+
+   ec.entryCycleActive = (rd==ER_ENTRY_ACTIVE);
+   // entry direction = the wave's continuation/return direction (buy demand in
+   // an up-wave, sell supply in a down-wave) — NOT the expansion direction.
+   ec.entryDir = w.direction;
+
+   ec.entryCycleProb = FalconClamp(
+        (ec.terminal?0.40:0.0)
+      + (ec.transitionComplete?0.20:0.0)
+      + (rd==ER_ENTRY_ACTIVE?0.30: rd==ER_PRE_ENTRY?0.15:0.0)
+      + 0.10*x.executionProbability, 0, 1);
+
+   g_state.entryCycle=ec;
+}
+
 //==================================================================
 // MASTER ENTRY — Intelligence Engine pipeline step
 //==================================================================
@@ -2868,6 +3019,7 @@ void IntelligenceEngineRun()
    IE_Validation(x);
    IE_Narrative(x);
    g_state.intel=x;
+   IE_EntryCycle(x);   // build-vs-execute brain (reads finalized intel)
    // back-fill campaign remaining energy now that residual is known
    g_state.campaign.remainingEnergy=x.residualEnergy;
 }
@@ -2916,25 +3068,28 @@ string DE_OppGrade(const int master, const double conflict, const double opp)
 // gating ONLY on continuous probabilities (never on a phase label).
 //------------------------------------------------------------------
 int DE_ChiefStrategist(const int master,const double conflict,const double confidence,
-                       const double threat,const string oppGrade,const double execProb,
-                       const int resCode)
+                       const double threat,const string oppGrade,const int resCode)
 {
-   bool strongOpp = (oppGrade=="STRONG" || oppGrade=="EXCEPTIONAL");
-   bool goodOpp   = (oppGrade=="GOOD"   || oppGrade=="STRONG" || oppGrade=="EXCEPTIONAL");
-   bool confOk    = (confidence>=g_cfg.minConf);
-   bool threatOk  = (threat<g_cfg.maxThreat);
-   bool probArmed = (execProb>=g_cfg.execProbArm);
+   FalconEntryCycle ec = g_state.entryCycle;
+   bool gatesOk = (conflict<=g_cfg.maxConflict && confidence>=g_cfg.minConf && threat<g_cfg.maxThreat);
+   bool decentOpp = (oppGrade=="GOOD" || oppGrade=="STRONG" || oppGrade=="EXCEPTIONAL");
 
-   // A GOOD-or-better opportunity with healthy confidence and low threat is
-   // tradeable. STRONG/EXCEPTIONAL simply arm faster. (Phases never gate this.)
-   bool tradeable = (goodOpp && confOk && threatOk);
+   if(resCode==RES_RESOLVED) return(ACT_EXIT);   // energy spent -> bank
 
-   if(master==DIR_NONE)                 return(ACT_WAIT);
-   if(conflict>g_cfg.maxConflict)       return(ACT_WAIT);
-   if(resCode==RES_RESOLVED)            return(ACT_EXIT);        // energy spent -> bank
-   if(tradeable && probArmed)           return(master==DIR_LONG?ACT_BUY:ACT_SELL);
-   if(tradeable)                        return(ACT_ATTACK);      // armed, probability building
-   if(goodOpp || strongOpp)             return(ACT_PREPARE);
+   // EXECUTE only when the ENTRY CYCLE has begun, in the terminal zone, in the
+   // continuation/return direction. This is the build-vs-execute distinction:
+   // no entries during expansion/transition/retracement (the building side).
+   if(ec.entryCycleActive && ec.entryDir!=DIR_NONE && gatesOk)
+      return(ec.entryDir==DIR_LONG ? ACT_BUY : ACT_SELL);
+
+   // In the terminal zone but the entry cycle has not started yet -> armed/waiting.
+   if(ec.terminal && (ec.readiness==ER_PRE_ENTRY || ec.readiness==ER_BUILDING))
+      return(ACT_ATTACK);
+
+   // Approaching the terminal, or a decent directional opportunity is forming.
+   if(ec.terminal || ec.readiness==ER_EARLY || (master!=DIR_NONE && decentOpp))
+      return(ACT_PREPARE);
+
    return(ACT_WAIT);
 }
 
@@ -3060,17 +3215,21 @@ void DecisionEngineRun()
    //==============================================================
    // VERDICT — Chief Strategist (base) then Campaign AI (overlay).
    //==============================================================
-   int action = DE_ChiefStrategist(master,conflict,confidence,threat,oppGrade,
-                                    x.executionProbability,resCode);
-   action     = DE_CampaignAI(action,master,threat);
+   int action = DE_ChiefStrategist(master,conflict,confidence,threat,oppGrade,resCode);
+
+   // when the entry cycle is active, the EXECUTION direction is the entry-cycle
+   // direction (continuation/return), not the raw 4-voter master.
+   int execMaster = (g_state.entryCycle.entryCycleActive && g_state.entryCycle.entryDir!=DIR_NONE)
+                    ? g_state.entryCycle.entryDir : master;
+   action     = DE_CampaignAI(action,execMaster,threat);
 
    // commit the meta scores first so Master Chief reads/writes the shared intel
    g_state.intel = x;
-   action        = DE_MasterChief(action,master);   // may downgrade BUY/SELL -> ATTACK
+   action        = DE_MasterChief(action,execMaster); // may downgrade a fire -> PREPARE
    g_state.intel.finalDecision = FalconActionStr(action);
 
    g_state.exec.action = action;
-   g_state.exec.master = master;
+   g_state.exec.master = execMaster;
 
    if(action!=de_prevAction)
    {
@@ -3427,12 +3586,13 @@ void EE_HandleEntries(const EE_Market &m)
    int master=g_state.exec.master;
    datetime barTime=gTime[0];
 
-   // Firing actions: BUY / SELL / ATTACK / SCALE all enter in the master
-   // direction. ATTACK is the Senseei "take the shot" verdict (the Master Chief
-   // has already vetoed it down to PREPARE if conviction was lacking).
-   // PREPARE / WAIT / NO_TRADE / DEFEND / EXIT do not open new positions here.
-   bool wantBuy  = ((action==ACT_BUY||action==ACT_ATTACK||action==ACT_SCALE) && master==DIR_LONG);
-   bool wantSell = ((action==ACT_SELL||action==ACT_ATTACK||action==ACT_SCALE) && master==DIR_SHORT);
+   // Firing actions: BUY / SELL / SCALE enter in the (entry-cycle) master
+   // direction. BUY/SELL are now emitted ONLY when the Entry Cycle Engine
+   // reports the entry cycle is active in the terminal zone, so they are the
+   // precise execution signals. ATTACK = in terminal, armed, waiting for the
+   // cycle to begin -> does NOT fire. PREPARE/WAIT/NO_TRADE/DEFEND/EXIT fire nothing.
+   bool wantBuy  = ((action==ACT_BUY||action==ACT_SCALE) && master==DIR_LONG);
+   bool wantSell = ((action==ACT_SELL||action==ACT_SCALE) && master==DIR_SHORT);
 
    if(!wantBuy && !wantSell) return;
    if(!EE_IsTradeTime()) return;
@@ -3825,11 +3985,16 @@ string VZ_Body(const int tab)
    FalconFEZ fez=g_state.fez;
    FalconFRZ frz=g_state.frz;
    FalconFU  fuv=g_state.fu;
+   FalconEntryCycle ecv=g_state.entryCycle;
 
    switch(tab)
    {
       case 0: // OVERVIEW
          s+="Action      : "+FalconActionStr(e.action)+"   ("+VZ_Dir(e.master)+")\n";
+         s+="Cycle       : "+(ecv.terminal?"TERMINAL":"BUILDING")+"  "+FalconReadinessStr(ecv.readiness)
+            +(ecv.entryCycleActive?"  <<ENTRY>>":"")+"\n";
+         s+="Compression : "+FalconCompressionStr(ecv.compressionRegime)+"   recursions "+IntegerToString(ecv.recursionDepth)
+            +"/"+DoubleToString(ecv.expectedDepth,1)+"  transfer "+(ecv.transitionComplete?"done":"building")+"\n";
          s+="Phase       : "+FalconPhaseStr(w.phase)+"  "+VZ_Pct(w.completion)+"\n";
          s+="Intent      : "+x.intent+"   Timing "+x.timing+"\n";
          s+="Hypothesis  : "+x.hypothesis+"  ("+DoubleToString(x.hypothesisProb*100.0,0)+"%)\n";

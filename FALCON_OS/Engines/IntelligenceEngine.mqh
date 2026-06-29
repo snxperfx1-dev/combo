@@ -315,6 +315,89 @@ void IE_Validation(FalconIntelligence &x)
    ie_prevPredDir   = (x.predictionPrice!=0 ? (x.predictionPrice>close1?DIR_LONG:DIR_SHORT) : DIR_NONE);
 }
 
+//------------------------------------------------------------------
+// ENTRY CYCLE ENGINE — the build-vs-execute brain (F72 model).
+//   Markets are recursive curves. The job is NOT "what phase?" but:
+//   who owns price, are we BUILDING or TERMINAL, how much curve
+//   remains, and HAS THE ENTRY CYCLE BEGUN. Entries only occur in the
+//   terminal region (the wave's own HTF flip / supply-demand), after
+//   the recursive transition matures — never during expansion. This
+//   is what stops the engine chasing an expansion into the opposite
+//   extreme (e.g. shorting the demand low).
+//------------------------------------------------------------------
+void IE_EntryCycle(FalconIntelligence &x)
+{
+   FalconEntryCycle ec;
+   FalconWave  w  = g_state.wave;
+   FalconPhysics p= g_state.physics;
+   FalconConvexity cv=g_state.convexity;
+   FalconSupplyDemand sd=g_state.supplyDemand;
+   FalconHTF h=g_state.htf;
+   double atr=MathMax(p.atr,1e-10);
+
+   // --- COMPRESSION REGIME (matters most near terminals) ---
+   double comp=p.compression;
+   ec.compressionRegime = comp<25?COMP_LOW : comp<50?COMP_MEDIUM : comp<75?COMP_HIGH : COMP_EXTREME;
+
+   // --- CURVE OWNERSHIP (who owns price) ---
+   ec.ownerTF = h.ownerTF;
+   for(int i=0;i<7;i++) ec.ownerPct[i]=0.0;
+   int agree=0;
+   for(int i=0;i<7;i++) if(h.dir[i]==h.stackDir && h.stackDir!=DIR_NONE) agree++;
+   for(int i=0;i<7;i++)
+      ec.ownerPct[i] = (agree>0 && h.dir[i]==h.stackDir)? (100.0/agree) : 0.0;
+
+   // --- TRANSITION COMPLETE (the high transition / dominance transfer) ---
+   ec.transitionComplete = (w.dominanceTransfer>=50.0);
+
+   // --- BUILDING vs TERMINAL ---
+   // Terminal = price has reached the wave's own terminal region: the HTF
+   // flip-zone phase band (9..14) OR sitting inside the matching supply/demand.
+   bool terminalPhase = (w.phase>=PH_HTF_FLIP_ZONE);
+   bool inZone        = (sd.activeZone!=DIR_NONE);
+   ec.terminal  = (terminalPhase || inZone);
+   ec.building  = !ec.terminal;
+
+   // --- REMAINING CURVE BUDGET + EXPECTED RECURSION DEPTH ---
+   // budget = distance-to-target / convexity-width / compression. High
+   // compression shrinks the budget -> fewer/smaller recursions (failure
+   // swing + tiny cycles); low compression -> big loops.
+   double dist = (w.objective!=0)? MathAbs(w.objective-gClose[1])/atr : MathMax(cv.geometryCapacity/25.0,0.1);
+   double cw   = MathMax(cv.convexityWidth/atr, 0.25);
+   double compFactor = 1.0 + comp/50.0;
+   ec.remainingBudget = dist/(cw*compFactor);
+   ec.expectedDepth   = FalconClamp(ec.remainingBudget, 0, 4);
+   ec.recursionDepth  = w.recursionBreaks;
+
+   // --- READINESS LADDER ---
+   int rd;
+   if(ec.building && w.completion<60.0)              rd=ER_NOT_READY;
+   else if(ec.building)                              rd=ER_EARLY;
+   else if(w.phase==PH_HTF_FLIP_ZONE)                rd=ER_BUILDING;
+   else if(w.phase==PH_INDUCTION||w.phase==PH_LIQUIDATION) rd=ER_PRE_ENTRY;
+   else if(w.phase==PH_TERMINAL_CURVE||w.phase==PH_DEMAND_RETURN||w.phase==PH_SUPPLY_RETURN) rd=ER_ENTRY_ACTIVE;
+   else                                              rd=ER_BUILDING;
+   // COMPRESSION SHORTCUT: in a tight terminal a failure-swing + a recursion
+   // is the whole entry cycle — arm sooner (no room for big loops).
+   if(ec.terminal && ec.compressionRegime>=COMP_HIGH && ec.recursionDepth>=1
+      && w.phase>=PH_INDUCTION && rd<ER_ENTRY_ACTIVE)
+      rd=ER_ENTRY_ACTIVE;
+   ec.readiness = rd;
+
+   ec.entryCycleActive = (rd==ER_ENTRY_ACTIVE);
+   // entry direction = the wave's continuation/return direction (buy demand in
+   // an up-wave, sell supply in a down-wave) — NOT the expansion direction.
+   ec.entryDir = w.direction;
+
+   ec.entryCycleProb = FalconClamp(
+        (ec.terminal?0.40:0.0)
+      + (ec.transitionComplete?0.20:0.0)
+      + (rd==ER_ENTRY_ACTIVE?0.30: rd==ER_PRE_ENTRY?0.15:0.0)
+      + 0.10*x.executionProbability, 0, 1);
+
+   g_state.entryCycle=ec;
+}
+
 //==================================================================
 // MASTER ENTRY — Intelligence Engine pipeline step
 //==================================================================
@@ -329,6 +412,7 @@ void IntelligenceEngineRun()
    IE_Validation(x);
    IE_Narrative(x);
    g_state.intel=x;
+   IE_EntryCycle(x);   // build-vs-execute brain (reads finalized intel)
    // back-fill campaign remaining energy now that residual is known
    g_state.campaign.remainingEnergy=x.residualEnergy;
 }

@@ -68,11 +68,16 @@ string VZ_Body(const int tab)
    FalconFEZ fez=g_state.fez;
    FalconFRZ frz=g_state.frz;
    FalconFU  fuv=g_state.fu;
+   FalconEntryCycle ecv=g_state.entryCycle;
 
    switch(tab)
    {
       case 0: // OVERVIEW
          s+="Action      : "+FalconActionStr(e.action)+"   ("+VZ_Dir(e.master)+")\n";
+         s+="Cycle       : "+(ecv.terminal?"TERMINAL":"BUILDING")+"  "+FalconReadinessStr(ecv.readiness)
+            +(ecv.entryCycleActive?"  <<ENTRY>>":"")+"\n";
+         s+="Compression : "+FalconCompressionStr(ecv.compressionRegime)+"   recursions "+IntegerToString(ecv.recursionDepth)
+            +"/"+DoubleToString(ecv.expectedDepth,1)+"  transfer "+(ecv.transitionComplete?"done":"building")+"\n";
          s+="Phase       : "+FalconPhaseStr(w.phase)+"  "+VZ_Pct(w.completion)+"\n";
          s+="Intent      : "+x.intent+"   Timing "+x.timing+"\n";
          s+="Hypothesis  : "+x.hypothesis+"  ("+DoubleToString(x.hypothesisProb*100.0,0)+"%)\n";

@@ -87,6 +87,26 @@ enum FALCON_EXIT_STATE
    XS_DD_FLATTEN    = 6
 };
 
+// Compression regime — controls recursion size/count near terminals
+enum FALCON_COMPRESSION
+{
+   COMP_LOW     = 0,
+   COMP_MEDIUM  = 1,
+   COMP_HIGH    = 2,
+   COMP_EXTREME = 3
+};
+
+// Entry readiness — the build-vs-execute ladder (the core distinction)
+enum FALCON_ENTRY_READINESS
+{
+   ER_NOT_READY    = 0,   // building, far from terminal
+   ER_EARLY        = 1,   // building, approaching terminal
+   ER_BUILDING     = 2,   // in terminal zone, sequence forming
+   ER_PRE_ENTRY    = 3,   // induction/liquidation underway
+   ER_ENTRY_ACTIVE = 4,   // entry cycle has begun -> EXECUTE
+   ER_TERMINAL     = 5     // return confirmed / done
+};
+
 //==================================================================
 // SUB-STATE : PHYSICS
 //==================================================================
@@ -494,6 +514,29 @@ struct FalconExecution
 };
 
 //==================================================================
+// SUB-STATE : ENTRY CYCLE  (the build-vs-execute brain)
+//   Answers the four questions that matter more than "what phase?":
+//     1) Who owns price?  2) Building or terminal?
+//     3) How much curve remains?  4) How many recursions are possible?
+//==================================================================
+struct FalconEntryCycle
+{
+   bool   building;            // still expansion/transition/retracement
+   bool   terminal;            // in the terminal region (HTF flip / supply-demand)
+   bool   transitionComplete;  // the HIGH transition (dominance transfer) finished
+   int    compressionRegime;   // FALCON_COMPRESSION
+   double remainingBudget;     // remaining curve capacity (geometry)
+   double expectedDepth;       // recursions physically possible from here (0..4)
+   int    recursionDepth;      // recursive CHoCH cycles seen so far
+   int    readiness;           // FALCON_ENTRY_READINESS
+   bool   entryCycleActive;    // THE GO — the entry cycle has begun
+   int    entryDir;            // FALCON_DIR direction to enter (continuation/return)
+   int    ownerTF;             // dominant timeframe index (who owns price)
+   double ownerPct[7];         // ownership distribution across rungs
+   double entryCycleProb;      // 0..1 continuous entry-cycle conviction
+};
+
+//==================================================================
 // MASTER STATE
 //==================================================================
 struct FalconMarketState
@@ -527,6 +570,7 @@ struct FalconMarketState
    FalconCampaign     campaign;
    FalconParticipants participants;
    FalconIntelligence intel;
+   FalconEntryCycle   entryCycle;
    FalconExecution    exec;
 };
 
@@ -603,6 +647,30 @@ string FalconExitStateStr(const int x)
       case XS_TRAIL_STOP:    return("trail stop");
       case XS_DD_FLATTEN:    return("drawdown flatten");
       default:               return("none");
+   }
+}
+
+string FalconReadinessStr(const int r)
+{
+   switch(r)
+   {
+      case ER_EARLY:        return("EARLY");
+      case ER_BUILDING:     return("BUILDING");
+      case ER_PRE_ENTRY:    return("PRE-ENTRY");
+      case ER_ENTRY_ACTIVE: return("ENTRY ACTIVE");
+      case ER_TERMINAL:     return("TERMINAL/DONE");
+      default:              return("NOT READY");
+   }
+}
+
+string FalconCompressionStr(const int c)
+{
+   switch(c)
+   {
+      case COMP_MEDIUM:  return("MEDIUM");
+      case COMP_HIGH:    return("HIGH");
+      case COMP_EXTREME: return("EXTREME");
+      default:           return("LOW");
    }
 }
 
