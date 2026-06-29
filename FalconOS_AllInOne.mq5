@@ -4,7 +4,7 @@
 //|   SINGLE-FILE BUILD (kernel + 6 engines + EA, auto-combined).     |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "2.00"
+#property version   "2.01"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -749,6 +749,12 @@ struct FalconEntryCycle
    int    ownerTF;             // dominant timeframe index (who owns price)
    double ownerPct[7];         // ownership distribution across rungs
    double entryCycleProb;      // 0..1 continuous entry-cycle conviction
+   // F16 Engine 1A.7 — pre-objective LIQUIDATION WAVE (native terminal sequence)
+   bool   liqActive;
+   double liqDistPct;          // % of initial distance to objective remaining
+   bool   liqObjArrival;       // objective reached (structural + physical)
+   bool   liqTrueChoch;        // confirmed terminal CHoCH (the reversal)
+   string liqSubPhase;         // Push/Displacement/Induction/Terminal Liquidation/Objective Arrival
 };
 
 //==================================================================
@@ -2628,12 +2634,16 @@ double ie_bExp=0, ie_bConv=0, ie_bCreate=0, ie_bAbs=0, ie_bRetr=0, ie_bRet=0;
 int    ie_prevRes=RES_UNRESOLVED;
 // persistent validation-loop state
 double ie_prevPredPrice=0; int ie_prevPredDir=0; double ie_valScore=50.0;
+// F16 Engine 1A.7 — persistent liquidation-wave state
+bool   ie_liqActive=false; bool ie_liqIsRetr=false; int ie_liqDir=0;
+double ie_liqTarget=0; double ie_liqInitDist=0;
 
 void IntelligenceEngineInit()
 {
    ie_bExp=0; ie_bConv=0; ie_bCreate=0; ie_bAbs=0; ie_bRetr=0; ie_bRet=0;
    ie_prevRes=RES_UNRESOLVED;
    ie_prevPredPrice=0; ie_prevPredDir=0; ie_valScore=50.0;
+   ie_liqActive=false; ie_liqIsRetr=false; ie_liqDir=0; ie_liqTarget=0; ie_liqInitDist=0;
 }
 
 //------------------------------------------------------------------
@@ -2923,6 +2933,65 @@ void IE_Validation(FalconIntelligence &x)
 }
 
 //------------------------------------------------------------------
+// LIQUIDATION WAVE ENGINE — verbatim port of F16 Engine 1A.7. Tracks
+// the pre-objective liquidation toward the owner target and classifies
+// the terminal sub-sequence (Push -> Displacement -> Induction ->
+// Terminal Liquidation -> Objective Arrival), plus the confirmed
+// terminal CHoCH. This is F16's NATIVE entry-sequence mechanism — the
+// entry cycle keys off it instead of a re-derived heuristic.
+//------------------------------------------------------------------
+void IE_LiquidationWave(FalconIntelligence &x, FalconEntryCycle &ec)
+{
+   FalconWave w=g_state.wave;
+   FalconPhysics p=g_state.physics;
+   double close1=gClose[1];
+   double atr=MathMax(p.atr,1e-10);
+
+   bool isRetr = (w.phase==PH_INDUCTION);                       // retracement-side induction
+   bool arm    = (w.phase==PH_EXP_INDUCTION || isRetr);
+   double obj  = w.objective;
+
+   if(arm && !ie_liqActive && obj!=0)
+   {
+      ie_liqActive  = true;
+      ie_liqIsRetr  = isRetr;
+      ie_liqTarget  = obj;
+      ie_liqDir     = (obj>close1?DIR_LONG:DIR_SHORT);
+      ie_liqInitDist= MathMax(MathAbs(obj-close1), atr*0.5);
+   }
+   if(ie_liqActive && obj!=0) ie_liqTarget=obj;
+
+   double remain = (ie_liqActive)? MathAbs(ie_liqTarget-close1) : 0.0;
+   double distPct= (ie_liqActive && ie_liqInitDist>0)? MathMin(100.0, remain/ie_liqInitDist*100.0) : 100.0;
+
+   bool capExh   = (x.dissipationProgress>60.0 || g_state.convexity.maturity>60.0);
+   bool resolved = (x.resolutionState==RES_RESOLVED);
+   bool energyLo = (p.efficiency < g_cfg.effThresh*0.7);
+   bool magnet   = (ie_liqActive && distPct<20.0);
+   bool arrStruct= (ie_liqActive && (ie_liqDir==DIR_LONG? close1>=ie_liqTarget : close1<=ie_liqTarget));
+   bool arrPhys  = (capExh && (resolved || magnet));
+   bool objArr   = (arrStruct && energyLo && arrPhys);
+   bool counterBOS=(ie_liqDir==DIR_LONG? g_state.structure.bos==DIR_SHORT : g_state.structure.bos==DIR_LONG);
+   bool trueChoch= (objArr && counterBOS && energyLo && resolved);
+
+   string sub = (!ie_liqActive)?"" :
+                objArr?"Objective Arrival" :
+                (magnet && energyLo)?"Terminal Liquidation" :
+                (g_state.convexity.maturity>40.0 || x.dissipationProgress>40.0)?"Induction" :
+                (distPct<70.0)?"Displacement" :
+                (distPct<95.0)?"Push":"Initialization";
+
+   bool inWindow = (w.phase==PH_EXP_INDUCTION||w.phase==PH_EXP_LIQUIDITY||w.phase==PH_INDUCTION||w.phase==PH_LIQUIDATION||w.phase==PH_TERMINAL_CURVE);
+   if(ie_liqActive && (!inWindow || (objArr && trueChoch))) ie_liqActive=false;
+
+   ec.liqActive    = ie_liqActive;
+   ec.liqDistPct   = distPct;
+   ec.liqObjArrival= objArr;
+   ec.liqTrueChoch = trueChoch;
+   ec.liqSubPhase  = sub;
+}
+
+//------------------------------------------------------------------
 // ENTRY CYCLE ENGINE — the build-vs-execute brain (F72 model).
 //   Markets are recursive curves. The job is NOT "what phase?" but:
 //   who owns price, are we BUILDING or TERMINAL, how much curve
@@ -2976,6 +3045,9 @@ void IE_EntryCycle(FalconIntelligence &x)
    ec.expectedDepth   = FalconClamp(ec.remainingBudget, 0, 4);
    ec.recursionDepth  = w.recursionBreaks;
 
+   // --- LIQUIDATION WAVE (F16 native terminal sequence) ---
+   IE_LiquidationWave(x, ec);
+
    // --- READINESS LADDER ---
    int rd;
    if(ec.building && w.completion<60.0)              rd=ER_NOT_READY;
@@ -2984,23 +3056,26 @@ void IE_EntryCycle(FalconIntelligence &x)
    else if(w.phase==PH_INDUCTION||w.phase==PH_LIQUIDATION) rd=ER_PRE_ENTRY;
    else if(w.phase==PH_TERMINAL_CURVE||w.phase==PH_DEMAND_RETURN||w.phase==PH_SUPPLY_RETURN) rd=ER_ENTRY_ACTIVE;
    else                                              rd=ER_BUILDING;
-   // COMPRESSION SHORTCUT: in a tight terminal a failure-swing + a recursion
-   // is the whole entry cycle — arm sooner (no room for big loops).
-   if(ec.terminal && ec.compressionRegime>=COMP_HIGH && ec.recursionDepth>=1
-      && w.phase>=PH_INDUCTION && rd<ER_ENTRY_ACTIVE)
-      rd=ER_ENTRY_ACTIVE;
+   // F16 liquidation-wave overrides: terminal liquidation / objective arrival /
+   // confirmed terminal CHoCH ARE the entry cycle. Use them directly.
+   if(ec.liqSubPhase=="Terminal Liquidation" && rd<ER_PRE_ENTRY) rd=ER_PRE_ENTRY;
+   if(ec.liqObjArrival || ec.liqTrueChoch) rd=ER_ENTRY_ACTIVE;
    ec.readiness = rd;
 
-   ec.entryCycleActive = (rd==ER_ENTRY_ACTIVE);
+   // entry cycle is active on F16's native terminal arrival/CHoCH, or once the
+   // terminal phase band confirms the return.
+   ec.entryCycleActive = (ec.liqObjArrival || ec.liqTrueChoch
+                          || w.phase==PH_DEMAND_RETURN || w.phase==PH_SUPPLY_RETURN
+                          || (rd==ER_ENTRY_ACTIVE && ec.terminal));
    // entry direction = the wave's continuation/return direction (buy demand in
    // an up-wave, sell supply in a down-wave) — NOT the expansion direction.
    ec.entryDir = w.direction;
 
    ec.entryCycleProb = FalconClamp(
-        (ec.terminal?0.40:0.0)
-      + (ec.transitionComplete?0.20:0.0)
-      + (rd==ER_ENTRY_ACTIVE?0.30: rd==ER_PRE_ENTRY?0.15:0.0)
-      + 0.10*x.executionProbability, 0, 1);
+        (ec.terminal?0.35:0.0)
+      + (ec.transitionComplete?0.15:0.0)
+      + (ec.liqObjArrival||ec.liqTrueChoch?0.35: ec.liqSubPhase=="Terminal Liquidation"?0.20:0.0)
+      + 0.15*x.executionProbability, 0, 1);
 
    g_state.entryCycle=ec;
 }
@@ -3995,6 +4070,8 @@ string VZ_Body(const int tab)
             +(ecv.entryCycleActive?"  <<ENTRY>>":"")+"\n";
          s+="Compression : "+FalconCompressionStr(ecv.compressionRegime)+"   recursions "+IntegerToString(ecv.recursionDepth)
             +"/"+DoubleToString(ecv.expectedDepth,1)+"  transfer "+(ecv.transitionComplete?"done":"building")+"\n";
+         s+="Liq Wave    : "+(ecv.liqSubPhase==""?"—":ecv.liqSubPhase)+(ecv.liqActive?"  dist "+DoubleToString(ecv.liqDistPct,0)+"%":"")
+            +(ecv.liqTrueChoch?"  CHoCH":"")+"\n";
          s+="Phase       : "+FalconPhaseStr(w.phase)+"  "+VZ_Pct(w.completion)+"\n";
          s+="Intent      : "+x.intent+"   Timing "+x.timing+"\n";
          s+="Hypothesis  : "+x.hypothesis+"  ("+DoubleToString(x.hypothesisProb*100.0,0)+"%)\n";

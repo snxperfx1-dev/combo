@@ -78,6 +78,8 @@ string VZ_Body(const int tab)
             +(ecv.entryCycleActive?"  <<ENTRY>>":"")+"\n";
          s+="Compression : "+FalconCompressionStr(ecv.compressionRegime)+"   recursions "+IntegerToString(ecv.recursionDepth)
             +"/"+DoubleToString(ecv.expectedDepth,1)+"  transfer "+(ecv.transitionComplete?"done":"building")+"\n";
+         s+="Liq Wave    : "+(ecv.liqSubPhase==""?"—":ecv.liqSubPhase)+(ecv.liqActive?"  dist "+DoubleToString(ecv.liqDistPct,0)+"%":"")
+            +(ecv.liqTrueChoch?"  CHoCH":"")+"\n";
          s+="Phase       : "+FalconPhaseStr(w.phase)+"  "+VZ_Pct(w.completion)+"\n";
          s+="Intent      : "+x.intent+"   Timing "+x.timing+"\n";
          s+="Hypothesis  : "+x.hypothesis+"  ("+DoubleToString(x.hypothesisProb*100.0,0)+"%)\n";

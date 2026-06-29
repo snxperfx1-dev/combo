@@ -534,6 +534,12 @@ struct FalconEntryCycle
    int    ownerTF;             // dominant timeframe index (who owns price)
    double ownerPct[7];         // ownership distribution across rungs
    double entryCycleProb;      // 0..1 continuous entry-cycle conviction
+   // F16 Engine 1A.7 — pre-objective LIQUIDATION WAVE (native terminal sequence)
+   bool   liqActive;
+   double liqDistPct;          // % of initial distance to objective remaining
+   bool   liqObjArrival;       // objective reached (structural + physical)
+   bool   liqTrueChoch;        // confirmed terminal CHoCH (the reversal)
+   string liqSubPhase;         // Push/Displacement/Induction/Terminal Liquidation/Objective Arrival
 };
 
 //==================================================================
