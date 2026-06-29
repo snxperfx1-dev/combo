@@ -101,7 +101,6 @@ int DE_MasterChief(int action,const int master)
    FalconIntelligence x=g_state.intel;
    bool ownerAgree = (g_state.curve.ownerDir==master && master!=DIR_NONE);
    bool netAgree   = (g_state.network.bias==master);
-   bool valOk      = (x.validationScore>=45.0);
    bool execOk     = (x.executionProbability>=g_cfg.execProbArm*0.9);
 
    double score = (ownerAgree?30.0:0.0)+(netAgree?20.0:0.0)
@@ -109,7 +108,11 @@ int DE_MasterChief(int action,const int master)
                  + (100.0-x.threat)*0.10;
    g_state.intel.masterChiefScore = FalconClamp(score,0,100);
 
-   bool commitOk = ((ownerAgree || netAgree) && valOk && execOk && score>=55.0);
+   // Commit on genuine agreement + reachable exec prob + holistic conviction.
+   // Validation hit-rate is ADVISORY (it feeds the score above) — it is NOT a
+   // hard gate, because the bar-to-bar direction check is too noisy in ranges
+   // and would otherwise veto strong, well-aligned setups.
+   bool commitOk = ((ownerAgree || netAgree) && execOk && score>=55.0);
    g_state.intel.masterChiefConfirm = commitOk;
 
    // Veto only NEW-ENTRY actions (BUY/SELL/ATTACK). If conviction is lacking,
@@ -117,7 +120,7 @@ int DE_MasterChief(int action,const int master)
    bool firing = (action==ACT_BUY || action==ACT_SELL || action==ACT_ATTACK);
    if(firing && !commitOk)
    {
-      g_state.intel.masterChiefNote = "hold fire — "+((!ownerAgree && !netAgree)?"owner+net split":!valOk?"unvalidated":!execOk?"low exec prob":"low conviction");
+      g_state.intel.masterChiefNote = "hold fire — "+((!ownerAgree && !netAgree)?"owner+net split":!execOk?"low exec prob":"low conviction");
       return(ACT_PREPARE);   // stand down, do not pull the trigger
    }
    g_state.intel.masterChiefNote = commitOk ? "cleared to engage" : "standby";
