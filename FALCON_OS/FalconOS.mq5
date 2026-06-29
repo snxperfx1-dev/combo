@@ -42,6 +42,7 @@
 #include "Engines/MoneyManager.mqh"        // Execution Layer — Symphony v3.0 money mgmt (counter-dir lock / ladder / basket ceiling)
 #include "Engines/TradePlan.mqh"           // Decision/Execution — subsystem-composed trade plan (stop/target/size each owned by an engine)
 #include "Engines/TradeJournal.mqh"        // Diagnostics — per-trade CSV journal (before Symphony so entries can record)
+#include "Engines/Adaptive.mqh"            // Intelligence — self-learning feedback (size/veto from own results)
 #include "Engines/SymphonyEngine.mqh"      // Execution Layer — Symphony phase entries/exits (after EE helpers)
 #include "Engines/Visualization.mqh"       // Visualization Layer
 
@@ -130,6 +131,7 @@ void FalconPipeline()
    if(g_cfg.useSymphony)
       SymphonyTradeManage();
    TradeJournalOnBar();   // snapshot MFE/MAE + finalise closed trades to the CSV
+   AdaptiveOnBar();       // learn from closed trades -> update per-context edge
    FalconModuleEnd(MOD_EXEC,t0);
 
    // ── PERSISTENCE ───────────────────────────────────────────────
@@ -168,6 +170,7 @@ int OnInit()
    if(g_cfg.useThermalRisk) ThermalRiskInit();
    MoneyManagerInit();
    CurveLocatorInit();
+   AdaptiveInit();
    if(g_cfg.useSymphony) SymphonyInit();
    TradeJournalInit();
 
@@ -188,6 +191,7 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    TradeJournalDeinit();
+   AdaptiveDeinit();
    FalconPersistenceFlush();
    VisualizationDeinit();
    FalconReleaseHandles();

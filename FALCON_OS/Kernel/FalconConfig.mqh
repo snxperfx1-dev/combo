@@ -80,6 +80,13 @@ input bool    InpFractalZones    = true;  // Also consider the OWNER TF's zones 
 input double  InpMaxStopATR      = 10.0;  // Cap stop distance (ATR) so a far higher-TF zone can't create an absurd stop
 input bool    InpUseCurveLocator = true;  // Always-on continuous multi-TF curve position ("you are here") + late-on-curve veto
 input double  InpMaxOwnerLegPos  = 0.80;  // Block entries when price is already past this fraction of the OWNER leg (no curve left)
+input string  __sep_adapt       = "════════ SELF-LEARNING (adaptive feedback) ════════"; // ──
+input bool    InpUseAdaptive     = true;  // Learn per-context edge from own closed trades -> size/veto future trades
+input int     InpAdaptMinTrades  = 8;     // Min trades in a context before it influences sizing (veto needs 2x)
+input double  InpAdaptVetoR       = -0.30; // Veto a context whose learned expectancy (R/trade) falls to/below this
+input double  InpAdaptSizeK       = 0.40; // Size sensitivity to learned edge (lots *= clamp(1 + K*expectancyR, .3, 1.6))
+input double  InpAdaptAlpha       = 0.10; // EWMA weight on the newest trade (higher = adapts faster, noisier)
+input bool    InpAdaptPersist     = true; // Persist the learning table to Common\Files (survives restarts)
 
 input string  __sep_execution   = "════════ EXECUTION / RISK ════════"; // ──
 input bool    InpEnableTrading  = true;  // Allow live order sending
@@ -171,6 +178,8 @@ struct FalconConfig
    double minRR, stopBufATR;
    bool   fractalZones;  double maxStopATR;
    bool   useCurveLocator;  double maxOwnerLegPos;
+   bool   useAdaptive;  int adaptMinTrades;
+   double adaptVetoR, adaptSizeK, adaptAlpha;  bool adaptPersist;
    // execution
    bool   enableTrading, blockIfBreach, sessionFilter;
    double riskPercent, contractValue;
@@ -259,6 +268,12 @@ void FalconConfigInit()
    g_cfg.maxStopATR       = InpMaxStopATR;
    g_cfg.useCurveLocator  = InpUseCurveLocator;
    g_cfg.maxOwnerLegPos   = InpMaxOwnerLegPos;
+   g_cfg.useAdaptive      = InpUseAdaptive;
+   g_cfg.adaptMinTrades   = InpAdaptMinTrades;
+   g_cfg.adaptVetoR       = InpAdaptVetoR;
+   g_cfg.adaptSizeK       = InpAdaptSizeK;
+   g_cfg.adaptAlpha       = InpAdaptAlpha;
+   g_cfg.adaptPersist     = InpAdaptPersist;
 
    g_cfg.enableTrading    = InpEnableTrading;
    g_cfg.blockIfBreach    = InpBlockIfBreach;

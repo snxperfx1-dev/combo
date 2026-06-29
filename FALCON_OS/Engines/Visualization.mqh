@@ -201,6 +201,8 @@ string VZ_Body(const int tab)
             +"   S "+(e.gripShort>0?VZ_Px(e.gripShort)+" "+FalconTalonStr(e.talonStageShort):"—")+"\n";
          s+="Lots        : "+DoubleToString(e.lots,2)+"   Risk $ "+DoubleToString(e.riskCash,0)+"\n";
          s+="Fact gate   : "+(g_cfg.useFactGate?(sym_factVeto==""?"clear":"VETO — "+sym_factVeto):"off")+"\n";
+         s+="Self-learn  : L x"+DoubleToString(AD_SizeMult(AD_Bucket(DIR_LONG)),2)+" (n"+IntegerToString(ad_n[AD_Bucket(DIR_LONG)])+")"
+            +"  S x"+DoubleToString(AD_SizeMult(AD_Bucket(DIR_SHORT)),2)+" (n"+IntegerToString(ad_n[AD_Bucket(DIR_SHORT)])+")\n";
          s+="Open L/S    : "+IntegerToString(e.openLongCount)+" / "+IntegerToString(e.openShortCount)+"\n";
          s+="Open PnL    : "+DoubleToString(e.openPnL,2)+"\n";
          s+="Session     : "+(e.sessionOpen?"OPEN":"closed");
