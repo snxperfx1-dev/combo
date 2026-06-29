@@ -61,14 +61,14 @@ input string  __sep_decision    = "════════ DECISION (SENSEEI) �
 input int     InpMinConf        = 55;    // Min confidence to ATTACK
 input double  InpMaxThreat      = 45.0;  // Max threat to ATTACK
 input double  InpMaxConflict    = 60.0;  // Conflict above this => WAIT
-input double  InpExecProbArm    = 0.62;  // Execution probability to arm (calibrated 0..1)
+input double  InpExecProbArm    = 0.50;  // Execution probability to arm (calibrated 0..1)
 
 input string  __sep_execution   = "════════ EXECUTION / RISK ════════"; // ──
 input bool    InpEnableTrading  = true;  // Allow live order sending
 input double  InpRiskPercent    = 0.5;   // Risk % per trade
 input bool    InpEnableRiskEng  = true;  // Enable DRDWCT risk engine
 input bool    InpBlockIfBreach  = true;  // Block new entries if VaR breached
-input bool    InpSessionFilter  = true;  // Restrict to London/US windows
+input bool    InpSessionFilter  = false; // Restrict to London/US windows (off for full backtests)
 input double  InpRdLimit        = 0.0095;// Micro-bomb RD limit
 input double  InpContractValue  = 100.0; // Value per lot per price unit
 input bool    InpTrailEnable    = true;  // Enable trailing stop engine

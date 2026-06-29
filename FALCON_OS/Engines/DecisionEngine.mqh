@@ -112,10 +112,13 @@ int DE_MasterChief(int action,const int master)
    bool commitOk = ((ownerAgree || netAgree) && valOk && execOk && score>=55.0);
    g_state.intel.masterChiefConfirm = commitOk;
 
-   if((action==ACT_BUY||action==ACT_SELL) && !commitOk)
+   // Veto only NEW-ENTRY actions (BUY/SELL/ATTACK). If conviction is lacking,
+   // downgrade to PREPARE (no fire). SCALE/DEFEND/EXIT are never vetoed.
+   bool firing = (action==ACT_BUY || action==ACT_SELL || action==ACT_ATTACK);
+   if(firing && !commitOk)
    {
       g_state.intel.masterChiefNote = "hold fire — "+((!ownerAgree && !netAgree)?"owner+net split":!valOk?"unvalidated":!execOk?"low exec prob":"low conviction");
-      return(ACT_ATTACK);   // stay armed, do not pull the trigger
+      return(ACT_PREPARE);   // stand down, do not pull the trigger
    }
    g_state.intel.masterChiefNote = commitOk ? "cleared to engage" : "standby";
    return(action);

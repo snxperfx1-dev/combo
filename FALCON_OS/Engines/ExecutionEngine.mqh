@@ -349,10 +349,12 @@ void EE_HandleEntries(const EE_Market &m)
    int master=g_state.exec.master;
    datetime barTime=gTime[0];
 
-   // Only BUY / SELL / SCALE fire orders. ATTACK is "armed but probability not
-   // yet over the arm threshold" -> treat as PREPARE (no fire). PREPARE/WAIT/etc fire nothing.
-   bool wantBuy  = ((action==ACT_BUY||action==ACT_SCALE) && master==DIR_LONG);
-   bool wantSell = ((action==ACT_SELL||action==ACT_SCALE) && master==DIR_SHORT);
+   // Firing actions: BUY / SELL / ATTACK / SCALE all enter in the master
+   // direction. ATTACK is the Senseei "take the shot" verdict (the Master Chief
+   // has already vetoed it down to PREPARE if conviction was lacking).
+   // PREPARE / WAIT / NO_TRADE / DEFEND / EXIT do not open new positions here.
+   bool wantBuy  = ((action==ACT_BUY||action==ACT_ATTACK||action==ACT_SCALE) && master==DIR_LONG);
+   bool wantSell = ((action==ACT_SELL||action==ACT_ATTACK||action==ACT_SCALE) && master==DIR_SHORT);
 
    if(!wantBuy && !wantSell) return;
    if(!EE_IsTradeTime()) return;

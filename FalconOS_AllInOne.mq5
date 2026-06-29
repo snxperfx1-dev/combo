@@ -4,7 +4,7 @@
 //|   SINGLE-FILE BUILD (kernel + 6 engines + EA, auto-combined).     |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "1.01"
+#property version   "1.02"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -74,14 +74,14 @@ input string  __sep_decision    = "════════ DECISION (SENSEEI) �
 input int     InpMinConf        = 55;    // Min confidence to ATTACK
 input double  InpMaxThreat      = 45.0;  // Max threat to ATTACK
 input double  InpMaxConflict    = 60.0;  // Conflict above this => WAIT
-input double  InpExecProbArm    = 0.62;  // Execution probability to arm (calibrated 0..1)
+input double  InpExecProbArm    = 0.50;  // Execution probability to arm (calibrated 0..1)
 
 input string  __sep_execution   = "════════ EXECUTION / RISK ════════"; // ──
 input bool    InpEnableTrading  = true;  // Allow live order sending
 input double  InpRiskPercent    = 0.5;   // Risk % per trade
 input bool    InpEnableRiskEng  = true;  // Enable DRDWCT risk engine
 input bool    InpBlockIfBreach  = true;  // Block new entries if VaR breached
-input bool    InpSessionFilter  = true;  // Restrict to London/US windows
+input bool    InpSessionFilter  = false; // Restrict to London/US windows (off for full backtests)
 input double  InpRdLimit        = 0.0095;// Micro-bomb RD limit
 input double  InpContractValue  = 100.0; // Value per lot per price unit
 input bool    InpTrailEnable    = true;  // Enable trailing stop engine
@@ -2981,10 +2981,13 @@ int DE_MasterChief(int action,const int master)
    bool commitOk = ((ownerAgree || netAgree) && valOk && execOk && score>=55.0);
    g_state.intel.masterChiefConfirm = commitOk;
 
-   if((action==ACT_BUY||action==ACT_SELL) && !commitOk)
+   // Veto only NEW-ENTRY actions (BUY/SELL/ATTACK). If conviction is lacking,
+   // downgrade to PREPARE (no fire). SCALE/DEFEND/EXIT are never vetoed.
+   bool firing = (action==ACT_BUY || action==ACT_SELL || action==ACT_ATTACK);
+   if(firing && !commitOk)
    {
       g_state.intel.masterChiefNote = "hold fire — "+((!ownerAgree && !netAgree)?"owner+net split":!valOk?"unvalidated":!execOk?"low exec prob":"low conviction");
-      return(ACT_ATTACK);   // stay armed, do not pull the trigger
+      return(ACT_PREPARE);   // stand down, do not pull the trigger
    }
    g_state.intel.masterChiefNote = commitOk ? "cleared to engage" : "standby";
    return(action);
@@ -3416,10 +3419,12 @@ void EE_HandleEntries(const EE_Market &m)
    int master=g_state.exec.master;
    datetime barTime=gTime[0];
 
-   // Only BUY / SELL / SCALE fire orders. ATTACK is "armed but probability not
-   // yet over the arm threshold" -> treat as PREPARE (no fire). PREPARE/WAIT/etc fire nothing.
-   bool wantBuy  = ((action==ACT_BUY||action==ACT_SCALE) && master==DIR_LONG);
-   bool wantSell = ((action==ACT_SELL||action==ACT_SCALE) && master==DIR_SHORT);
+   // Firing actions: BUY / SELL / ATTACK / SCALE all enter in the master
+   // direction. ATTACK is the Senseei "take the shot" verdict (the Master Chief
+   // has already vetoed it down to PREPARE if conviction was lacking).
+   // PREPARE / WAIT / NO_TRADE / DEFEND / EXIT do not open new positions here.
+   bool wantBuy  = ((action==ACT_BUY||action==ACT_ATTACK||action==ACT_SCALE) && master==DIR_LONG);
+   bool wantSell = ((action==ACT_SELL||action==ACT_ATTACK||action==ACT_SCALE) && master==DIR_SHORT);
 
    if(!wantBuy && !wantSell) return;
    if(!EE_IsTradeTime()) return;
