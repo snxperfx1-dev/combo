@@ -1,0 +1,33 @@
+{
+  "id": "FEAT-005",
+  "type": "feat",
+  "description": "Create Part5_Network.mqh - F16's Invisible Network Engine (multi-TF FU/flip detection, node registry, authority scoring, network bias, path nodes) and Time Intelligence Engine (5-cycle stack MN/W/D/H4/H1 with completion/asymmetry/alignment scoring).",
+  "status": "completed",
+  "steps": [
+    "Create Part5_Network.mqh at the repo root",
+    "Port the FU/Flip detector (f_fuPool): detects dominant rejection wicks at local extremes. Inputs: wickFrac, lookback. Outputs: tip price, mid price, direction, validity flag, score (20 base + wick size + confirmation + thresholds). Logic: compute wick ratios, check against prior structure highs/lows, detect local tops/bots, confirm with close breaking body",
+    "Implement multi-TF FU scanning: scan MN/W/D/H4/H1/M15/M5 timeframes for FU events using CopyRates, store results per timeframe (tip, mid, dir, valid, score)",
+    "Port the node registry: arrays of px/mid/dir/score/weight/state/bar/revisits. f_nodeAdd() pushes new nodes, caps at nodeMax. State machine: 0=active, 1=dormant (age > dormantBars*weight), 2=consumed (price crossed), 3=historical. Revisit counting on proximity (< 0.25 ATR).",
+    "Port authority scoring: f_auth(i) = score + weight*4 + revisits*3",
+    "Port network bias: cascade from highest TF with valid FU down to EMA50 fallback",
+    "Port path node sorting: f_pathNodes(aheadSide) - filter eligible nodes (state!=2, auth>=authMin, on bias side), sort by distance from close",
+    "Port network pressure: (bullAuth - bearAuth) / (bullAuth + bearAuth) * 100, direction from threshold (+/-12)",
+    "Port Time Intelligence Engine: 5 cycles (MN/W/D/H4/H1) each tracking open/high/low/prevHigh/prevLow. Per cycle: bias (close vs open), elapsed fraction, highTaken (high > prevHigh), lowTaken (low < prevLow), completion score, state (OPENING/EXPANDING/MID CYCLE/TERMINAL/DUAL DONE), timing probability. Cross-cycle: timeDir (bull/bear count), timeAlign, timeConflict, h1Timing, cycle stack string, sequence prediction",
+    "Port FEZ corridor calculation: highest-authority node above + below close"
+  ],
+  "acceptance_criteria": [
+    "Part5_Network.mqh exists with valid MQL5 syntax",
+    "FU detection implements wick-ratio analysis correctly",
+    "Node registry supports add/state-update/authority-scoring",
+    "Network bias cascades from highest valid TF",
+    "Time Intelligence tracks all 5 cycle OHLC with completion/asymmetry",
+    "Pressure calculation produces directional score"
+  ],
+  "verification": [
+    "Read the file and verify FU detection logic matches F16 V70 f_fuPool",
+    "Verify node state machine transitions match F16 V70 registry logic",
+    "Verify Time Intelligence Engine cycle structure matches F16 V70 ENGINE 8.0"
+  ],
+  "blocked_reason": null,
+  "findings": "Part5_Network.mqh created at 627 lines. All 10 functions ported from F16 V70. Braces balanced (40/40). No duplicate symbols with Parts 1-4. Uses g_nodes[250]/g_nodeCount/g_timeCycles[5] from Part1. References InpWickFrac/InpFULookback/InpAuthMin/InpNodeMax/InpDormantBars/InpHistoryBars inputs from Part1. EMA50 handle initialized via InitNetworkEngine() which should be called in OnInit. TimeIntelCycle.elapsed stored as 0-100 integer percentage of cycle completion. ScanNetworkNodes creates/releases ATR handles per-call for each TF - could be optimized with persistent handles if performance is a concern."
+}
