@@ -537,6 +537,96 @@ void SymphonyUpdatePhases()
 }
 
 //==================================================================
+// FACT-BASED DECISION CONTRACT — subsystems DO THEIR JOBS.
+//   Each subsystem owns a concrete VETO in its own domain — no scores,
+//   no weighted averages. An entry in `dir` survives only if EVERY
+//   subsystem clears it. The first failing subsystem records WHY (so the
+//   block is explainable / journalable), and direction is INHERITED from
+//   ownership, never voted.
+//
+//   1. HTF        — PERMISSION: the higher-TF stack must not oppose dir.
+//   2. CURVE/CAMP — OWNERSHIP : the owner of price must be dir (authority).
+//   3. ZONES      — LOCATION  : price must be AT a real engagement zone
+//                   (wave flip / supply-demand / order block / FU /
+//                   swept inducement) — never fire in no-man's-land.
+//   4. STRUCTURE  — CONFIRM   : no change-of-character against dir.
+//   5. CONVEXITY  — ROOM      : curve capacity left + wave not exhausted
+//                   (don't buy tops / sell bottoms).
+//   6. NETWORK/PART — THREAT  : no dominant opposing authority/participant.
+//==================================================================
+string sym_factVeto = "";   // last veto reason (diagnostics)
+
+bool Sym_PriceInBand(const double px,const double a,const double b)
+{
+   if(a==0.0 && b==0.0) return(false);
+   double lo=MathMin(a,b), hi=MathMax(a,b);
+   return(px>=lo && px<=hi);
+}
+
+// LOCATION fact — is price AT a real subsystem zone supporting `dir`?
+bool Sym_AtRealZone(const int dir,const double px)
+{
+   FalconWave        w  = g_state.wave;
+   FalconSupplyDemand sd= g_state.supplyDemand;
+   FalconOrderBlocks  ob= g_state.orderBlocks;
+   FalconFU           fu= g_state.fu;
+   FalconLiquidity    lq= g_state.liquidity;
+
+   bool flip   = Sym_PriceInBand(px, w.flipBot, w.flipTop);             // wave flip zone
+   bool sweptL = lq.induceSwept;                                        // liquidity grabbed
+   if(dir==DIR_LONG)
+   {
+      bool dz  = sd.inDemand;                                           // supply/demand engine
+      bool obz = (ob.activeDir==DIR_LONG && Sym_PriceInBand(px,ob.activeBot,ob.activeTop));
+      bool fuz = (fu.active && fu.dir==DIR_LONG && Sym_PriceInBand(px,fu.zoneBot,fu.zoneTop));
+      return(flip || dz || obz || fuz || sweptL);
+   }
+   else
+   {
+      bool sz  = sd.inSupply;
+      bool obz = (ob.activeDir==DIR_SHORT && Sym_PriceInBand(px,ob.activeBot,ob.activeTop));
+      bool fuz = (fu.active && fu.dir==DIR_SHORT && Sym_PriceInBand(px,fu.zoneBot,fu.zoneTop));
+      return(flip || sz || obz || fuz || sweptL);
+   }
+}
+
+bool SymphonyFactsConfirm(const int dir)
+{
+   sym_factVeto = "";
+   if(!g_cfg.useFactGate) return(true);
+
+   double px = gClose[1];
+
+   // 1) HTF PERMISSION — higher-TF stack must not oppose.
+   int htfDir = g_state.htf.stackDir;
+   if(htfDir!=DIR_NONE && htfDir!=dir){ sym_factVeto="HTF opposes"; return(false); }
+
+   // 2) OWNERSHIP — the owner of price must be this direction (authority).
+   int owner = g_state.campaign.owner;
+   if(owner==DIR_NONE) owner = g_state.curve.ownerDir;
+   if(owner!=DIR_NONE && owner!=dir){ sym_factVeto="owner opposes"; return(false); }
+
+   // 3) LOCATION — price must be AT a real zone.
+   if(g_cfg.factNeedZone && !Sym_AtRealZone(dir,px)){ sym_factVeto="no zone"; return(false); }
+
+   // 4) STRUCTURE — no change-of-character against the trade.
+   if(g_state.structure.choch == -dir){ sym_factVeto="CHoCH against"; return(false); }
+
+   // 5) CONVEXITY ROOM — capacity left + wave not exhausted.
+   if(g_state.convexity.geometryCapacity < g_cfg.minEntryRoomPct){ sym_factVeto="no room"; return(false); }
+   if(g_state.wave.completion >= g_cfg.maxEntryComplete){ sym_factVeto="wave exhausted"; return(false); }
+
+   // 6) THREAT — dominant opposing network authority OR participant.
+   if(g_state.network.pressureDir == -dir
+      && MathAbs(g_state.network.pressure) >= g_cfg.factNetPressure){ sym_factVeto="network counter"; return(false); }
+   double oppPart = (dir==DIR_LONG ? g_state.participants.seller : g_state.participants.buyer);
+   double ownPart = (dir==DIR_LONG ? g_state.participants.buyer  : g_state.participants.seller);
+   if(oppPart>=g_cfg.factPartThreat && oppPart>ownPart){ sym_factVeto="participant counter"; return(false); }
+
+   return(true);
+}
+
+//==================================================================
 // CONFLUENCE GATE — Symphony provides precise TIMING; the Decision layer
 // owns the GO / NO-GO. An entry only fires when the brain has not stood the
 // shot down and conviction clears the SAME thresholds the Decision layer uses:
@@ -601,10 +691,10 @@ void SymphonyExecuteTrading()
    // position on every bar of a multi-bar retrace -> the dense entry clusters /
    // chop.) Controlled pyramiding still happens: each fresh retest cycles phase
    // back to 3 and arms one more stack.
-   bool L3 = (sym_mode==1  && sym_phaseLong ==3 && sym_prevPhaseLong !=3 && !longLocked  && !MM_CounterDirBlocked(DIR_LONG)  && SymphonyBrainConfirms(DIR_LONG));
-   bool L4 = (sym_mode==1  && sym_phaseLong ==4 && sym_prevPhaseLong !=4 && !longLocked  && !MM_CounterDirBlocked(DIR_LONG)  && SymphonyBrainConfirms(DIR_LONG));
-   bool S3 = (sym_mode==-1 && sym_phaseShort==3 && sym_prevPhaseShort!=3 && !shortLocked && !MM_CounterDirBlocked(DIR_SHORT) && SymphonyBrainConfirms(DIR_SHORT));
-   bool S4 = (sym_mode==-1 && sym_phaseShort==4 && sym_prevPhaseShort!=4 && !shortLocked && !MM_CounterDirBlocked(DIR_SHORT) && SymphonyBrainConfirms(DIR_SHORT));
+   bool L3 = (sym_mode==1  && sym_phaseLong ==3 && sym_prevPhaseLong !=3 && !longLocked  && !MM_CounterDirBlocked(DIR_LONG)  && SymphonyFactsConfirm(DIR_LONG)  && SymphonyBrainConfirms(DIR_LONG));
+   bool L4 = (sym_mode==1  && sym_phaseLong ==4 && sym_prevPhaseLong !=4 && !longLocked  && !MM_CounterDirBlocked(DIR_LONG)  && SymphonyFactsConfirm(DIR_LONG)  && SymphonyBrainConfirms(DIR_LONG));
+   bool S3 = (sym_mode==-1 && sym_phaseShort==3 && sym_prevPhaseShort!=3 && !shortLocked && !MM_CounterDirBlocked(DIR_SHORT) && SymphonyFactsConfirm(DIR_SHORT) && SymphonyBrainConfirms(DIR_SHORT));
+   bool S4 = (sym_mode==-1 && sym_phaseShort==4 && sym_prevPhaseShort!=4 && !shortLocked && !MM_CounterDirBlocked(DIR_SHORT) && SymphonyFactsConfirm(DIR_SHORT) && SymphonyBrainConfirms(DIR_SHORT));
 
    double impL = sym_anchorHigh - sym_anchorLow;
    double impS = sym_anchorHigh - sym_anchorLow;

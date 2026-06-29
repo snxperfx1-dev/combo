@@ -66,6 +66,11 @@ input double  InpMaxThreat      = 45.0;  // Max threat to ATTACK
 input double  InpMaxConflict    = 60.0;  // Conflict above this => WAIT
 input double  InpExecProbArm    = 0.50;  // Execution probability to arm (calibrated 0..1)
 input bool    InpRequireConfluence = false; // Symphony entries require Decision-layer confirmation (default off: fact gate governs)
+input string  __sep_factgate    = "════════ FACT GATE (subsystems do their jobs) ════════"; // ──
+input bool    InpUseFactGate     = true;  // Each subsystem casts a concrete VETO (not a score): HTF/owner/zone/structure/room/threat
+input double  InpFactPartThreat  = 70.0;  // Opposing participant dominance (%) that vetoes an entry
+input double  InpFactNetPressure = 50.0;  // Opposing network authority-pressure that vetoes an entry
+input bool    InpFactNeedZone    = true;  // Require price to be AT a real subsystem zone (flip/demand/supply/OB/FU/inducement)
 
 input string  __sep_execution   = "════════ EXECUTION / RISK ════════"; // ──
 input bool    InpEnableTrading  = true;  // Allow live order sending
@@ -148,6 +153,8 @@ struct FalconConfig
    // decision
    int    minConf;  double maxThreat, maxConflict, execProbArm;
    bool   requireConfluence;
+   bool   useFactGate, factNeedZone;
+   double factPartThreat, factNetPressure;
    // execution
    bool   enableTrading, blockIfBreach, sessionFilter;
    double riskPercent, contractValue;
@@ -223,6 +230,10 @@ void FalconConfigInit()
    g_cfg.maxConflict      = InpMaxConflict;
    g_cfg.execProbArm      = InpExecProbArm;
    g_cfg.requireConfluence= InpRequireConfluence;
+   g_cfg.useFactGate      = InpUseFactGate;
+   g_cfg.factNeedZone     = InpFactNeedZone;
+   g_cfg.factPartThreat   = InpFactPartThreat;
+   g_cfg.factNetPressure  = InpFactNetPressure;
 
    g_cfg.enableTrading    = InpEnableTrading;
    g_cfg.blockIfBreach    = InpBlockIfBreach;

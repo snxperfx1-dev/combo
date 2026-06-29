@@ -193,6 +193,7 @@ string VZ_Body(const int tab)
          s+="TALON grip  : L "+(e.gripLong>0?VZ_Px(e.gripLong)+" "+FalconTalonStr(e.talonStageLong):"—")
             +"   S "+(e.gripShort>0?VZ_Px(e.gripShort)+" "+FalconTalonStr(e.talonStageShort):"—")+"\n";
          s+="Lots        : "+DoubleToString(e.lots,2)+"   Risk $ "+DoubleToString(e.riskCash,0)+"\n";
+         s+="Fact gate   : "+(g_cfg.useFactGate?(sym_factVeto==""?"clear":"VETO — "+sym_factVeto):"off")+"\n";
          s+="Open L/S    : "+IntegerToString(e.openLongCount)+" / "+IntegerToString(e.openShortCount)+"\n";
          s+="Open PnL    : "+DoubleToString(e.openPnL,2)+"\n";
          s+="Session     : "+(e.sessionOpen?"OPEN":"closed");
