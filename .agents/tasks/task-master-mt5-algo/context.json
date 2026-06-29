@@ -1,0 +1,20 @@
+{
+  "project_type": "MQL5 Expert Advisor (MetaTrader 5 native trading algorithm)",
+  "language": "MQL5 (C++ derivative for MetaTrader 5)",
+  "build_system": "MetaEditor (MT5 IDE) - files are .mq5 source, no build tooling in repo",
+  "test_framework": "None - MQL5 backtested in MT5 Strategy Tester, not unit-testable in sandbox",
+  "build_command": "N/A - MQL5 compiles in MetaEditor, not available in sandbox",
+  "test_command": "N/A - syntax validation only possible via grep/AST checks",
+  "verification_instructions": "Verify each .mq5 file: 1) Has proper MQL5 header/properties, 2) All functions/structs are syntactically valid C-like code, 3) No undefined references between parts, 4) Consistent naming conventions, 5) All include references point to correct files",
+  "snapshot_or_generated_files": null,
+  "setup_instructions": "No setup needed - pure source code output",
+  "environment_constraints": "No MQL5 compiler available in sandbox. Validation is structural/syntactic only. Files must be valid MQL5 that would compile in MetaEditor.",
+  "contribution_requirements": "Save each part as a separate .mq5 file in the repo root. Files should be numbered and named descriptively.",
+  "key_patterns": "Symphony base patterns to preserve: Phase engine (4-phase curvature-based state machine), ARC v2 convexity exit, entry logic (Phase 3 + Phase 4 for long/short), stop loss placement (anchor +/- 0.25 ATR), impulse detection, inducement/flipzone logic. From F16/Letra to add: Multi-timeframe structure engine (f_se on M1/M3/M5/M15/H1/H4), Engine 1A unified lifecycle (14 canonical phases), Energy Resolution Framework (EDE/RE/EAE), Belief Engine (6 simultaneous beliefs), Senseei meta-intelligence (alignment/contradiction/threat/confidence/timing/intent/opportunity/action), Curve Object/Tree (recursive ownership), Time Intelligence Engine, Campaign Ownership, MTF Curve Map, dashboard panels.",
+  "relevant_files": [
+    "symphony.txt - MQL5 base (entry/stop/phase engine/ARC exit/lot sizing/order execution)",
+    "F16 V70.txt - PineScript indicator (Invisible Network, Senseei, Curve Tree, Time Intelligence, Campaign, MTF)",
+    "LETRA 37.txt - PineScript indicator (f_se structure engine, Engine 1A lifecycle, ERF, Beliefs, FRZ, V72 Decision Architecture)"
+  ],
+  "directory_structure": "Flat repository with source documents and output .mq5 files at root level"
+}

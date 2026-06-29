@@ -1,0 +1,7 @@
+{
+  "task_id": "task-master-mt5-algo",
+  "task_description": "Create a master MT5 (MQL5) algo combining Symphony (entry/stop/phase engine base) with Letra 37 (MTF structure engine, lifecycle phases, ERF, beliefs, FRZ, V72 decision) and F16 V70 (Invisible Network, Senseei, Curve Tree, Time Intelligence, Campaign, dashboards). Output as 6 .mq5 files: Part 1 Phase Engine, Part 2 MTF Structure, Part 3 Intelligence Engines, Part 4 Execution Engine with Curve/Campaign/Time, Part 5 Dashboards, Part 6 Master Main file.",
+  "status": "in_progress",
+  "feature_order": ["FEAT-001", "FEAT-002", "FEAT-003", "FEAT-004", "FEAT-005", "FEAT-006"],
+  "blocked_reason": null
+}
