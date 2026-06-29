@@ -22,6 +22,7 @@
 #include "../Kernel/FalconSeries.mqh"
 #include "../Kernel/FalconEventBus.mqh"
 #include "../Kernel/FalconLog.mqh"
+#include "../Kernel/FalconPersistence.mqh"
 
 //==================================================================
 // DRDWCT STRUCTS (ported from Symphony, trimmed to essentials)
@@ -435,6 +436,104 @@ void EE_HandleExits()
 }
 
 //==================================================================
+// TRAILING ENGINE — once a position is in profit beyond trailStartATR,
+// trail its stop at trailDistATR behind price (direction-aware).
+//==================================================================
+bool EE_ModifySL(const ulong ticket,const double newSL)
+{
+   if(!PositionSelectByTicket(ticket)) return(false);
+   MqlTradeRequest req; MqlTradeResult res; ZeroMemory(req); ZeroMemory(res);
+   req.action  = TRADE_ACTION_SLTP;
+   req.symbol  = _Symbol;
+   req.magic   = g_cfg.magic;
+   req.position= ticket;
+   req.sl      = NormalizeDouble(newSL,_Digits);
+   req.tp      = PositionGetDouble(POSITION_TP);
+   if(!OrderSend(req,res)) return(false);
+   return(res.retcode==TRADE_RETCODE_DONE);
+}
+
+void EE_Trailing()
+{
+   if(!g_cfg.trailEnable) return;
+   double atr=g_state.physics.atr;
+   if(atr<=0) return;
+   double startDist=atr*g_cfg.trailStartATR;
+   double trailDist=atr*g_cfg.trailDistATR;
+   double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
+   double ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
+
+   int total=PositionsTotal();
+   for(int i=0;i<total;i++)
+   {
+      ulong ticket=PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
+      if(PositionGetInteger(POSITION_MAGIC)!=g_cfg.magic) continue;
+      long type=PositionGetInteger(POSITION_TYPE);
+      double entry=PositionGetDouble(POSITION_PRICE_OPEN);
+      double sl   =PositionGetDouble(POSITION_SL);
+
+      if(type==POSITION_TYPE_BUY)
+      {
+         double profit=bid-entry;
+         if(profit>startDist)
+         {
+            double newSL=bid-trailDist;
+            if(newSL>entry && (sl==0 || newSL>sl)) EE_ModifySL(ticket,newSL);
+         }
+      }
+      else // SELL
+      {
+         double profit=entry-ask;
+         if(profit>startDist)
+         {
+            double newSL=ask+trailDist;
+            if(newSL<entry && (sl==0 || newSL<sl)) EE_ModifySL(ticket,newSL);
+         }
+      }
+   }
+}
+
+//==================================================================
+// DRAWDOWN PROTECTION — uses the persistence layer's equity-peak /
+// drawdown tracker. Blocks new entries above maxDrawdownPct and
+// flattens ALL exposure above ddFlattenPct. Returns true if entries
+// are allowed.
+//==================================================================
+bool EE_DrawdownProtection()
+{
+   if(!g_cfg.ddProtect) return(true);
+   double ddPct = g_perf.maxDrawdownPct;          // rolling peak-to-trough %
+   // live drawdown from current equity vs peak (more responsive than the max)
+   double eq=AccountInfoDouble(ACCOUNT_EQUITY);
+   double liveDD=(g_perf.peakEquity>0 ? (g_perf.peakEquity-eq)/g_perf.peakEquity*100.0 : 0.0);
+   double worst=MathMax(ddPct,liveDD);
+
+   if(worst>=g_cfg.ddFlattenPct)
+   {
+      // hard protection: flatten everything
+      int total=PositionsTotal();
+      for(int i=total-1;i>=0;i--)
+      {
+         ulong ticket=PositionGetTicket(i);
+         if(!PositionSelectByTicket(ticket)) continue;
+         if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
+         if(PositionGetInteger(POSITION_MAGIC)!=g_cfg.magic) continue;
+         EE_CloseFull(ticket);
+      }
+      FalconPublish(EVT_RISK_BREACH, worst, "drawdown flatten");
+      return(false);
+   }
+   if(worst>=g_cfg.maxDrawdownPct)
+   {
+      FalconPublish(EVT_RISK_BREACH, worst, "drawdown block");
+      return(false);   // block new entries, keep managing existing
+   }
+   return(true);
+}
+
+//==================================================================
 // MASTER ENTRY — Execution Engine pipeline step
 //==================================================================
 void ExecutionEngineRun()
@@ -464,10 +563,16 @@ void ExecutionEngineRun()
    g_state.exec.var3=combinedGrossVaR;
    bool portfolioOk=(combinedGrossVaR <= g_state.exec.var3Limit*1.5);
 
-   ee_lastRiskOk=(longOk && shortOk && portfolioOk);
+   // ---- DRAWDOWN PROTECTION (may flatten / block) ----
+   bool ddOk = EE_DrawdownProtection();
+
+   ee_lastRiskOk=(longOk && shortOk && portfolioOk && ddOk);
    g_state.exec.riskOk=ee_lastRiskOk;
    g_state.exec.sessionOpen=EE_IsTradeTime();
    if(!ee_lastRiskOk) FalconPublish(EVT_RISK_BREACH,combinedGrossVaR);
+
+   // ---- TRAILING (manage open winners) ----
+   EE_Trailing();
 
    // ---- EXITS first (free up risk), then ENTRIES ----
    EE_HandleExits();

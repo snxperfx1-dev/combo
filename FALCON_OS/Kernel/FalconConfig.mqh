@@ -71,6 +71,12 @@ input bool    InpBlockIfBreach  = true;  // Block new entries if VaR breached
 input bool    InpSessionFilter  = true;  // Restrict to London/US windows
 input double  InpRdLimit        = 0.0095;// Micro-bomb RD limit
 input double  InpContractValue  = 100.0; // Value per lot per price unit
+input bool    InpTrailEnable    = true;  // Enable trailing stop engine
+input double  InpTrailStartATR  = 1.0;   // Start trailing after profit (ATR)
+input double  InpTrailDistATR   = 1.5;   // Trailing distance (ATR)
+input bool    InpDDProtect      = true;  // Enable drawdown protection
+input double  InpMaxDrawdownPct = 12.0;  // Block entries above this drawdown %
+input double  InpDDFlattenPct   = 20.0;  // Flatten everything above this drawdown %
 
 input string  __sep_viz         = "════════ VISUALIZATION ════════"; // ──
 input bool    InpShowDashboard  = true;  // Show unified dashboard
@@ -101,6 +107,8 @@ struct FalconConfig
    // execution
    bool   enableTrading, enableRiskEng, blockIfBreach, sessionFilter;
    double riskPercent, rdLimit, contractValue;
+   bool   trailEnable, ddProtect;
+   double trailStartATR, trailDistATR, maxDrawdownPct, ddFlattenPct;
    // viz
    bool   showDashboard, verboseLog;  int dashboardTab;
 };
@@ -157,6 +165,12 @@ void FalconConfigInit()
    g_cfg.riskPercent      = InpRiskPercent;
    g_cfg.rdLimit          = InpRdLimit;
    g_cfg.contractValue    = InpContractValue;
+   g_cfg.trailEnable      = InpTrailEnable;
+   g_cfg.trailStartATR    = InpTrailStartATR;
+   g_cfg.trailDistATR     = InpTrailDistATR;
+   g_cfg.ddProtect        = InpDDProtect;
+   g_cfg.maxDrawdownPct   = InpMaxDrawdownPct;
+   g_cfg.ddFlattenPct     = InpDDFlattenPct;
 
    g_cfg.showDashboard    = InpShowDashboard;
    g_cfg.verboseLog       = InpVerboseLog;

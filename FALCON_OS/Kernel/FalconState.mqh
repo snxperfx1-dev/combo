@@ -168,6 +168,14 @@ struct FalconWave
    int    recursionBreaks;
    double dominanceTransfer; // 0..100
    bool   recursiveComplete;
+   // discrete sub-state scores (0..100) — spec MarketState.Wave members
+   double expansionScore;
+   double retracementScore;
+   double inductionScore;
+   double liquidationScore;
+   double preConvexityScore;
+   double convexityScore;
+   double absorptionScore;
 };
 
 //==================================================================
@@ -177,6 +185,7 @@ struct FalconHTF
 {
    int    dir[7];         // M1 M3 M5 M15 H1 H4 (+chart) direction per rung
    double prog[7];        // wave progress per rung
+   int    beliefs[7];     // per-rung HTF belief (FALCON_DIR)
    int    stackDir;       // fractal stack direction
    double alignment;      // fractal stack score 0..100
    double conflict;       // 100-alignment proxy
@@ -200,9 +209,46 @@ struct FalconFU
 };
 
 //==================================================================
+// SUB-STATE : ORDER BLOCKS (Market Layer — explicit engine)
+//==================================================================
+#define FALCON_MAX_OB 16
+struct FalconOrderBlocks
+{
+   double top[FALCON_MAX_OB];
+   double bot[FALCON_MAX_OB];
+   int    dir[FALCON_MAX_OB];     // FALCON_DIR
+   int    birthBar[FALCON_MAX_OB];
+   bool   valid[FALCON_MAX_OB];
+   double strength[FALCON_MAX_OB];
+   int    count;
+   // nearest active OB to price (the working order block)
+   double activeTop;
+   double activeBot;
+   int    activeDir;
+   double activeStrength;
+};
+
+//==================================================================
+// SUB-STATE : SUPPLY / DEMAND (Market Layer — explicit engine)
+//==================================================================
+struct FalconSupplyDemand
+{
+   double supplyTop;
+   double supplyBot;
+   double demandTop;
+   double demandBot;
+   double supplyStrength;   // 0..100
+   double demandStrength;   // 0..100
+   int    activeZone;       // FALCON_DIR: in demand(+1)/supply(-1)/none
+   bool   inSupply;
+   bool   inDemand;
+};
+
+//==================================================================
 // SUB-STATE : NETWORK (Invisible Network nodes)
 //==================================================================
 #define FALCON_MAX_NODES 250
+#define FALCON_MAX_EDGES 120
 struct FalconNetwork
 {
    double px[FALCON_MAX_NODES];
@@ -221,6 +267,13 @@ struct FalconNetwork
    double bullAuthority;
    double bearAuthority;
    int    nearestAttractorIdx;
+   // conversation graph (edges between nearby authoritative nodes)
+   int    edgeFrom[FALCON_MAX_EDGES];
+   int    edgeTo[FALCON_MAX_EDGES];
+   double edgeWeight[FALCON_MAX_EDGES];
+   int    edgeCount;
+   double conversationWeight;   // aggregate dialogue intensity 0..100
+   int    connections;          // total active connections
 };
 
 //==================================================================
@@ -237,6 +290,57 @@ struct FalconCurve
    int    rootDir;
    int    childCount;
    double evolution;      // transfer progress
+   // explicit curve tree (root → parent → children)
+   double rootOrigin;
+   double rootExtreme;
+   int    parentDir;
+   double parentOrigin;
+   double parentExtreme;
+   int    emergentNodes;  // count of emergent child nodes
+   int    ownerTF;        // owning timeframe index
+};
+
+//==================================================================
+// SUB-STATE : WAVE MATRIX (per-timeframe wave grid)
+//==================================================================
+struct FalconWaveMatrix
+{
+   int    dir[7];         // direction per TF rung
+   int    phase[7];       // FALCON_PHASE per rung
+   double progress[7];    // wave progress per rung
+   int    dominantTF;     // rung index with highest authority
+   int    dominantDir;
+   double agreement;      // 0..100 cross-TF agreement
+   double matrixEnergy;   // aggregate energy
+};
+
+//==================================================================
+// SUB-STATE : FUTURE ENGAGEMENT ZONE (FEZ corridor — where price
+// is being pulled to NEXT to engage liquidity / continue)
+//==================================================================
+struct FalconFEZ
+{
+   double top;
+   double bot;
+   int    dir;            // FALCON_DIR engagement direction
+   bool   active;
+   double confidence;     // 0..100
+   double distanceATR;    // distance from price in ATR
+};
+
+//==================================================================
+// SUB-STATE : FUTURE RETURN ZONE (FRZ — owner-driven destination
+// price returns to, inherited from the owner curve hierarchy)
+//==================================================================
+struct FalconFRZ
+{
+   double top;
+   double bot;
+   int    dir;            // return direction
+   int    ownerTF;        // owning timeframe that defines the destination
+   bool   active;
+   double targetPrice;
+   double confidence;     // 0..100
 };
 
 //==================================================================
@@ -303,6 +407,16 @@ struct FalconIntelligence
    string intent;
    string timing;
    string story;
+   // explicit reasoning engines (spec MarketState.Intelligence members)
+   string hypothesis;        // current leading hypothesis (human readable)
+   int    hypothesisDir;     // FALCON_DIR the hypothesis favours
+   double hypothesisProb;    // 0..1 confidence in the hypothesis
+   string prediction;        // what the engine expects next
+   double predictionPrice;   // predicted destination price
+   double predictionProb;    // 0..1
+   bool   validated;         // did reality confirm the prior prediction?
+   double validationScore;   // 0..100 rolling hit rate
+   string finalDecision;     // mirrors the Decision Engine verdict label
    // continuous execution probability (phases are OUTPUTS, this drives decisions)
    double executionProbability; // 0..1
 };
@@ -365,8 +479,13 @@ struct FalconMarketState
    FalconWave         wave;
    FalconHTF          htf;
    FalconFU           fu;
+   FalconOrderBlocks  orderBlocks;
+   FalconSupplyDemand supplyDemand;
    FalconNetwork      network;
    FalconCurve        curve;
+   FalconWaveMatrix   waveMatrix;
+   FalconFEZ          fez;
+   FalconFRZ          frz;
    FalconCampaign     campaign;
    FalconParticipants participants;
    FalconIntelligence intel;

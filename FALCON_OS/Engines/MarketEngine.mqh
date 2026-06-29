@@ -62,6 +62,8 @@ void MarketEngineInit()
    me_indOrig=0; me_indExt=0; me_indBrk=false;
    me_recBrk=0; me_recArm=true;
 
+   me_obCount=0;
+
    me_htfTF[0]=PERIOD_M1;  me_htfTF[1]=PERIOD_M5;  me_htfTF[2]=PERIOD_M15;
    me_htfTF[3]=PERIOD_M30; me_htfTF[4]=PERIOD_H1;  me_htfTF[5]=PERIOD_H4;
    me_htfTF[6]=_Period;
@@ -427,6 +429,16 @@ void ME_UpdateWave()
    w.dominanceTransfer= recDom;
    w.recursiveComplete= (phase==PH_DEMAND_RETURN || phase==PH_SUPPLY_RETURN);
 
+   // discrete sub-state scores (spec MarketState.Wave members) — derived from
+   // the physics/geometry, peaking in their respective lifecycle windows.
+   w.expansionScore    = FalconClamp(expScore,0,100);
+   w.preConvexityScore = FalconClamp((ph2.bullDecay||ph2.bearDecay?50.0:0.0)+convScore*0.5,0,100);
+   w.convexityScore    = FalconClamp(convScore,0,100);
+   w.inductionScore    = FalconClamp((momCounter?45.0:0.0)+convScore*0.35,0,100);
+   w.liquidationScore  = FalconClamp((physCapLow?40.0:0.0)+(oppBOS?30.0:0.0)+absScore*0.3,0,100);
+   w.absorptionScore   = FalconClamp(absScore,0,100);
+   w.retracementScore  = FalconClamp(retrFrac*100.0,0,100);
+
    g_state.wave = w;
 
    if(phase != prevPhase) FalconPublish(EVT_PHASE_CHANGE, phase, FalconPhaseStr(phase));
@@ -513,6 +525,104 @@ void ME_UpdateFU()
 }
 
 //==================================================================
+// 7B. ORDER BLOCKS  (last opposing candle before an impulse leg)
+//==================================================================
+double me_obTop[FALCON_MAX_OB];
+double me_obBot[FALCON_MAX_OB];
+int    me_obDir[FALCON_MAX_OB];
+int    me_obBirth[FALCON_MAX_OB];
+double me_obStr[FALCON_MAX_OB];
+int    me_obCount=0;
+
+void ME_PushOB(const double top,const double bot,const int dir,const double strength)
+{
+   if(me_obCount>=FALCON_MAX_OB)
+   {
+      for(int i=1;i<FALCON_MAX_OB;i++)
+      { me_obTop[i-1]=me_obTop[i]; me_obBot[i-1]=me_obBot[i]; me_obDir[i-1]=me_obDir[i];
+        me_obBirth[i-1]=me_obBirth[i]; me_obStr[i-1]=me_obStr[i]; }
+      me_obCount=FALCON_MAX_OB-1;
+   }
+   me_obTop[me_obCount]=top; me_obBot[me_obCount]=bot; me_obDir[me_obCount]=dir;
+   me_obBirth[me_obCount]=g_barCounter; me_obStr[me_obCount]=strength; me_obCount++;
+}
+
+void ME_UpdateOrderBlocks()
+{
+   FalconOrderBlocks ob;
+   double atr=g_state.physics.atr;
+   FalconPhysics p=g_state.physics;
+
+   // a new OB forms on the candle that flips into an impulse: the last
+   // opposing-color candle body before the displacement leg.
+   if(p.bullImpulse)
+   {
+      // last down candle before this up impulse
+      for(int i=2;i<=8;i++){ if(gClose[i]<gOpen[i]){ ME_PushOB(gHigh[i],gLow[i],DIR_LONG, p.displacement*20.0); break; } }
+   }
+   if(p.bearImpulse)
+   {
+      for(int i=2;i<=8;i++){ if(gClose[i]>gOpen[i]){ ME_PushOB(gHigh[i],gLow[i],DIR_SHORT,p.displacement*20.0); break; } }
+   }
+
+   double close1=gClose[1];
+   ob.count=0;
+   double bestDist=DBL_MAX;
+   ob.activeTop=0; ob.activeBot=0; ob.activeDir=DIR_NONE; ob.activeStrength=0;
+   for(int i=0;i<me_obCount && ob.count<FALCON_MAX_OB;i++)
+   {
+      // invalidation: price closing fully through the block kills it
+      bool valid=(me_obDir[i]==DIR_LONG ? close1>me_obBot[i] : close1<me_obTop[i]);
+      ob.top[ob.count]=me_obTop[i]; ob.bot[ob.count]=me_obBot[i]; ob.dir[ob.count]=me_obDir[i];
+      ob.birthBar[ob.count]=me_obBirth[i]; ob.valid[ob.count]=valid;
+      ob.strength[ob.count]=FalconClamp(me_obStr[i] - (g_barCounter-me_obBirth[i])*0.2,0,100);
+      if(valid)
+      {
+         double mid=(me_obTop[i]+me_obBot[i])*0.5;
+         double d=MathAbs(close1-mid);
+         if(d<bestDist){ bestDist=d; ob.activeTop=me_obTop[i]; ob.activeBot=me_obBot[i];
+                         ob.activeDir=me_obDir[i]; ob.activeStrength=ob.strength[ob.count]; }
+      }
+      ob.count++;
+   }
+   g_state.orderBlocks=ob;
+}
+
+//==================================================================
+// 7C. SUPPLY / DEMAND  (institutional zones from wave flip + OB)
+//==================================================================
+void ME_UpdateSupplyDemand()
+{
+   FalconSupplyDemand sd;
+   double atr=g_state.physics.atr;
+   double close1=gClose[1];
+   FalconWave w=g_state.wave;
+   FalconOrderBlocks ob=g_state.orderBlocks;
+
+   // demand = working bullish OB or wave flip-bottom band; supply = bearish OB / flip-top band
+   double demandMid = (ob.activeDir==DIR_LONG && ob.activeTop!=0) ? (ob.activeTop+ob.activeBot)*0.5
+                      : (w.flipBot!=0 ? w.flipBot : 0.0);
+   double supplyMid = (ob.activeDir==DIR_SHORT && ob.activeTop!=0)? (ob.activeTop+ob.activeBot)*0.5
+                      : (w.flipTop!=0 ? w.flipTop : 0.0);
+
+   sd.demandTop = (demandMid!=0? demandMid+atr*g_cfg.inducZoneWidth:0.0);
+   sd.demandBot = (demandMid!=0? demandMid-atr*g_cfg.inducZoneWidth:0.0);
+   sd.supplyTop = (supplyMid!=0? supplyMid+atr*g_cfg.inducZoneWidth:0.0);
+   sd.supplyBot = (supplyMid!=0? supplyMid-atr*g_cfg.inducZoneWidth:0.0);
+
+   sd.demandStrength = FalconClamp((ob.activeDir==DIR_LONG?ob.activeStrength:0.0)
+                       + (g_state.liquidity.pressure>0?g_state.liquidity.pressure*0.5:0.0),0,100);
+   sd.supplyStrength = FalconClamp((ob.activeDir==DIR_SHORT?ob.activeStrength:0.0)
+                       + (g_state.liquidity.pressure<0?-g_state.liquidity.pressure*0.5:0.0),0,100);
+
+   sd.inDemand = (demandMid!=0 && close1<=sd.demandTop && close1>=sd.demandBot);
+   sd.inSupply = (supplyMid!=0 && close1<=sd.supplyTop && close1>=sd.supplyBot);
+   sd.activeZone = sd.inDemand?DIR_LONG : sd.inSupply?DIR_SHORT : DIR_NONE;
+
+   g_state.supplyDemand=sd;
+}
+
+//==================================================================
 // 7. HTF STACK  (fixed M1·M5·M15·M30·H1·H4 + chart; fractal align)
 //==================================================================
 int ME_TfDir(const ENUM_TIMEFRAMES tf, const int idx)
@@ -555,6 +665,7 @@ void ME_UpdateHTF()
    {
       int d = ME_TfDir(me_htfTF[i], i);
       h.dir[i]=d;
+      h.beliefs[i]=d;     // per-rung HTF belief mirrors the rung's directional read
       h.prog[i]=0.0;
       if(d==1) bull++; else if(d==-1) bear++;
    }
@@ -581,6 +692,8 @@ void MarketEngineRun()
    ME_UpdateWave();
    ME_UpdateConvexity();
    ME_UpdateFU();
+   ME_UpdateOrderBlocks();
+   ME_UpdateSupplyDemand();
    ME_UpdateHTF();
 }
 

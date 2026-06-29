@@ -171,6 +171,29 @@ void MEM_ComputeNetwork()
    if(bias==DIR_NONE) bias=n.pressureDir;
    n.bias=bias;
 
+   // ---- CONVERSATION GRAPH: edges between nearby authoritative nodes ----
+   double atr=g_state.physics.atr;
+   n.edgeCount=0;
+   double convWeight=0;
+   int connections=0;
+   for(int i=0;i<mem_count && n.edgeCount<FALCON_MAX_EDGES;i++)
+   {
+      if(mem_state[i]==2 || MEM_Auth(i)<g_cfg.authMin) continue;
+      for(int j=i+1;j<mem_count && n.edgeCount<FALCON_MAX_EDGES;j++)
+      {
+         if(mem_state[j]==2 || MEM_Auth(j)<g_cfg.authMin) continue;
+         double gap=MathAbs(mem_px[i]-mem_px[j]);
+         if(gap < atr*1.5)   // nodes "in conversation" when within ~1.5 ATR
+         {
+            double w=(MEM_Auth(i)+MEM_Auth(j))*0.5 * (1.0 - gap/MathMax(atr*1.5,1e-10));
+            n.edgeFrom[n.edgeCount]=i; n.edgeTo[n.edgeCount]=j; n.edgeWeight[n.edgeCount]=w;
+            n.edgeCount++; connections++; convWeight+=w;
+         }
+      }
+   }
+   n.connections=connections;
+   n.conversationWeight=FalconClamp(convWeight/MathMax(1.0,(double)mem_count)*2.0,0,100);
+
    g_state.network=n;
 }
 
@@ -194,7 +217,105 @@ void MEM_ComputeCurve()
    c.life        = FalconClamp(100.0 - w.completion*0.6 - g_state.physics.compression*0.4,0,100);
    c.energy      = w.energy;
 
+   // ---- EXPLICIT CURVE TREE (root → parent → children) ----
+   // root = the owning HTF curve (highest agreeing timeframe); parent = chart
+   // wave; children = the recursive sub-waves spawned inside it.
+   c.ownerTF       = h.ownerTF;
+   c.rootOrigin    = (h.ownerTF>=0 && h.ownerTF<7 ? me_htfOrigin[h.ownerTF] : w.origin);
+   c.rootExtreme   = w.extreme;
+   c.parentDir     = w.direction;
+   c.parentOrigin  = w.origin;
+   c.parentExtreme = w.extreme;
+   c.emergentNodes = w.recursionBreaks;   // each recursion break births an emergent node
+
    g_state.curve=c;
+}
+
+//------------------------------------------------------------------
+// WAVE MATRIX — per-timeframe wave grid (dir/phase/progress) + the
+// dominant rung and cross-TF agreement. Reads the HTF stack the
+// Market Engine already computed (no recomputation = no duplication).
+//------------------------------------------------------------------
+void MEM_ComputeWaveMatrix()
+{
+   FalconWaveMatrix wm;
+   FalconHTF h=g_state.htf;
+   int bull=0,bear=0;
+   double energy=0;
+   for(int i=0;i<7;i++)
+   {
+      wm.dir[i]=h.dir[i];
+      // only the chart rung has a true phase from the FSM; others approximate
+      // their phase from direction + alignment (progress proxy).
+      wm.phase[i]=(i==6 ? g_state.wave.phase : (h.dir[i]==DIR_NONE?PH_P4_ORIGIN:PH_EXPANSION));
+      wm.progress[i]=h.prog[i];
+      if(h.dir[i]==DIR_LONG) bull++; else if(h.dir[i]==DIR_SHORT) bear++;
+      energy += (h.dir[i]!=DIR_NONE?1.0:0.0);
+   }
+   wm.dominantTF  = h.ownerTF;
+   wm.dominantDir = h.stackDir;
+   wm.agreement   = h.alignment;
+   wm.matrixEnergy= energy/7.0*100.0;
+   g_state.waveMatrix=wm;
+}
+
+//------------------------------------------------------------------
+// FUTURE ENGAGEMENT ZONE (FEZ) — the corridor price is being pulled
+// toward NEXT to engage liquidity / continue the owning curve. In an
+// unresolved expansion the engagement target is the next liquidity
+// pool / supply-demand boundary in the owner's direction.
+//------------------------------------------------------------------
+void MEM_ComputeFEZ()
+{
+   FalconFEZ fz;
+   double atr=g_state.physics.atr;
+   double close1=gClose[1];
+   int dir=g_state.curve.ownerDir;
+   FalconSupplyDemand sd=g_state.supplyDemand;
+
+   double target=0;
+   if(dir==DIR_LONG)  target=(sd.supplyTop!=0?sd.supplyTop:g_state.wave.objective);
+   if(dir==DIR_SHORT) target=(sd.demandBot!=0?sd.demandBot:g_state.wave.objective);
+
+   fz.dir=dir;
+   fz.active=(target!=0 && dir!=DIR_NONE);
+   fz.top = (target!=0? target+atr*0.5:0.0);
+   fz.bot = (target!=0? target-atr*0.5:0.0);
+   fz.distanceATR = (target!=0? MathAbs(target-close1)/MathMax(atr,1e-10):0.0);
+   fz.confidence = FalconClamp(g_state.htf.alignment*0.5 + (g_state.intel.resolutionState==RES_UNRESOLVED?40.0:10.0),0,100);
+
+   g_state.fez=fz;
+}
+
+//------------------------------------------------------------------
+// FUTURE RETURN ZONE (FRZ) — OWNER-DRIVEN destination. The price will
+// ultimately RETURN to the owner curve's origin zone. Per the design
+// law (ODDE): the destination is inherited from the owner hierarchy,
+// NOT the entry timeframe. If the owner breaks, it extends to the next
+// higher timeframe.
+//------------------------------------------------------------------
+void MEM_ComputeFRZ()
+{
+   FalconFRZ fr;
+   double atr=g_state.physics.atr;
+   int ownerTF=g_state.htf.ownerTF;
+   int ownerDir=g_state.curve.ownerDir;
+
+   // the owner's origin is the return destination; return direction is opposite
+   // to the owner's impulse (price returns to the owner demand for a bull owner).
+   double ownerOrigin = (ownerTF>=0 && ownerTF<7 ? me_htfOrigin[ownerTF] : g_state.wave.origin);
+   double target = ownerOrigin;
+
+   fr.ownerTF=ownerTF;
+   fr.dir = (ownerDir==DIR_LONG?DIR_LONG:ownerDir==DIR_SHORT?DIR_SHORT:DIR_NONE);
+   fr.targetPrice=target;
+   fr.active=(target!=0 && ownerDir!=DIR_NONE);
+   fr.top=(target!=0? target+atr*0.75:0.0);
+   fr.bot=(target!=0? target-atr*0.75:0.0);
+   // confidence rises with resolution progress and owner alignment
+   fr.confidence=FalconClamp(g_state.intel.dissipationProgress*0.5 + g_state.htf.alignment*0.4,0,100);
+
+   g_state.frz=fr;
 }
 
 //------------------------------------------------------------------
@@ -263,6 +384,9 @@ void MemoryEngineRun()
    MEM_AgeNodes();
    MEM_ComputeNetwork();
    MEM_ComputeCurve();
+   MEM_ComputeWaveMatrix();
+   MEM_ComputeFEZ();
+   MEM_ComputeFRZ();
    MEM_ComputeCampaign();
    MEM_ComputeParticipants();
 }

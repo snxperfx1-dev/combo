@@ -37,6 +37,55 @@ string DE_OppGrade(const int master, const double conflict, const double opp)
    return("EXCEPTIONAL");
 }
 
+//------------------------------------------------------------------
+// CHIEF STRATEGIST — maps the meta scores into the base verdict,
+// gating ONLY on continuous probabilities (never on a phase label).
+//------------------------------------------------------------------
+int DE_ChiefStrategist(const int master,const double conflict,const double confidence,
+                       const double threat,const string oppGrade,const double execProb,
+                       const int resCode)
+{
+   bool strongOpp = (oppGrade=="STRONG" || oppGrade=="EXCEPTIONAL");
+   bool goodOpp   = (oppGrade=="GOOD"   || oppGrade=="STRONG");
+   bool confOk    = (confidence>=g_cfg.minConf);
+   bool threatOk  = (threat<g_cfg.maxThreat);
+   bool probArmed = (execProb>=g_cfg.execProbArm);
+
+   if(master==DIR_NONE)                 return(ACT_WAIT);
+   if(conflict>g_cfg.maxConflict)       return(ACT_WAIT);
+   if(resCode==RES_RESOLVED)            return(ACT_EXIT);        // energy spent -> bank
+   if(strongOpp && confOk && threatOk && probArmed)
+                                        return(master==DIR_LONG?ACT_BUY:ACT_SELL);
+   if(strongOpp && confOk && threatOk)  return(ACT_ATTACK);      // armed, prob building
+   if(goodOpp)                          return(ACT_PREPARE);
+   return(ACT_WAIT);
+}
+
+//------------------------------------------------------------------
+// CAMPAIGN AI — overlays multi-campaign management on the base verdict:
+// DEFEND open exposure under rising failure risk, and SCALE a winning,
+// aligned campaign that still has room to run. Operates per-campaign
+// (direction-aware), consistent with the hedging multi-campaign model.
+//------------------------------------------------------------------
+int DE_CampaignAI(int action,const int master,const double threat)
+{
+   FalconIntelligence x=g_state.intel;
+   bool haveExposure = (g_state.exec.openLongCount>0 || g_state.exec.openShortCount>0);
+
+   // DEFEND: protect exposure when threat spikes or a failure swing looms
+   if(haveExposure && (threat>=70.0 || x.failureSwingProb>=0.70) && action!=ACT_EXIT)
+      action=ACT_DEFEND;
+
+   // SCALE: add to a winning, aligned campaign with geometry room and unresolved energy
+   bool campaignWinning = (g_state.campaign.owner==master && master!=DIR_NONE
+                           && g_state.campaign.controlScore>=70.0);
+   bool roomToRun = (g_state.convexity.geometryCapacity>40.0 && x.resolutionState==RES_UNRESOLVED);
+   if(haveExposure && (action==ACT_BUY||action==ACT_SELL) && campaignWinning && roomToRun)
+      action=ACT_SCALE;
+
+   return(action);
+}
+
 //==================================================================
 // MASTER ENTRY — Senseei meta-intelligence + verdict
 //==================================================================
@@ -92,40 +141,16 @@ void DecisionEngineRun()
    x.threat          = threat;
    x.opportunity     = oppScore;
    x.opportunityGrade= oppGrade;
-   g_state.intel     = x;
 
    //==============================================================
-   // VERDICT — gated on CONTINUOUS PROBABILITIES, not phase labels.
-   //   armed = strong opportunity AND confidence high AND threat low
-   //           AND executionProbability over the arm threshold.
+   // VERDICT — Chief Strategist (base) then Campaign AI (overlay).
    //==============================================================
-   bool strongOpp  = (oppGrade=="STRONG" || oppGrade=="EXCEPTIONAL");
-   bool goodOpp    = (oppGrade=="GOOD" || oppGrade=="STRONG");
-   bool confOk     = (confidence>=g_cfg.minConf);
-   bool threatOk   = (threat<g_cfg.maxThreat);
-   bool probArmed  = (x.executionProbability>=g_cfg.execProbArm);
+   int action = DE_ChiefStrategist(master,conflict,confidence,threat,oppGrade,
+                                    x.executionProbability,resCode);
+   action     = DE_CampaignAI(action,master,threat);
 
-   int action;
-   if(master==DIR_NONE)                          action=ACT_WAIT;
-   else if(conflict>g_cfg.maxConflict)           action=ACT_WAIT;
-   else if(resCode==RES_RESOLVED)                action=ACT_EXIT;   // energy spent -> bank/manage
-   else if(strongOpp && confOk && threatOk && probArmed)
-                                                 action=(master==DIR_LONG?ACT_BUY:ACT_SELL);
-   else if(strongOpp && confOk && threatOk)      action=ACT_ATTACK; // armed but probability still building
-   else if(goodOpp)                              action=ACT_PREPARE;
-   else                                          action=ACT_WAIT;
-
-   //-- DEFEND override: open exposure under rising threat/failure --
-   bool haveExposure = (g_state.exec.openLongCount>0 || g_state.exec.openShortCount>0);
-   if(haveExposure && (threat>=70.0 || x.failureSwingProb>=0.70) && action!=ACT_EXIT)
-      action=ACT_DEFEND;
-
-   //-- SCALE: add to a winning, aligned campaign with room left ----
-   bool campaignWinning = (g_state.campaign.owner==master && master!=DIR_NONE
-                           && g_state.campaign.controlScore>=70.0);
-   bool roomToRun = (g_state.convexity.geometryCapacity>40.0 && resCode==RES_UNRESOLVED);
-   if(haveExposure && (action==ACT_BUY||action==ACT_SELL) && campaignWinning && roomToRun)
-      action=ACT_SCALE;
+   x.finalDecision = FalconActionStr(action);
+   g_state.intel   = x;
 
    g_state.exec.action = action;
    g_state.exec.master = master;

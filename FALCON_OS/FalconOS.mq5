@@ -27,6 +27,7 @@
 #include "Kernel/FalconSeries.mqh"
 #include "Kernel/FalconEventBus.mqh"
 #include "Kernel/FalconLog.mqh"
+#include "Kernel/FalconPersistence.mqh"
 
 //==================================================================
 // ENGINES (layers)
@@ -62,32 +63,46 @@ void FalconPipeline()
 
    ulong pipeStart = GetMicrosecondCount();
 
-   // 1) MARKET LAYER — physics → structure → liquidity → convexity → wave → FU → HTF
+   // ── MARKET LAYER ──────────────────────────────────────────────
+   // Physics → Structure → Liquidity → Convexity → Wave → FU →
+   // OrderBlocks → Supply/Demand → HTF   (observes reality)
    FalconModuleStart(MOD_MARKET,t0);
    MarketEngineRun();
    FalconModuleEnd(MOD_MARKET,t0);
 
-   // 2) MEMORY — network → curve → campaign → participants
+   // ── MEMORY LAYER ──────────────────────────────────────────────
+   // Network → Curve Tree → Wave Matrix → FEZ → FRZ → Campaign →
+   // Participants   (remembers)
    FalconModuleStart(MOD_MEMORY,t0);
    MemoryEngineRun();
    FalconModuleEnd(MOD_MEMORY,t0);
 
-   // 3) INTELLIGENCE — belief → energy resolution → forecast → narrative
+   // ── INTELLIGENCE LAYER ────────────────────────────────────────
+   // Energy Resolution → Belief → Forecast → Hypothesis →
+   // Prediction → Validation → Opportunity/Threat/Intent → Story
+   // (reasons)
    FalconModuleStart(MOD_INTEL,t0);
    IntelligenceEngineRun();
    FalconModuleEnd(MOD_INTEL,t0);
 
-   // 4) DECISION — Senseei meta-intelligence → verdict
+   // ── DECISION LAYER ────────────────────────────────────────────
+   // Senseei → Chief Strategist → Campaign AI → single verdict
    FalconModuleStart(MOD_DECISION,t0);
    DecisionEngineRun();
    FalconModuleEnd(MOD_DECISION,t0);
 
-   // 5) EXECUTION — risk → exits → entries (never decides, only executes)
+   // ── EXECUTION LAYER ───────────────────────────────────────────
+   // Risk (per-campaign VaR/UDS/gamma) → Drawdown Protection →
+   // Trailing → Exits → Entries   (never decides, only executes)
    FalconModuleStart(MOD_EXEC,t0);
    ExecutionEngineRun();
    FalconModuleEnd(MOD_EXEC,t0);
 
-   // 6) VISUALIZATION — single unified dashboard
+   // ── PERSISTENCE ───────────────────────────────────────────────
+   // Track equity/drawdown every bar; autosave network/campaign/perf
+   FalconPersistenceTick();
+
+   // ── VISUALIZATION LAYER ───────────────────────────────────────
    FalconModuleStart(MOD_VIZ,t0);
    VisualizationRun();
    FalconModuleEnd(MOD_VIZ,t0);
@@ -115,6 +130,7 @@ int OnInit()
    IntelligenceEngineInit();
    DecisionEngineInit();
    ExecutionEngineInit();
+   FalconPersistenceInit();
 
    if(!FalconRefreshSeries())
    {
@@ -132,6 +148,7 @@ int OnInit()
 
 void OnDeinit(const int reason)
 {
+   FalconPersistenceFlush();
    VisualizationDeinit();
    FalconReleaseHandles();
    PrintFormat("[FALCON] OS shutdown (reason %d). Pipeline runs: %d", reason, g_diag.pipelineRuns);

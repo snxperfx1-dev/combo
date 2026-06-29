@@ -19,11 +19,14 @@
 // persistent smoothed beliefs
 double ie_bExp=0, ie_bConv=0, ie_bCreate=0, ie_bAbs=0, ie_bRetr=0, ie_bRet=0;
 int    ie_prevRes=RES_UNRESOLVED;
+// persistent validation-loop state
+double ie_prevPredPrice=0; int ie_prevPredDir=0; double ie_valScore=50.0;
 
 void IntelligenceEngineInit()
 {
    ie_bExp=0; ie_bConv=0; ie_bCreate=0; ie_bAbs=0; ie_bRetr=0; ie_bRet=0;
    ie_prevRes=RES_UNRESOLVED;
+   ie_prevPredPrice=0; ie_prevPredDir=0; ie_valScore=50.0;
 }
 
 //------------------------------------------------------------------
@@ -224,6 +227,85 @@ void IE_Narrative(FalconIntelligence &x)
              +" · "+FalconResStr(x.resolutionState)+" · intent "+x.intent;
 }
 
+//------------------------------------------------------------------
+// HYPOTHESIS ENGINE — forms the current leading market hypothesis from
+// the belief field + owner curve. "What is most likely happening?"
+//------------------------------------------------------------------
+void IE_Hypothesis(FalconIntelligence &x)
+{
+   FalconWave w=g_state.wave;
+   int ownerDir=g_state.curve.ownerDir;
+
+   // pick the dominant belief
+   double bMax=x.beliefExpansion; string label="Expansion continuation"; int dir=w.direction;
+   if(x.beliefRetracement>bMax){ bMax=x.beliefRetracement; label="Retracement into zone"; }
+   if(x.beliefCreation>bMax){ bMax=x.beliefCreation; label="New cycle creation"; }
+   if(x.beliefAbsorption>bMax){ bMax=x.beliefAbsorption; label="Absorption / stall"; }
+   if(x.beliefReturn>bMax){ bMax=x.beliefReturn; label="Return from zone"; dir=-w.direction; }
+   if(x.beliefConvexity>bMax){ bMax=x.beliefConvexity; label="Convexity transfer"; }
+
+   x.hypothesis    = FalconDirStr(ownerDir!=DIR_NONE?ownerDir:dir)+" — "+label;
+   x.hypothesisDir = (ownerDir!=DIR_NONE?ownerDir:dir);
+   x.hypothesisProb= FalconClamp(bMax/100.0,0,1);
+}
+
+//------------------------------------------------------------------
+// PREDICTION ENGINE — projects the next destination price + the
+// probability of reaching it, using the owner-driven FEZ/FRZ and the
+// predictive forecast (NOT a phase label).
+//------------------------------------------------------------------
+void IE_Prediction(FalconIntelligence &x)
+{
+   FalconFEZ fz=g_state.fez;
+   FalconFRZ fr=g_state.frz;
+   int hd=x.hypothesisDir;
+
+   double dest=0; string what="";
+   if(x.resolutionState==RES_UNRESOLVED && fz.active)
+   {
+      dest=(fz.top+fz.bot)*0.5; what="engage "+FalconDirStr(fz.dir)+" liquidity";
+   }
+   else if(fr.active)
+   {
+      dest=fr.targetPrice; what="return to owner "+FalconDirStr(fr.dir)+" origin";
+   }
+   else
+   {
+      dest=g_state.wave.objective; what="wave objective";
+   }
+
+   x.predictionPrice = dest;
+   x.prediction      = what+(dest!=0?(" @ "+DoubleToString(dest,_Digits)):"");
+   // probability blends immediate-execution proximity, exec prob and owner alignment
+   x.predictionProb  = FalconClamp(0.45*x.immediateExecutionProb + 0.35*x.executionProbability
+                       + 0.20*(g_state.htf.alignment/100.0),0,1);
+}
+
+//------------------------------------------------------------------
+// VALIDATION ENGINE — checks whether the PRIOR bar's prediction is
+// being confirmed by price, and rolls a hit-rate score. Closes the
+// belief → hypothesis → prediction → validation loop.
+//------------------------------------------------------------------
+void IE_Validation(FalconIntelligence &x)
+{
+   double close1=gClose[1];
+   bool confirmed=false;
+   if(ie_prevPredPrice!=0 && ie_prevPredDir!=DIR_NONE)
+   {
+      // confirmed if price moved toward the predicted destination this bar
+      double prevClose=gClose[2];
+      double moved = close1-prevClose;
+      confirmed = (ie_prevPredDir==DIR_LONG ? moved>0 : moved<0);
+   }
+   ie_valScore = FalconEMA(ie_valScore, confirmed?100.0:0.0, 10);
+   x.validated       = confirmed;
+   x.validationScore = FalconClamp(ie_valScore,0,100);
+
+   // store this bar's prediction for next-bar validation
+   ie_prevPredPrice = x.predictionPrice;
+   ie_prevPredDir   = (x.predictionPrice!=0 ? (x.predictionPrice>close1?DIR_LONG:DIR_SHORT) : DIR_NONE);
+}
+
 //==================================================================
 // MASTER ENTRY — Intelligence Engine pipeline step
 //==================================================================
@@ -233,6 +315,9 @@ void IntelligenceEngineRun()
    IE_EnergyResolution(x);
    IE_Beliefs(x);
    IE_Forecast(x);
+   IE_Hypothesis(x);
+   IE_Prediction(x);
+   IE_Validation(x);
    IE_Narrative(x);
    g_state.intel=x;
    // back-fill campaign remaining energy now that residual is known
