@@ -1,0 +1,34 @@
+{
+  "id": "FEAT-006",
+  "type": "feat",
+  "description": "Part 6 - Master EA (Main Entry Point with OnInit/OnTick). Creates the master .mq5 file that #includes all 5 parts and implements the OnInit/OnTick/OnDeinit callbacks. This is the file loaded into MT5 that orchestrates the complete system: initializes all engines, runs them in correct order on each new bar, and coordinates execution. Also includes the OnInit setup of all indicator handles and chart objects.",
+  "status": "in_progress",
+  "steps": [
+    "Create file /projects/sandbox/combo/MasterAlgo_Main.mq5",
+    "Add the master property header with EA description, version, and copyright",
+    "Add #include directives for all 5 parts (using relative paths since they are in the same directory)",
+    "Implement OnInit(): Initialize all series buffers (RefreshSeries), create all ATR/indicator handles for the 6 fixed timeframes, initialize phase engine state to zero, initialize curve tree (empty), initialize time intelligence cycle tracking, initialize belief engine EMA states, set up chart objects (destination lines, level markers), print startup message with all engine versions",
+    "Implement OnTick() with the correct execution order: 1) RefreshSeries, 2) IsNewBar guard, 3) UpdatePhaseEngine (Part 1), 4) UpdateARC (Part 1), 5) UpdateMTFStructure - run f_se_compute on all 6 timeframes (Part 2), 6) UpdateFractalStack (Part 2), 7) UpdatePhysicsObservation (Part 3), 8) UpdateEnergyFramework - EDE/RE/EAE (Part 3), 9) UpdateBeliefEngine (Part 3), 10) UpdateHypothesisEngine (Part 3), 11) UpdatePredictionEngine (Part 3), 12) UpdateSenseei (Part 3), 13) UpdateLiquidationWave (Part 3), 14) UpdateCurveObject (Part 4), 15) UpdateCurveTree (Part 4), 16) UpdateCampaign (Part 4), 17) UpdateTimeIntelligence (Part 4), 18) ManageArcInstitutionalExits (Part 4 exit logic), 19) ExecuteTrading (Part 4 entry logic), 20) UpdateDashboards (Part 5)",
+    "Implement OnDeinit(): Clean up all chart objects (ObjectsDeleteAll for the EA's prefix), delete indicator handles, print shutdown message",
+    "Add a unique object name prefix (e.g. 'MASTER_') to all chart objects so OnDeinit can clean them without affecting other indicators",
+    "Add alert conditions: AlertOnAttack (when Senseei flips to ATTACK), AlertOnCurveDeath (life < 33), AlertOnStackFlip (fractalStackDir changes), AlertOnObjectiveArrival (liqg_objArrival fires)",
+    "Ensure the execution order respects data dependencies: phase engine first (provides phases for intelligence), MTF structure second (provides fractal stack), intelligence engines third (provide gates for execution), execution last (uses all gates)"
+  ],
+  "acceptance_criteria": [
+    "File exists at /projects/sandbox/combo/MasterAlgo_Main.mq5",
+    "All 5 part files are included via #include",
+    "OnInit properly initializes all subsystems and returns INIT_SUCCEEDED",
+    "OnTick executes all 20 update steps in correct dependency order",
+    "OnDeinit cleans up all resources",
+    "Alert conditions fire on key state transitions",
+    "The file compiles as the entry point that orchestrates the entire system",
+    "Code is syntactically valid MQL5"
+  ],
+  "verification": [
+    "Read the output file and verify #include paths reference all 5 parts",
+    "Verify OnTick execution order respects data dependencies",
+    "Check that OnInit creates handles and OnDeinit releases them"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}
