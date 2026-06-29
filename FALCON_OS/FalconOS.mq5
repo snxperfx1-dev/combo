@@ -37,6 +37,7 @@
 #include "Engines/IntelligenceEngine.mqh"  // Intelligence Layer — reasoning
 #include "Engines/DecisionEngine.mqh"      // Decision Layer
 #include "Engines/ExecutionEngine.mqh"     // Execution Layer
+#include "Engines/SymphonyEngine.mqh"      // Execution Layer — Symphony phase entries/exits (after EE helpers)
 #include "Engines/Visualization.mqh"       // Visualization Layer
 
 //==================================================================
@@ -70,6 +71,11 @@ void FalconPipeline()
    MarketEngineRun();
    FalconModuleEnd(MOD_MARKET,t0);
 
+   // Symphony phase engine: precision impulse + Phase 1..4 + ARC, computed
+   // from the same shared series right after the Market Layer observes reality.
+   if(g_cfg.useSymphony)
+      SymphonyUpdatePhases();
+
    // ── MEMORY LAYER ──────────────────────────────────────────────
    // Network → Curve Tree → Wave Matrix → FEZ → FRZ → Campaign →
    // Participants   (remembers)
@@ -96,6 +102,13 @@ void FalconPipeline()
    // Trailing → Exits → Entries   (never decides, only executes)
    FalconModuleStart(MOD_EXEC,t0);
    ExecutionEngineRun();
+   // Symphony is the PRECISION entry/exit authority when enabled: it manages
+   // its own Phase 3/4 entries + ARC/institutional exits using Symphony's own
+   // stop placement. The FALCON entry/exit block in ExecutionEngineRun() is
+   // suppressed in this mode (see g_cfg.useSymphony guard there) so the two
+   // never double-trade. Risk = lot sizing + drawdown protection only.
+   if(g_cfg.useSymphony)
+      SymphonyTradeManage();
    FalconModuleEnd(MOD_EXEC,t0);
 
    // ── PERSISTENCE ───────────────────────────────────────────────
@@ -131,6 +144,7 @@ int OnInit()
    DecisionEngineInit();
    ExecutionEngineInit();
    FalconPersistenceInit();
+   if(g_cfg.useSymphony) SymphonyInit();
 
    if(!FalconRefreshSeries())
    {

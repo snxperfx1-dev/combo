@@ -680,13 +680,20 @@ void ExecutionEngineRun()
    if(!ddOk) FalconPublish(EVT_RISK_BREACH,0.0);
 
    // ---- TRAILING + PARTIAL TAKE-PROFIT (manage open winners) ----
-   EE_Trailing();
-   EE_ManagePartialTP();
+   // When Symphony is the active authority, it owns entries AND exits (ARC +
+   // institutional + phase composite) with its own stop placement, so FALCON's
+   // trailing/partial/exit/entry block is suppressed to avoid double-trading.
+   // Drawdown protection + exposure snapshot always run.
+   if(!g_cfg.useSymphony)
+   {
+      EE_Trailing();
+      EE_ManagePartialTP();
 
-   // ---- INSTITUTIONAL band tracking, then EXITS, then ENTRIES ----
-   EE_UpdateInstitutional();
-   EE_HandleExits();
-   EE_HandleEntries(m);
+      // ---- INSTITUTIONAL band tracking, then EXITS, then ENTRIES ----
+      EE_UpdateInstitutional();
+      EE_HandleExits();
+      EE_HandleEntries(m);
+   }
 
    // refresh exposure snapshot after actions
    EE_UpdateExposure(m);

@@ -225,6 +225,10 @@ struct FalconWave
    double preConvexityScore;
    double convexityScore;
    double absorptionScore;
+   // Symphony phase engine mirror (display/labels only; set by SymphonyEngine)
+   int    symMode;        // -1 short, 1 long, 0 none
+   int    symPhaseLong;   // 0..4
+   int    symPhaseShort;  // 0..4
 };
 
 //==================================================================

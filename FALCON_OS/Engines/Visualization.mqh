@@ -81,6 +81,9 @@ string VZ_Body(const int tab)
          s+="Liq Wave    : "+(ecv.liqSubPhase==""?"—":ecv.liqSubPhase)+(ecv.liqActive?"  dist "+DoubleToString(ecv.liqDistPct,0)+"%":"")
             +(ecv.liqTrueChoch?"  CHoCH":"")+"\n";
          s+="Phase       : "+FalconPhaseStr(w.phase)+"  "+VZ_Pct(w.completion)+"\n";
+         s+="Symphony    : "+(w.symMode==1?"LONG":w.symMode==-1?"SHORT":"—")
+            +"  Pl="+IntegerToString(w.symPhaseLong)+" Ps="+IntegerToString(w.symPhaseShort)
+            +(g_cfg.useSymphony?"  [AUTHORITY]":"")+"\n";
          s+="Intent      : "+x.intent+"   Timing "+x.timing+"\n";
          s+="Hypothesis  : "+x.hypothesis+"  ("+DoubleToString(x.hypothesisProb*100.0,0)+"%)\n";
          s+="Prediction  : "+x.prediction+"\n";

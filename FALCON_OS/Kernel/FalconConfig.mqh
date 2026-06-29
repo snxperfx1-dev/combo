@@ -32,6 +32,9 @@ input int     InpStructLen      = 10;    // Structure pivot length
 input int     InpATRLen         = 14;    // ATR length
 input int     InpEffLen         = 10;    // Efficiency lookback
 input double  InpImpulseAtrMult = 1.5;   // Impulse ATR multiple
+input double  InpRetrMin        = 0.30;  // Symphony: min retracement fraction (phase)
+input double  InpRetrMax        = 0.80;  // Symphony: max retracement fraction (phase)
+input bool    InpUseSymphony    = true;  // Use Symphony Phase 3/4 engine for entries+exits
 input double  InpEffThresh      = 0.65;  // Efficiency threshold
 input double  InpDispThresh     = 1.5;   // Displacement ATR threshold
 input double  InpConvMult       = 0.01;  // Convexity ATR multiplier
@@ -100,6 +103,7 @@ struct FalconConfig
    // market
    int    pivotLen, structLen, atrLen, effLen;
    double impulseAtrMult, effThresh, dispThresh, convMult, chochBufferATR;
+   double retrMin, retrMax; bool useSymphony;
    int    inducLookback;  double inducZoneWidth;
    int    liqSweepLookbk;  double liqRadius, liqAgeDecay;
    int    beliefSmooth;
@@ -139,6 +143,9 @@ void FalconConfigInit()
    g_cfg.atrLen           = InpATRLen;
    g_cfg.effLen           = InpEffLen;
    g_cfg.impulseAtrMult   = InpImpulseAtrMult;
+   g_cfg.retrMin          = InpRetrMin;
+   g_cfg.retrMax          = InpRetrMax;
+   g_cfg.useSymphony      = InpUseSymphony;
    g_cfg.effThresh        = InpEffThresh;
    g_cfg.dispThresh       = InpDispThresh;
    g_cfg.convMult         = InpConvMult;
