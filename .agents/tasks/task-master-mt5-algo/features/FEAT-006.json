@@ -1,0 +1,36 @@
+{
+  "id": "FEAT-006",
+  "type": "feat",
+  "description": "Create Part6_CurveTree.mqh - F16's F72 Curve Object, Recursive Curve Tree (event-generated CurveNodes with energy dynamics), Campaign Ownership engine, Participant interference zones, compression persistence, narrative lineage, and the 'is the trade alive?' judgement.",
+  "status": "completed",
+  "steps": [
+    "Create Part6_CurveTree.mqh at the repo root",
+    "Port the Curve Object (gCurve): assembled from physics primitives - dir, origin (M5 invalidation), extreme (cycle high/low), dispATR (displacement in ATR units), eIn (expansion energy), eDiss (dissipated energy), eRes (residual energy), convex (curvature score), compress (compression index), maturity (wave progress)",
+    "Port per-rung curve family: one Curve per fixed timeframe (c_r1 through c_r6) with direction, origin, convexity maturity, compression from their respective se* outputs",
+    "Port the Recursive Curve Tree: array of CurveNode structs. Root curve seeded from context anchor (chart/H1/H4). Event-generated children: Phase-2 CHoCH against owner spawns inverse child curve. Compression sets recursion budget (1-4 depth). Energy dynamics: progress raises energy (+7), stall decays (-2). Alive check: energy <= 2 kills node. Owner selection: shallowest with energy >= 12 (Principle 8).",
+    "Port f_nodeState(): maps node energy/lifecycle/depth/compression/maturity onto a Principle-14 phase label (emergent phase from the curve)",
+    "Port Campaign Ownership: determine campaign state (TERMINAL vs EXPANSION) based on proximity to HTF zone and lifecycle phase. Location (INSIDE/APPROACHING/TRANSITIONING/BUILDING). Owner direction from curve object. Compression regime (FAILURE SWING/COMPRESSED/MEDIUM/WIDE). Curve budget to HTF.",
+    "Port Participant interference zones: 0.618/0.70/0.786 retracement levels from curve origin to extreme. Zone classification (pre-0.618 clean / 0.618 participants / 0.70 interference / 0.786 heavy / FLIP true induction). Interference state (DOMINANT/active/absorbed).",
+    "Port Compression Persistence (Principle 10): _cpForce from compression + residual - depth + tightening. State (PERSISTING/LEAKING/NEUTRAL). Trend (tightening/broadening/stable).",
+    "Port 'Is the Trade Alive?' judgement: _life score from cpForce + residual + tightening - recursionComplete - leaking + progressing + retrace depth. States: ALIVE HOLD / ALIVE ATTACKING / WEAKENING MANAGE / DEAD FLIP. HTF parent threat (CLEAR/APPROACHING/AT ZONE).",
+    "Port Narrative Lineage: track sequence of entry curves, each pullback votes SUPPORT (shallow + tightening) or DEGRADE (deep + broadening). Narrative state (STRENGTHENING/WEAKENING/HOLDING). Chain vitality across successive curves. Whole-chain life score."
+  ],
+  "acceptance_criteria": [
+    "Part6_CurveTree.mqh exists with valid MQL5 syntax",
+    "Curve Object is computed from physics/structure outputs",
+    "Recursive tree spawns children on CHoCH events with compression budget",
+    "Energy dynamics update correctly (progress vs stall)",
+    "Owner selection follows Principle 8 (shallowest with energy)",
+    "Campaign ownership produces state/location/compression regime",
+    "Participant zones calculate retracement levels correctly",
+    "Compression persistence produces force/state/trend",
+    "Trade alive judgement produces life score and actionable state"
+  ],
+  "verification": [
+    "Read the file and verify curve tree logic matches F16 V70 F72 section",
+    "Verify compression persistence matches F16's Principle 10 implementation",
+    "Verify life score calculation matches F16's _life formula"
+  ],
+  "blocked_reason": null,
+  "findings": "Part6_CurveTree.mqh created at 968 lines. All 10 functions/engines ported from F16 V70 F72 section. Braces balanced (75/75). No duplicate symbols with Parts 1-5. Globals used from Part1: g_curve, g_curveTree[60], g_curveTreeCount, g_letra[6], g_energy, g_spawn. Globals from Part5: g_attractorIdx, g_netBias, g_nodeCount, g_nodes[250]. New globals exposed: g_curveOwnerDir, g_curveOwnerEnergy, g_curveOwnerState[64], g_campaign (CampaignState), g_participant (ParticipantZone), g_compression (CompressionState), g_tradeAlive (TradeAliveState), g_narrative (NarrativeState), g_curveRung[6], g_nodeSeq. Static state tracked via s_prevCompress, s_narrDir, s_legExtreme, s_legPBdepth, s_narrativeScore, s_supVotes, s_degVotes, s_wholeChainLife, s_lifeSeq[5], s_retrSeq[5]. Master entry point is UpdateCurveTree() which should be called after UpdateEnergyFramework() and UpdateNetworkEngine() in the OnTick chain."
+}
