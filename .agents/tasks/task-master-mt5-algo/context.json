@@ -1,0 +1,20 @@
+{
+  "project_type": "MQL5 Expert Advisor (MetaTrader 5) - algorithmic trading system",
+  "language": "MQL5 (C-like language for MetaTrader 5)",
+  "build_system": "MetaTrader 5 MetaEditor (not available in sandbox - use AST/syntax validation only)",
+  "test_framework": "No automated tests - MQL5 is compiled and tested inside MetaTrader 5 platform",
+  "build_command": "N/A - MQL5 compilation requires MetaEditor which is not available",
+  "test_command": "N/A - MQL5 testing requires MT5 Strategy Tester",
+  "verification_instructions": "1. Verify all .mqh and .mq5 files have valid MQL5 syntax (matching braces, proper types, #include directives). 2. Verify the main EA file includes all parts in correct order. 3. Verify no duplicate function/variable names across files. 4. Check that all referenced functions exist in one of the included files.",
+  "snapshot_or_generated_files": null,
+  "setup_instructions": "No setup needed - this is a code generation project",
+  "environment_constraints": "Cannot compile MQL5 code (no MetaEditor). Validation is structural/syntactic only. The output files should be syntactically correct MQL5 that a user can copy into MetaEditor and compile.",
+  "contribution_requirements": "Files must be saved to the repo root. Each part must be a separate .mqh header file. The main EA must be a .mq5 file that #includes all parts.",
+  "key_patterns": "Symphony uses: #property strict, #include <Trade\\Trade.mqh>, MqlTradeRequest/MqlTradeResult for orders, iATR/CopyBuffer for indicators, ArraySetAsSeries for data, OnInit/OnDeinit/OnTick callbacks, global state variables, structs for data grouping, IOC order filling, hedging account model (simultaneous long+short), per-bar processing with IsNewBar() guard",
+  "relevant_files": [
+    "symphony.txt - BASE: Phase Engine (Phases 1-4), ARC v2 exit, IOC execution, time gates, lot sizing",
+    "F16 V70.txt - ADD: Invisible Network (node registry + authority scoring), F72 Curve Object/Tree, Campaign Ownership, Participant zones, Senseei meta-intelligence, Time Intelligence Engine",
+    "LETRA 37.txt - ADD: Fixed-TF Structure Engine (f_se on M1/M3/M5/M15/H1/H4), Engine 1A lifecycle, Energy Resolution Framework (EDE+RE+EAE), Wave Intelligence (belief/hypothesis/prediction/validation engines), FRZ zones, V72 Decision Architecture"
+  ],
+  "directory_structure": "Flat repo root with source .txt files. Output will be multiple .mqh part files + one main .mq5 EA file at the repo root."
+}

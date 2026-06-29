@@ -1,0 +1,7 @@
+{
+  "task_id": "task-master-mt5-algo",
+  "task_description": "Create a Master MT5 Expert Advisor in MQL5 by combining Symphony (entry/stop/phase engine base), Letra 37 (multi-TF structure engine, Engine 1A lifecycle, Energy Resolution Framework, belief/hypothesis/prediction engines, FRZ), and F16 (Invisible Network, F72 Curve Tree, Campaign Ownership, Senseei meta-intelligence, Time Intelligence). Output is split into 9 parts (8 .mqh + 1 .mq5) saved to the repo. Entry is probabilistic (entryProb > 90%). All panels/dashboards included.",
+  "status": "in_progress",
+  "feature_order": ["FEAT-001", "FEAT-002", "FEAT-003", "FEAT-004", "FEAT-005", "FEAT-006", "FEAT-007", "FEAT-008", "FEAT-009"],
+  "blocked_reason": null
+}
