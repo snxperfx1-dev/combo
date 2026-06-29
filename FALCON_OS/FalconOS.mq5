@@ -37,6 +37,7 @@
 #include "Engines/IntelligenceEngine.mqh"  // Intelligence Layer — reasoning
 #include "Engines/DecisionEngine.mqh"      // Decision Layer
 #include "Engines/ExecutionEngine.mqh"     // Execution Layer
+#include "Engines/ThermalRiskEngine.mqh"   // Execution Layer — PYRO campaign-thermodynamics risk (after EE, before Symphony)
 #include "Engines/SymphonyEngine.mqh"      // Execution Layer — Symphony phase entries/exits (after EE helpers)
 #include "Engines/Visualization.mqh"       // Visualization Layer
 
@@ -108,6 +109,13 @@ void FalconPipeline()
    // Trailing → Exits → Entries   (never decides, only executes)
    FalconModuleStart(MOD_EXEC,t0);
    ExecutionEngineRun();
+   // PYRO campaign-thermodynamics risk: compute per-direction basket HEAT,
+   // set stack admissions (OPEN/THROTTLED/FROZEN/DE-RISK), run the portfolio
+   // thermostat, and manage baskets (breakeven-lock winners / catastrophe-
+   // flatten a thermal runaway). Runs BEFORE Symphony so admission scales are
+   // fresh when its entries consult TR_AdmitLots.
+   if(g_cfg.useThermalRisk)
+      ThermalRiskUpdate();
    // Symphony is the PRECISION entry/exit authority when enabled: it manages
    // its own Phase 3/4 entries + ARC/institutional exits using Symphony's own
    // stop placement. The FALCON entry/exit block in ExecutionEngineRun() is
@@ -150,6 +158,7 @@ int OnInit()
    DecisionEngineInit();
    ExecutionEngineInit();
    FalconPersistenceInit();
+   if(g_cfg.useThermalRisk) ThermalRiskInit();
    if(g_cfg.useSymphony) SymphonyInit();
 
    if(!FalconRefreshSeries())

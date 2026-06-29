@@ -87,6 +87,16 @@ enum FALCON_EXIT_STATE
    XS_DD_FLATTEN    = 6
 };
 
+// PYRO admission verdict — whether a directional campaign may accept a new
+// stacked entry, and how aggressively (continuous lot scale alongside).
+enum FALCON_ADMIT
+{
+   ADM_OPEN      = 0,   // cool campaign — full-size stack allowed
+   ADM_THROTTLED = 1,   // warming — stack size shrinks with heat
+   ADM_FROZEN    = 2,   // hot / maxed / underwater-limit — no new stacks
+   ADM_DERISK    = 3    // critical heat — flatten the campaign (catastrophe stop)
+};
+
 // Compression regime — controls recursion size/count near terminals
 enum FALCON_COMPRESSION
 {
@@ -553,6 +563,59 @@ struct FalconEntryCycle
 };
 
 //==================================================================
+// SUB-STATE : THERMAL RISK  (PYRO — Campaign Thermodynamics)
+//   A directional campaign (a fleet of stacked precision entries) is
+//   modelled as a physical body that carries HEAT. Heat = adverse
+//   excursion of the BLENDED basket (in ATR) amplified by a fragility
+//   that grows with stack count and total lots. A winning basket runs
+//   near-zero heat regardless of size (house money); an underwater,
+//   heavily-stacked basket overheats fast. Heat throttles new stacks,
+//   then freezes them, then (only at criticality) flattens the campaign.
+//==================================================================
+struct FalconThermalCampaign
+{
+   int    dir;             // FALCON_DIR
+   int    stackCount;      // number of open stacked entries
+   double totalLots;       // gross lots in this campaign
+   double blendedEntry;    // volume-weighted average entry
+   double breakeven;       // basket breakeven (blended entry + swap drift)
+   double unrealizedPnL;   // money
+   double adverseATR;      // >0 = basket UNDERWATER (ATR from blended entry)
+   double favorableATR;    // >0 = basket IN PROFIT (ATR from blended entry)
+   double exposureLoad;    // totalLots / maxCampaignLots
+   double stackLoad;       // stackCount / maxStacks
+   double fragility;       // 1 + size/stack amplification
+   double heat;            // 0..~2 thermal load (the master scalar)
+   double heatVelocity;    // d(heat)/bar
+   double coolingRate;     // d(PnL)/bar  (>0 profit growing)
+   int    admission;       // FALCON_ADMIT
+   double admitLotScale;   // 0..1 size multiplier for the next stack
+   bool   breakevenLocked; // basket SLs pulled to breakeven
+};
+
+//==================================================================
+// SUB-STATE : PORTFOLIO THERMOSTAT
+//   Long-heat and short-heat are tracked SEPARATELY (never netted —
+//   multi-campaign law). If BOTH sides overheat at once (a whipsaw
+//   trap) all new admissions freeze. Account heat = equity drawdown.
+//==================================================================
+struct FalconThermostat
+{
+   double longHeat;
+   double shortHeat;
+   double combinedHeat;
+   double accountHeat;     // 0..1 from equity drawdown vs peak
+   double equityPeak;
+   bool   whipsawLock;     // both campaigns hot simultaneously
+};
+
+struct FalconRisk
+{
+   FalconThermalCampaign campaign[2];   // [0]=long  [1]=short
+   FalconThermostat      thermostat;
+};
+
+//==================================================================
 // MASTER STATE
 //==================================================================
 struct FalconMarketState
@@ -588,6 +651,7 @@ struct FalconMarketState
    FalconIntelligence intel;
    FalconEntryCycle   entryCycle;
    FalconExecution    exec;
+   FalconRisk         risk;
 };
 
 // The one and only shared-state instance for the whole OS.
@@ -693,6 +757,17 @@ string FalconCompressionStr(const int c)
 string FalconResStr(const int r)
 {
    return(r==RES_RESOLVED ? "RESOLVED" : r==RES_PARTIALLY_RESOLVED ? "PARTIAL" : "UNRESOLVED");
+}
+
+string FalconAdmitStr(const int a)
+{
+   switch(a)
+   {
+      case ADM_THROTTLED: return("THROTTLED");
+      case ADM_FROZEN:    return("FROZEN");
+      case ADM_DERISK:    return("DE-RISK!");
+      default:            return("OPEN");
+   }
 }
 
 #endif // FALCON_STATE_MQH

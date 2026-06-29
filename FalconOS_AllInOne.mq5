@@ -2,10 +2,10 @@
 //|                                            FalconOS_AllInOne.mq5 |
 //|   FALCON OS — Unified Trading Intelligence Platform               |
 //|   SINGLE-FILE BUILD (all kernel + engines concatenated)          |
-//|   Symphony: phase source of truth + entries + trade management.  |
+//|   PYRO campaign-thermodynamics risk engine for stacked entries.  |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "3.24"
+#property version   "3.25"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -99,6 +99,18 @@ input double  InpMaxEntryComplete = 85.0;// Block NEW entries when wave completi
 input double  InpMinEntryRoomPct  = 25.0;// Block NEW entries when geometry room to target < this
 input double  InpAttentionATR     = 1.0; // Entry attention: price must be within this many ATR of the active node (0=off)
 
+input string  __sep_thermal     = "════════ CAMPAIGN THERMAL RISK (PYRO) ════════"; // ──
+input bool    InpUseThermalRisk  = true;  // Use PYRO campaign-thermodynamics risk engine
+input int     InpMaxStacks       = 12;    // Max stacked entries per directional campaign
+input double  InpMaxCampaignLots = 8.0;   // Max total lots per directional campaign
+input double  InpHeatThrottle    = 0.55;  // Heat above this shrinks new stack size
+input double  InpHeatFreeze      = 0.80;  // Heat above this freezes new stacks
+input double  InpHeatCritical    = 1.10;  // Heat above this flattens the campaign (catastrophe stop)
+input int     InpMaxAvgDownStacks= 3;     // Max stacks allowed while basket is underwater (anti-martingale)
+input double  InpHeatAdverseSpan = 4.0;   // Adverse excursion (ATR) that equals full adverse heat
+input double  InpBasketLockATR   = 1.5;   // Lock basket breakeven once favorable excursion >= this (ATR)
+input double  InpAcctHeatDDPct   = 15.0;  // Account heat: equity drawdown %% that fully freezes admissions
+
 input string  __sep_viz         = "════════ VISUALIZATION ════════"; // ──
 input bool    InpShowDashboard  = true;  // Show unified dashboard
 input bool    InpShowHUD        = true;  // Plot Flight HUD levels on chart
@@ -135,6 +147,11 @@ struct FalconConfig
    double trailStartATR, trailDistATR, maxDrawdownPct, ddFlattenPct;
    double maxEntryComplete, minEntryRoomPct;
    double attentionATR;
+   // thermal risk (PYRO)
+   bool   useThermalRisk;  int maxStacks;  double maxCampaignLots;
+   double heatThrottle, heatFreeze, heatCritical;
+   int    maxAvgDownStacks;
+   double heatAdverseSpan, basketLockATR, acctHeatDDPct;
    // viz
    bool   showDashboard, verboseLog;  int dashboardTab;
    bool   showHUD;
@@ -205,6 +222,17 @@ void FalconConfigInit()
    g_cfg.maxEntryComplete = InpMaxEntryComplete;
    g_cfg.minEntryRoomPct  = InpMinEntryRoomPct;
    g_cfg.attentionATR     = InpAttentionATR;
+
+   g_cfg.useThermalRisk   = InpUseThermalRisk;
+   g_cfg.maxStacks        = InpMaxStacks;
+   g_cfg.maxCampaignLots  = InpMaxCampaignLots;
+   g_cfg.heatThrottle     = InpHeatThrottle;
+   g_cfg.heatFreeze       = InpHeatFreeze;
+   g_cfg.heatCritical     = InpHeatCritical;
+   g_cfg.maxAvgDownStacks = InpMaxAvgDownStacks;
+   g_cfg.heatAdverseSpan  = InpHeatAdverseSpan;
+   g_cfg.basketLockATR    = InpBasketLockATR;
+   g_cfg.acctHeatDDPct    = InpAcctHeatDDPct;
 
    g_cfg.showDashboard    = InpShowDashboard;
    g_cfg.showHUD          = InpShowHUD;
@@ -314,6 +342,16 @@ enum FALCON_EXIT_STATE
    XS_DEFEND        = 4,
    XS_TRAIL_STOP    = 5,
    XS_DD_FLATTEN    = 6
+};
+
+// PYRO admission verdict — whether a directional campaign may accept a new
+// stacked entry, and how aggressively (continuous lot scale alongside).
+enum FALCON_ADMIT
+{
+   ADM_OPEN      = 0,   // cool campaign — full-size stack allowed
+   ADM_THROTTLED = 1,   // warming — stack size shrinks with heat
+   ADM_FROZEN    = 2,   // hot / maxed / underwater-limit — no new stacks
+   ADM_DERISK    = 3    // critical heat — flatten the campaign (catastrophe stop)
 };
 
 // Compression regime — controls recursion size/count near terminals
@@ -782,6 +820,59 @@ struct FalconEntryCycle
 };
 
 //==================================================================
+// SUB-STATE : THERMAL RISK  (PYRO — Campaign Thermodynamics)
+//   A directional campaign (a fleet of stacked precision entries) is
+//   modelled as a physical body that carries HEAT. Heat = adverse
+//   excursion of the BLENDED basket (in ATR) amplified by a fragility
+//   that grows with stack count and total lots. A winning basket runs
+//   near-zero heat regardless of size (house money); an underwater,
+//   heavily-stacked basket overheats fast. Heat throttles new stacks,
+//   then freezes them, then (only at criticality) flattens the campaign.
+//==================================================================
+struct FalconThermalCampaign
+{
+   int    dir;             // FALCON_DIR
+   int    stackCount;      // number of open stacked entries
+   double totalLots;       // gross lots in this campaign
+   double blendedEntry;    // volume-weighted average entry
+   double breakeven;       // basket breakeven (blended entry + swap drift)
+   double unrealizedPnL;   // money
+   double adverseATR;      // >0 = basket UNDERWATER (ATR from blended entry)
+   double favorableATR;    // >0 = basket IN PROFIT (ATR from blended entry)
+   double exposureLoad;    // totalLots / maxCampaignLots
+   double stackLoad;       // stackCount / maxStacks
+   double fragility;       // 1 + size/stack amplification
+   double heat;            // 0..~2 thermal load (the master scalar)
+   double heatVelocity;    // d(heat)/bar
+   double coolingRate;     // d(PnL)/bar  (>0 profit growing)
+   int    admission;       // FALCON_ADMIT
+   double admitLotScale;   // 0..1 size multiplier for the next stack
+   bool   breakevenLocked; // basket SLs pulled to breakeven
+};
+
+//==================================================================
+// SUB-STATE : PORTFOLIO THERMOSTAT
+//   Long-heat and short-heat are tracked SEPARATELY (never netted —
+//   multi-campaign law). If BOTH sides overheat at once (a whipsaw
+//   trap) all new admissions freeze. Account heat = equity drawdown.
+//==================================================================
+struct FalconThermostat
+{
+   double longHeat;
+   double shortHeat;
+   double combinedHeat;
+   double accountHeat;     // 0..1 from equity drawdown vs peak
+   double equityPeak;
+   bool   whipsawLock;     // both campaigns hot simultaneously
+};
+
+struct FalconRisk
+{
+   FalconThermalCampaign campaign[2];   // [0]=long  [1]=short
+   FalconThermostat      thermostat;
+};
+
+//==================================================================
 // MASTER STATE
 //==================================================================
 struct FalconMarketState
@@ -817,6 +908,7 @@ struct FalconMarketState
    FalconIntelligence intel;
    FalconEntryCycle   entryCycle;
    FalconExecution    exec;
+   FalconRisk         risk;
 };
 
 // The one and only shared-state instance for the whole OS.
@@ -922,6 +1014,17 @@ string FalconCompressionStr(const int c)
 string FalconResStr(const int r)
 {
    return(r==RES_RESOLVED ? "RESOLVED" : r==RES_PARTIALLY_RESOLVED ? "PARTIAL" : "UNRESOLVED");
+}
+
+string FalconAdmitStr(const int a)
+{
+   switch(a)
+   {
+      case ADM_THROTTLED: return("THROTTLED");
+      case ADM_FROZEN:    return("FROZEN");
+      case ADM_DERISK:    return("DE-RISK!");
+      default:            return("OPEN");
+   }
 }
 
 #endif // FALCON_STATE_MQH
@@ -4364,6 +4467,306 @@ void ExecutionEngineRun()
 #endif // FALCON_EXEC_ENGINE_MQH
 //+------------------------------------------------------------------+
 
+//  ===== Engines/ThermalRiskEngine.mqh =====
+//+------------------------------------------------------------------+
+//|  FALCON OS — Execution Layer : ThermalRiskEngine.mqh            |
+//|  PYRO — Campaign Thermodynamics Risk Engine                     |
+//|                                                                  |
+//|  A risk model built specifically for how THIS algo trades:       |
+//|  precision Phase 3/4 entries that STACK into a directional       |
+//|  campaign (a fleet of correlated positions on one instrument).   |
+//|                                                                  |
+//|  The fleet is treated as a physical body that carries HEAT.      |
+//|                                                                  |
+//|    heat = adverseExcursion(blended basket, in ATR)               |
+//|           x fragility(stackCount, totalLots)                     |
+//|                                                                  |
+//|  A WINNING basket runs near-zero heat regardless of size (house  |
+//|  money). An UNDERWATER, heavily-stacked basket overheats fast.   |
+//|  Heat is the single scalar that governs everything:              |
+//|                                                                  |
+//|    OPEN      cool        -> full-size stacks allowed             |
+//|    THROTTLED warming     -> each new stack shrinks with heat     |
+//|    FROZEN    hot/maxed    -> no new stacks (incl. anti-martingale |
+//|                             freeze: no averaging-down past N)     |
+//|    DE-RISK   critical     -> flatten the campaign (catastrophe)   |
+//|                                                                  |
+//|  Plus a basket-organism manager (breakeven-lock the whole fleet  |
+//|  once it is BasketLockATR in profit) and a dual-campaign          |
+//|  THERMOSTAT: long-heat and short-heat are tracked separately     |
+//|  (never netted), and if BOTH overheat at once (whipsaw trap) all  |
+//|  admissions freeze. Account heat = equity drawdown vs peak.       |
+//|                                                                  |
+//|  KEY DIFFERENCE vs the old DRDWCT engine: PYRO NEVER trims a      |
+//|  winning campaign. Heat is ~0 while in profit, so the only forced |
+//|  close is a TRUE runaway (deeply underwater + large) at critical  |
+//|  heat — exactly when a stacking book must be cut.                 |
+//|                                                                  |
+//|  Included AFTER ExecutionEngine (reuses EE_CollectPositions /     |
+//|  EE_ModifySL / EE_CloseFull) and BEFORE SymphonyEngine (which     |
+//|  calls TR_AdmitLots before every entry).                         |
+//+------------------------------------------------------------------+
+#ifndef FALCON_THERMAL_RISK_ENGINE_MQH
+#define FALCON_THERMAL_RISK_ENGINE_MQH
+
+
+//==================================================================
+// MODULE STATE — cross-bar memory for velocity / cooling / lock
+//==================================================================
+double tr_prevHeat[2]   = {0.0,0.0};
+double tr_prevPnL[2]    = {0.0,0.0};
+bool   tr_beLocked[2]   = {false,false};
+double tr_equityPeak    = 0.0;
+
+void ThermalRiskInit()
+{
+   tr_prevHeat[0]=0.0; tr_prevHeat[1]=0.0;
+   tr_prevPnL[0]=0.0;  tr_prevPnL[1]=0.0;
+   tr_beLocked[0]=false; tr_beLocked[1]=false;
+   tr_equityPeak = AccountInfoDouble(ACCOUNT_EQUITY);
+}
+
+//==================================================================
+// 1) BUILD CAMPAIGN — aggregate the directional fleet into a basket.
+//==================================================================
+void TR_BuildCampaign(const int dir,FalconThermalCampaign &c)
+{
+   EE_Position pos[64];
+   int n = EE_CollectPositions(pos, dir);
+
+   double atr = MathMax(g_state.physics.atr, 1e-10);
+   double lots=0.0, wEntrySum=0.0, pnl=0.0, swap=0.0;
+   for(int i=0;i<n;i++)
+   {
+      lots      += pos[i].lots;
+      wEntrySum += pos[i].entry*pos[i].lots;
+      pnl       += pos[i].pnl;          // profit + swap (commission excluded — MT5 per-deal)
+   }
+
+   c.dir         = dir;
+   c.stackCount  = n;
+   c.totalLots   = lots;
+   c.blendedEntry= (lots>0.0 ? wEntrySum/lots : 0.0);
+   c.breakeven   = c.blendedEntry;       // swap drift folded into PnL valuation
+   c.unrealizedPnL = pnl;
+
+   // valuation price = the side we would CLOSE at
+   double px = (dir==DIR_LONG ? SymbolInfoDouble(_Symbol,SYMBOL_BID)
+                              : SymbolInfoDouble(_Symbol,SYMBOL_ASK));
+   double excursion = 0.0;
+   if(c.blendedEntry>0.0)
+      excursion = (dir==DIR_LONG ? (px - c.blendedEntry) : (c.blendedEntry - px)) / atr;
+   c.favorableATR = MathMax(0.0,  excursion);   // in profit
+   c.adverseATR   = MathMax(0.0, -excursion);   // underwater
+
+   c.exposureLoad = (g_cfg.maxCampaignLots>0.0 ? c.totalLots/g_cfg.maxCampaignLots : 0.0);
+   c.stackLoad    = (g_cfg.maxStacks>0        ? (double)c.stackCount/(double)g_cfg.maxStacks : 0.0);
+}
+
+//==================================================================
+// 2) HEAT — the master scalar. Adverse excursion amplified by the
+//    basket's fragility. In profit, heat collapses to a small
+//    exposure baseline (so a big WINNER is not treated as risky).
+//==================================================================
+void TR_ComputeHeat(const int idx,FalconThermalCampaign &c)
+{
+   double adverseLoad = (g_cfg.heatAdverseSpan>0.0 ? c.adverseATR/g_cfg.heatAdverseSpan : 0.0);
+   c.fragility = 1.0 + 0.5*MathMin(c.exposureLoad,2.0) + 0.5*MathMin(c.stackLoad,2.0);
+
+   double heat = FalconClamp(adverseLoad*c.fragility, 0.0, 2.0);
+   // even a profitable book carries a soft exposure baseline (throttles further
+   // stacking once it is large) — but never enough to force a de-risk.
+   double baseHeat = 0.40*MathMax(c.exposureLoad, c.stackLoad);
+   heat = MathMax(heat, MathMin(baseHeat, g_cfg.heatFreeze*0.9));
+   if(c.stackCount==0) heat=0.0;
+
+   c.heat         = heat;
+   c.heatVelocity = heat - tr_prevHeat[idx];
+   c.coolingRate  = c.unrealizedPnL - tr_prevPnL[idx];
+   tr_prevHeat[idx]= heat;
+   tr_prevPnL[idx] = c.unrealizedPnL;
+}
+
+//==================================================================
+// 3) ADMISSION — may this campaign accept a new stack, and how big?
+//    (continuous lot scale 0..1). Anti-martingale freeze on adding
+//    into a deepening underwater basket past MaxAvgDownStacks.
+//==================================================================
+void TR_Admission(FalconThermalCampaign &c,const FalconThermostat &th)
+{
+   int    adm   = ADM_OPEN;
+   double scale = 1.0;
+
+   if(c.heat >= g_cfg.heatCritical)      { adm=ADM_DERISK;    scale=0.0; }
+   else if(c.heat >= g_cfg.heatFreeze)   { adm=ADM_FROZEN;    scale=0.0; }
+   else if(c.heat >= g_cfg.heatThrottle)
+   {
+      adm=ADM_THROTTLED;
+      double span=MathMax(g_cfg.heatFreeze-g_cfg.heatThrottle,1e-6);
+      scale=FalconClamp((g_cfg.heatFreeze-c.heat)/span,0.0,1.0);   // 1 -> 0 across the band
+   }
+
+   // ANTI-MARTINGALE: never deepen an underwater basket past the limit.
+   if(c.adverseATR>0.10 && c.stackCount>=g_cfg.maxAvgDownStacks)
+   { scale=0.0; if(adm<ADM_FROZEN) adm=ADM_FROZEN; }
+
+   // hard ceilings
+   if(c.stackCount>=g_cfg.maxStacks)          { scale=0.0; if(adm<ADM_FROZEN) adm=ADM_FROZEN; }
+   if(c.totalLots >=g_cfg.maxCampaignLots)    { scale=0.0; if(adm<ADM_FROZEN) adm=ADM_FROZEN; }
+
+   // PORTFOLIO THERMOSTAT: whipsaw lock or account-heat freeze all admissions.
+   if(th.whipsawLock || th.accountHeat>=1.0)  { scale=0.0; if(adm<ADM_FROZEN) adm=ADM_FROZEN; }
+
+   c.admission     = adm;
+   c.admitLotScale = FalconClamp(scale,0.0,1.0);
+}
+
+//==================================================================
+// 4) BASKET MANAGER — breakeven-lock the whole fleet, and the only
+//    forced close: a CRITICAL-heat catastrophe flatten (deeply
+//    underwater + large). Winners are never trimmed here.
+//==================================================================
+void TR_ManageBasket(const int idx,FalconThermalCampaign &c)
+{
+   int dir = c.dir;
+   if(c.stackCount==0){ tr_beLocked[idx]=false; c.breakevenLocked=false; return; }
+
+   // --- CATASTROPHE STOP: thermal runaway -> flatten this campaign ---
+   if(c.admission==ADM_DERISK)
+   {
+      int total=PositionsTotal();
+      for(int i=total-1;i>=0;i--)
+      {
+         ulong ticket=PositionGetTicket(i);
+         if(!PositionSelectByTicket(ticket)) continue;
+         if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
+         if(PositionGetInteger(POSITION_MAGIC)!=g_cfg.magic) continue;
+         long type=PositionGetInteger(POSITION_TYPE);
+         int  pdir=(type==POSITION_TYPE_BUY?DIR_LONG:DIR_SHORT);
+         if(pdir==dir) EE_CloseFull(ticket);
+      }
+      FalconPublish(EVT_RISK_BREACH, c.heat, "PYRO thermal runaway flatten");
+      g_state.exec.exitState=XS_DD_FLATTEN;
+      tr_beLocked[idx]=false;
+      c.breakevenLocked=false;
+      return;
+   }
+
+   // --- BASKET BREAKEVEN LOCK: once the fleet is BasketLockATR in profit,
+   //     pull every leg's stop to the blended breakeven so the campaign as a
+   //     whole can no longer turn red. (Symphony's per-leg trailing still
+   //     runs on top to keep banking beyond breakeven.) ---
+   if(!tr_beLocked[idx] && c.favorableATR>=g_cfg.basketLockATR && c.blendedEntry>0.0)
+   {
+      double atr=MathMax(g_state.physics.atr,1e-10);
+      double beBuf=atr*0.05;
+      double beLong = c.blendedEntry + beBuf;
+      double beShort= c.blendedEntry - beBuf;
+      double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
+      double ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
+      bool any=false;
+      int total=PositionsTotal();
+      for(int i=0;i<total;i++)
+      {
+         ulong ticket=PositionGetTicket(i);
+         if(!PositionSelectByTicket(ticket)) continue;
+         if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
+         if(PositionGetInteger(POSITION_MAGIC)!=g_cfg.magic) continue;
+         long type=PositionGetInteger(POSITION_TYPE);
+         double sl=PositionGetDouble(POSITION_SL);
+         if(dir==DIR_LONG && type==POSITION_TYPE_BUY && beLong<bid && (sl==0.0||beLong>sl))
+         { if(EE_ModifySL(ticket,beLong)) any=true; }
+         if(dir==DIR_SHORT&& type==POSITION_TYPE_SELL&& beShort>ask && (sl==0.0||beShort<sl))
+         { if(EE_ModifySL(ticket,beShort)) any=true; }
+      }
+      if(any){ tr_beLocked[idx]=true; FalconPublish(EVT_RISK_BREACH, c.favorableATR, "PYRO basket breakeven lock"); }
+   }
+   if(c.favorableATR<g_cfg.basketLockATR*0.5) tr_beLocked[idx]=false; // re-arm if profit fades back
+   c.breakevenLocked = tr_beLocked[idx];
+}
+
+//==================================================================
+// MASTER — Thermal Risk pipeline step. Build both campaigns, compute
+// the portfolio thermostat, set admissions, then manage the baskets.
+//==================================================================
+void ThermalRiskUpdate()
+{
+   FalconRisk r;
+
+   // 1) build + heat for each direction
+   TR_BuildCampaign(DIR_LONG,  r.campaign[0]);
+   TR_BuildCampaign(DIR_SHORT, r.campaign[1]);
+   TR_ComputeHeat(0, r.campaign[0]);
+   TR_ComputeHeat(1, r.campaign[1]);
+
+   // 2) PORTFOLIO THERMOSTAT (never nets opposite directions)
+   FalconThermostat th;
+   th.longHeat    = r.campaign[0].heat;
+   th.shortHeat   = r.campaign[1].heat;
+   th.combinedHeat= th.longHeat + th.shortHeat;
+   double eq=AccountInfoDouble(ACCOUNT_EQUITY);
+   if(eq>tr_equityPeak) tr_equityPeak=eq;
+   double ddPct=(tr_equityPeak>0.0 ? (tr_equityPeak-eq)/tr_equityPeak*100.0 : 0.0);
+   th.equityPeak  = tr_equityPeak;
+   th.accountHeat = FalconClamp(ddPct/MathMax(g_cfg.acctHeatDDPct,1e-6),0.0,1.0);
+   // whipsaw trap: BOTH books warm at the same time
+   th.whipsawLock = (th.longHeat>=g_cfg.heatThrottle && th.shortHeat>=g_cfg.heatThrottle);
+   r.thermostat   = th;
+
+   // 3) admission for each campaign (consults the thermostat)
+   TR_Admission(r.campaign[0], th);
+   TR_Admission(r.campaign[1], th);
+
+   // commit shared state BEFORE managing (admissions drive the basket manager)
+   g_state.risk = r;
+
+   // 4) manage each basket (breakeven lock / catastrophe flatten)
+   TR_ManageBasket(0, g_state.risk.campaign[0]);
+   TR_ManageBasket(1, g_state.risk.campaign[1]);
+}
+
+//==================================================================
+// PUBLIC GATE — Symphony calls this before EVERY entry. Returns the
+// admitted lot size (0 = entry denied). Scales the proposed size by
+// the campaign's thermal admission and caps it to the remaining
+// per-campaign lot budget.
+//==================================================================
+double TR_AdmitLots(const int dir,const double proposedLots)
+{
+   if(!g_cfg.useThermalRisk) return(proposedLots);
+   if(proposedLots<=0.0)     return(0.0);
+
+   int idx = (dir==DIR_LONG ? 0 : 1);
+   FalconThermalCampaign c = g_state.risk.campaign[idx];
+
+   if(c.admission==ADM_FROZEN || c.admission==ADM_DERISK) return(0.0);
+   if(c.stackCount>=g_cfg.maxStacks)                      return(0.0);
+
+   double scaled = proposedLots*c.admitLotScale;
+   double remaining = g_cfg.maxCampaignLots - c.totalLots;
+   if(remaining<=0.0) return(0.0);
+   if(scaled>remaining) scaled=remaining;
+
+   // normalise to broker volume step
+   double lotStep=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP);
+   double minLot =SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);
+   if(lotStep<=0) lotStep=0.01;
+   if(minLot<=0)  minLot=0.01;
+   scaled = MathFloor(scaled/lotStep)*lotStep;
+   if(scaled<minLot)
+   {
+      // only allow the floor lot if the campaign is OPEN/THROTTLED and has room
+      if(c.admission==ADM_OPEN && remaining>=minLot) scaled=minLot;
+      else return(0.0);
+   }
+   if(g_cfg.maxLots>0 && scaled>g_cfg.maxLots) scaled=g_cfg.maxLots;
+   int volDigits=(lotStep>=1.0?0:lotStep>=0.1?1:2);
+   return(NormalizeDouble(scaled,volDigits));
+}
+
+#endif // FALCON_THERMAL_RISK_ENGINE_MQH
+//+------------------------------------------------------------------+
+
 //  ===== Engines/SymphonyEngine.mqh =====
 //+------------------------------------------------------------------+
 //|  FALCON OS — Execution Layer : SymphonyEngine.mqh               |
@@ -4896,7 +5299,7 @@ void SymphonyExecuteTrading()
    {
       double entry = SymbolInfoDouble(_Symbol,SYMBOL_ASK);
       double sl    = sym_anchorLow - atrNow*0.25;
-      double lots  = Sym_ComputeLots(riskCash,entry,sl);
+      double lots  = TR_AdmitLots(DIR_LONG, Sym_ComputeLots(riskCash,entry,sl));
       if(sl>0 && entry>sl && lots>0)
       {
          if(EE_SendMarketOrder(+1,lots,sl,"SYM P3 Long"))
@@ -4915,7 +5318,7 @@ void SymphonyExecuteTrading()
       {
          double entry = SymbolInfoDouble(_Symbol,SYMBOL_ASK);
          double sl    = sym_anchorLow - atrNow*0.25;
-         double lots  = Sym_ComputeLots(riskCash,entry,sl);
+         double lots  = TR_AdmitLots(DIR_LONG, Sym_ComputeLots(riskCash,entry,sl));
          if(sl>0 && entry>sl && lots>0)
          {
             if(EE_SendMarketOrder(+1,lots,sl,"SYM P4 Long"))
@@ -4932,7 +5335,7 @@ void SymphonyExecuteTrading()
    {
       double entry = SymbolInfoDouble(_Symbol,SYMBOL_BID);
       double sl    = sym_anchorHigh + atrNow*0.25;
-      double lots  = Sym_ComputeLots(riskCash,entry,sl);
+      double lots  = TR_AdmitLots(DIR_SHORT, Sym_ComputeLots(riskCash,entry,sl));
       if(sl>0 && sl>entry && lots>0)
       {
          if(EE_SendMarketOrder(-1,lots,sl,"SYM P3 Short"))
@@ -4951,7 +5354,7 @@ void SymphonyExecuteTrading()
       {
          double entry = SymbolInfoDouble(_Symbol,SYMBOL_BID);
          double sl    = sym_anchorHigh + atrNow*0.25;
-         double lots  = Sym_ComputeLots(riskCash,entry,sl);
+         double lots  = TR_AdmitLots(DIR_SHORT, Sym_ComputeLots(riskCash,entry,sl));
          if(sl>0 && sl>entry && lots>0)
          {
             if(EE_SendMarketOrder(-1,lots,sl,"SYM P4 Short"))
@@ -5282,14 +5685,26 @@ string VZ_Body(const int tab)
          s+="Owner TF idx: "+IntegerToString(h.ownerTF)+"   Fractal "+(h.fractalAgreement?"AGREE":"split")+"\n";
          s+="FU Candle   : "+(fuv.active?VZ_Dir(fuv.dir)+" zone "+VZ_Px(fuv.zoneBot)+"-"+VZ_Px(fuv.zoneTop)+"  conf "+DoubleToString(fuv.confidence,0)+"  life "+IntegerToString(fuv.lifecycle):"none");
          break;
-      case 8: // RISK
-         s+="Risk OK     : "+(e.riskOk?"YES":"NO")+"\n";
-         s+="VaR3 / lim  : "+DoubleToString(e.var3,0)+" / "+DoubleToString(e.var3Limit,0)+"\n";
-         s+="Long  gross : "+DoubleToString(e.longGrossLots,2)+" lots  VaR "+DoubleToString(e.longGrossVaR,0)+"\n";
-         s+="Short gross : "+DoubleToString(e.shortGrossLots,2)+" lots  VaR "+DoubleToString(e.shortGrossVaR,0)+"\n";
-         s+="UDS max     : "+DoubleToString(e.udsMax,2)+"   Bomb "+(e.anyBomb?"YES":"no")+"\n";
+      case 8: // RISK — PYRO Campaign Thermodynamics
+      {
+         FalconThermalCampaign cl=g_state.risk.campaign[0];
+         FalconThermalCampaign cs=g_state.risk.campaign[1];
+         FalconThermostat th=g_state.risk.thermostat;
+         s+="Engine      : "+(g_cfg.useThermalRisk?"PYRO thermal ON":"OFF")+"   Risk OK "+(e.riskOk?"YES":"NO")+"\n";
+         s+="LONG  camp  : "+IntegerToString(cl.stackCount)+" stacks  "+DoubleToString(cl.totalLots,2)+" lots\n";
+         s+="  heat "+DoubleToString(cl.heat,2)+"  "+FalconAdmitStr(cl.admission)+"  x"+DoubleToString(cl.admitLotScale,2)
+            +(cl.adverseATR>0.0?"  -"+DoubleToString(cl.adverseATR,1)+"ATR":"  +"+DoubleToString(cl.favorableATR,1)+"ATR")
+            +(cl.breakevenLocked?"  BE-LOCK":"")+"\n";
+         s+="SHORT camp  : "+IntegerToString(cs.stackCount)+" stacks  "+DoubleToString(cs.totalLots,2)+" lots\n";
+         s+="  heat "+DoubleToString(cs.heat,2)+"  "+FalconAdmitStr(cs.admission)+"  x"+DoubleToString(cs.admitLotScale,2)
+            +(cs.adverseATR>0.0?"  -"+DoubleToString(cs.adverseATR,1)+"ATR":"  +"+DoubleToString(cs.favorableATR,1)+"ATR")
+            +(cs.breakevenLocked?"  BE-LOCK":"")+"\n";
+         s+="Thermostat  : combined "+DoubleToString(th.combinedHeat,2)+"  acct "+DoubleToString(th.accountHeat*100.0,0)+"%"
+            +(th.whipsawLock?"  WHIPSAW-LOCK":"")+"\n";
+         s+="Blended E   : L "+VZ_Px(cl.blendedEntry)+"  S "+VZ_Px(cs.blendedEntry)+"\n";
          s+="Failure swg : "+DoubleToString(x.failureSwingProb*100.0,0)+"%   Loops left "+DoubleToString(x.expectedLoopsRemaining,1);
          break;
+      }
       case 9: // EXECUTION
          s+="Action      : "+FalconActionStr(e.action)+"\n";
          s+="Trade State : "+FalconTradeStateStr(e.tradeState)+"   Last exit "+FalconExitStateStr(e.exitState)+"\n";
@@ -5509,6 +5924,13 @@ void FalconPipeline()
    // Trailing → Exits → Entries   (never decides, only executes)
    FalconModuleStart(MOD_EXEC,t0);
    ExecutionEngineRun();
+   // PYRO campaign-thermodynamics risk: compute per-direction basket HEAT,
+   // set stack admissions (OPEN/THROTTLED/FROZEN/DE-RISK), run the portfolio
+   // thermostat, and manage baskets (breakeven-lock winners / catastrophe-
+   // flatten a thermal runaway). Runs BEFORE Symphony so admission scales are
+   // fresh when its entries consult TR_AdmitLots.
+   if(g_cfg.useThermalRisk)
+      ThermalRiskUpdate();
    // Symphony is the PRECISION entry/exit authority when enabled: it manages
    // its own Phase 3/4 entries + ARC/institutional exits using Symphony's own
    // stop placement. The FALCON entry/exit block in ExecutionEngineRun() is
@@ -5551,6 +5973,7 @@ int OnInit()
    DecisionEngineInit();
    ExecutionEngineInit();
    FalconPersistenceInit();
+   if(g_cfg.useThermalRisk) ThermalRiskInit();
    if(g_cfg.useSymphony) SymphonyInit();
 
    if(!FalconRefreshSeries())

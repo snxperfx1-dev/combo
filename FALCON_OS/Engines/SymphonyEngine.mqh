@@ -534,7 +534,7 @@ void SymphonyExecuteTrading()
    {
       double entry = SymbolInfoDouble(_Symbol,SYMBOL_ASK);
       double sl    = sym_anchorLow - atrNow*0.25;
-      double lots  = Sym_ComputeLots(riskCash,entry,sl);
+      double lots  = TR_AdmitLots(DIR_LONG, Sym_ComputeLots(riskCash,entry,sl));
       if(sl>0 && entry>sl && lots>0)
       {
          if(EE_SendMarketOrder(+1,lots,sl,"SYM P3 Long"))
@@ -553,7 +553,7 @@ void SymphonyExecuteTrading()
       {
          double entry = SymbolInfoDouble(_Symbol,SYMBOL_ASK);
          double sl    = sym_anchorLow - atrNow*0.25;
-         double lots  = Sym_ComputeLots(riskCash,entry,sl);
+         double lots  = TR_AdmitLots(DIR_LONG, Sym_ComputeLots(riskCash,entry,sl));
          if(sl>0 && entry>sl && lots>0)
          {
             if(EE_SendMarketOrder(+1,lots,sl,"SYM P4 Long"))
@@ -570,7 +570,7 @@ void SymphonyExecuteTrading()
    {
       double entry = SymbolInfoDouble(_Symbol,SYMBOL_BID);
       double sl    = sym_anchorHigh + atrNow*0.25;
-      double lots  = Sym_ComputeLots(riskCash,entry,sl);
+      double lots  = TR_AdmitLots(DIR_SHORT, Sym_ComputeLots(riskCash,entry,sl));
       if(sl>0 && sl>entry && lots>0)
       {
          if(EE_SendMarketOrder(-1,lots,sl,"SYM P3 Short"))
@@ -589,7 +589,7 @@ void SymphonyExecuteTrading()
       {
          double entry = SymbolInfoDouble(_Symbol,SYMBOL_BID);
          double sl    = sym_anchorHigh + atrNow*0.25;
-         double lots  = Sym_ComputeLots(riskCash,entry,sl);
+         double lots  = TR_AdmitLots(DIR_SHORT, Sym_ComputeLots(riskCash,entry,sl));
          if(sl>0 && sl>entry && lots>0)
          {
             if(EE_SendMarketOrder(-1,lots,sl,"SYM P4 Short"))

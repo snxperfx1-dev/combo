@@ -85,6 +85,18 @@ input double  InpMaxEntryComplete = 85.0;// Block NEW entries when wave completi
 input double  InpMinEntryRoomPct  = 25.0;// Block NEW entries when geometry room to target < this
 input double  InpAttentionATR     = 1.0; // Entry attention: price must be within this many ATR of the active node (0=off)
 
+input string  __sep_thermal     = "════════ CAMPAIGN THERMAL RISK (PYRO) ════════"; // ──
+input bool    InpUseThermalRisk  = true;  // Use PYRO campaign-thermodynamics risk engine
+input int     InpMaxStacks       = 12;    // Max stacked entries per directional campaign
+input double  InpMaxCampaignLots = 8.0;   // Max total lots per directional campaign
+input double  InpHeatThrottle    = 0.55;  // Heat above this shrinks new stack size
+input double  InpHeatFreeze      = 0.80;  // Heat above this freezes new stacks
+input double  InpHeatCritical    = 1.10;  // Heat above this flattens the campaign (catastrophe stop)
+input int     InpMaxAvgDownStacks= 3;     // Max stacks allowed while basket is underwater (anti-martingale)
+input double  InpHeatAdverseSpan = 4.0;   // Adverse excursion (ATR) that equals full adverse heat
+input double  InpBasketLockATR   = 1.5;   // Lock basket breakeven once favorable excursion >= this (ATR)
+input double  InpAcctHeatDDPct   = 15.0;  // Account heat: equity drawdown %% that fully freezes admissions
+
 input string  __sep_viz         = "════════ VISUALIZATION ════════"; // ──
 input bool    InpShowDashboard  = true;  // Show unified dashboard
 input bool    InpShowHUD        = true;  // Plot Flight HUD levels on chart
@@ -121,6 +133,11 @@ struct FalconConfig
    double trailStartATR, trailDistATR, maxDrawdownPct, ddFlattenPct;
    double maxEntryComplete, minEntryRoomPct;
    double attentionATR;
+   // thermal risk (PYRO)
+   bool   useThermalRisk;  int maxStacks;  double maxCampaignLots;
+   double heatThrottle, heatFreeze, heatCritical;
+   int    maxAvgDownStacks;
+   double heatAdverseSpan, basketLockATR, acctHeatDDPct;
    // viz
    bool   showDashboard, verboseLog;  int dashboardTab;
    bool   showHUD;
@@ -191,6 +208,17 @@ void FalconConfigInit()
    g_cfg.maxEntryComplete = InpMaxEntryComplete;
    g_cfg.minEntryRoomPct  = InpMinEntryRoomPct;
    g_cfg.attentionATR     = InpAttentionATR;
+
+   g_cfg.useThermalRisk   = InpUseThermalRisk;
+   g_cfg.maxStacks        = InpMaxStacks;
+   g_cfg.maxCampaignLots  = InpMaxCampaignLots;
+   g_cfg.heatThrottle     = InpHeatThrottle;
+   g_cfg.heatFreeze       = InpHeatFreeze;
+   g_cfg.heatCritical     = InpHeatCritical;
+   g_cfg.maxAvgDownStacks = InpMaxAvgDownStacks;
+   g_cfg.heatAdverseSpan  = InpHeatAdverseSpan;
+   g_cfg.basketLockATR    = InpBasketLockATR;
+   g_cfg.acctHeatDDPct    = InpAcctHeatDDPct;
 
    g_cfg.showDashboard    = InpShowDashboard;
    g_cfg.showHUD          = InpShowHUD;

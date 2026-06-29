@@ -165,14 +165,26 @@ string VZ_Body(const int tab)
          s+="Owner TF idx: "+IntegerToString(h.ownerTF)+"   Fractal "+(h.fractalAgreement?"AGREE":"split")+"\n";
          s+="FU Candle   : "+(fuv.active?VZ_Dir(fuv.dir)+" zone "+VZ_Px(fuv.zoneBot)+"-"+VZ_Px(fuv.zoneTop)+"  conf "+DoubleToString(fuv.confidence,0)+"  life "+IntegerToString(fuv.lifecycle):"none");
          break;
-      case 8: // RISK
-         s+="Risk OK     : "+(e.riskOk?"YES":"NO")+"\n";
-         s+="VaR3 / lim  : "+DoubleToString(e.var3,0)+" / "+DoubleToString(e.var3Limit,0)+"\n";
-         s+="Long  gross : "+DoubleToString(e.longGrossLots,2)+" lots  VaR "+DoubleToString(e.longGrossVaR,0)+"\n";
-         s+="Short gross : "+DoubleToString(e.shortGrossLots,2)+" lots  VaR "+DoubleToString(e.shortGrossVaR,0)+"\n";
-         s+="UDS max     : "+DoubleToString(e.udsMax,2)+"   Bomb "+(e.anyBomb?"YES":"no")+"\n";
+      case 8: // RISK — PYRO Campaign Thermodynamics
+      {
+         FalconThermalCampaign cl=g_state.risk.campaign[0];
+         FalconThermalCampaign cs=g_state.risk.campaign[1];
+         FalconThermostat th=g_state.risk.thermostat;
+         s+="Engine      : "+(g_cfg.useThermalRisk?"PYRO thermal ON":"OFF")+"   Risk OK "+(e.riskOk?"YES":"NO")+"\n";
+         s+="LONG  camp  : "+IntegerToString(cl.stackCount)+" stacks  "+DoubleToString(cl.totalLots,2)+" lots\n";
+         s+="  heat "+DoubleToString(cl.heat,2)+"  "+FalconAdmitStr(cl.admission)+"  x"+DoubleToString(cl.admitLotScale,2)
+            +(cl.adverseATR>0.0?"  -"+DoubleToString(cl.adverseATR,1)+"ATR":"  +"+DoubleToString(cl.favorableATR,1)+"ATR")
+            +(cl.breakevenLocked?"  BE-LOCK":"")+"\n";
+         s+="SHORT camp  : "+IntegerToString(cs.stackCount)+" stacks  "+DoubleToString(cs.totalLots,2)+" lots\n";
+         s+="  heat "+DoubleToString(cs.heat,2)+"  "+FalconAdmitStr(cs.admission)+"  x"+DoubleToString(cs.admitLotScale,2)
+            +(cs.adverseATR>0.0?"  -"+DoubleToString(cs.adverseATR,1)+"ATR":"  +"+DoubleToString(cs.favorableATR,1)+"ATR")
+            +(cs.breakevenLocked?"  BE-LOCK":"")+"\n";
+         s+="Thermostat  : combined "+DoubleToString(th.combinedHeat,2)+"  acct "+DoubleToString(th.accountHeat*100.0,0)+"%"
+            +(th.whipsawLock?"  WHIPSAW-LOCK":"")+"\n";
+         s+="Blended E   : L "+VZ_Px(cl.blendedEntry)+"  S "+VZ_Px(cs.blendedEntry)+"\n";
          s+="Failure swg : "+DoubleToString(x.failureSwingProb*100.0,0)+"%   Loops left "+DoubleToString(x.expectedLoopsRemaining,1);
          break;
+      }
       case 9: // EXECUTION
          s+="Action      : "+FalconActionStr(e.action)+"\n";
          s+="Trade State : "+FalconTradeStateStr(e.tradeState)+"   Last exit "+FalconExitStateStr(e.exitState)+"\n";
