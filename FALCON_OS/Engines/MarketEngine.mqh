@@ -861,10 +861,27 @@ void ME_UpdateHTF()
    int bull=0, bear=0;
    for(int i=0;i<7;i++)
    {
-      int d = ME_TFCurve(me_htfTF[i], i);   // REAL per-TF wave engine
+      int d;
+      if(me_htfTF[i]==_Period)
+      {
+         // UNIFY (single source of truth): the chart rung REUSES the primary
+         // wave FSM (g_state.wave) instead of running a second FSM. Removes the
+         // one true duplication — chart phase now exists exactly once.
+         d = g_state.wave.direction;
+         g_tfCurve[i].oDir       = d;
+         g_tfCurve[i].oPhase     = g_state.wave.phase;
+         g_tfCurve[i].oCompletion= g_state.wave.completion;
+         g_tfCurve[i].oOrigin    = g_state.wave.origin;
+         g_tfCurve[i].oExtreme   = g_state.wave.extreme;
+         g_tfCurve[i].oObjective = g_state.wave.objective;
+         g_tfCurve[i].oRecBrk    = g_state.wave.recursionBreaks;
+         g_tfCurve[i].oDom       = g_state.wave.dominanceTransfer;
+         me_htfDirState[i]=d; me_htfOrigin[i]=g_state.wave.origin;
+      }
+      else d = ME_TFCurve(me_htfTF[i], i);   // REAL per-TF wave engine (other rungs)
       h.dir[i]=d;
       h.beliefs[i]=d;
-      h.prog[i]=g_tfCurve[i].oCompletion;   // genuine per-TF wave completion
+      h.prog[i]=g_tfCurve[i].oCompletion;
       if(d==1) bull++; else if(d==-1) bear++;
    }
    h.stackDir  = (bull>bear?DIR_LONG:bear>bull?DIR_SHORT:DIR_NONE);

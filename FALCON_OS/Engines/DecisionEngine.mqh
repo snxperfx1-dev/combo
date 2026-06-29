@@ -50,10 +50,13 @@ int DE_ChiefStrategist(const int master,const double conflict,const double confi
 
    if(resCode==RES_RESOLVED) return(ACT_EXIT);   // energy spent -> bank
 
-   // EXECUTE only when the ENTRY CYCLE has begun, in the terminal zone, in the
-   // continuation/return direction. This is the build-vs-execute distinction:
-   // no entries during expansion/transition/retracement (the building side).
-   if(ec.entryCycleActive && ec.entryDir!=DIR_NONE && gatesOk)
+   // EXECUTE only when the ENTRY CYCLE is active in the terminal zone AND the
+   // entry direction agrees with the OWNER (ownership has flipped/confirmed to
+   // this side). This is the flip-aware campaign gate: at a valid terminal the
+   // owner has just flipped to the wave direction, so they match and it fires;
+   // during a building counter-move ownership has NOT flipped, so entryDir !=
+   // owner and the entry is blocked. No vote — direction is inherited from WHO.
+   if(ec.entryCycleActive && ec.entryDir!=DIR_NONE && ec.entryDir==master && gatesOk)
       return(ec.entryDir==DIR_LONG ? ACT_BUY : ACT_SELL);
 
    // In the terminal zone but the entry cycle has not started yet -> armed/waiting.
@@ -140,19 +143,26 @@ void DecisionEngineRun()
    FalconHTF    h  = g_state.htf;
    FalconNetwork n = g_state.network;
 
-   //-- FOUR VOTERS -------------------------------------------------
-   int vWave  = w.direction;          // LETRA wave
-   int vStack = h.stackDir;           // fractal stack
-   int vNet   = n.bias;               // invisible network bias
-   int vPress = n.pressureDir;        // network authority pressure
-   int sum    = vWave+vStack+vNet+vPress;
-   int master = sum>0?DIR_LONG:sum<0?DIR_SHORT:DIR_NONE;
+   //-- OWNERSHIP IS THE DIRECTION AUTHORITY (no voting) ------------
+   // Direction EMERGES from who owns price (the flip-driven Campaign owner),
+   // scaled by the curve. The four signals below are NOT voters that pick a
+   // side — they are EVIDENCE measuring how strongly the market agrees with the
+   // established owner. That agreement sets conviction (confidence/threat),
+   // never direction.
+   int ownerDir = g_state.campaign.owner;
+   if(ownerDir==DIR_NONE) ownerDir = g_state.curve.ownerDir;   // fallback before first flip
+   int master   = ownerDir;
+
+   int vWave  = w.direction;          // LETRA wave        (evidence)
+   int vStack = h.stackDir;           // fractal stack     (evidence)
+   int vNet   = n.bias;               // network bias      (evidence)
+   int vPress = n.pressureDir;        // network pressure  (evidence)
 
    int cast = (vWave!=0?1:0)+(vStack!=0?1:0)+(vNet!=0?1:0)+(vPress!=0?1:0);
-   int forV = (vWave==master&&vWave!=0?1:0)+(vStack==master&&vStack!=0?1:0)
-             +(vNet==master&&vNet!=0?1:0)+(vPress==master&&vPress!=0?1:0);
+   int forV = (vWave==master&&master!=0?1:0)+(vStack==master&&master!=0?1:0)
+             +(vNet==master&&master!=0?1:0)+(vPress==master&&master!=0?1:0);
 
-   double alignment = (cast>0?(double)forV/(double)cast*100.0:50.0);
+   double alignment = (cast>0?(double)forV/(double)cast*100.0:50.0); // agreement WITH owner
    double conflict  = (cast>0?(double)(cast-forV)/(double)cast*100.0:0.0);
 
    //-- TIME / CYCLE conflict proxy (HTF stack disagreement) --------
@@ -191,10 +201,9 @@ void DecisionEngineRun()
    //==============================================================
    int action = DE_ChiefStrategist(master,conflict,confidence,threat,oppGrade,resCode);
 
-   // when the entry cycle is active, the EXECUTION direction is the entry-cycle
-   // direction (continuation/return), not the raw 4-voter master.
-   int execMaster = (g_state.entryCycle.entryCycleActive && g_state.entryCycle.entryDir!=DIR_NONE)
-                    ? g_state.entryCycle.entryDir : master;
+   // execution direction = ownership (master). When the entry cycle fires, its
+   // entryDir already equals the owner (enforced by the gate above).
+   int execMaster = master;
    action     = DE_CampaignAI(action,execMaster,threat);
 
    // commit the meta scores first so Master Chief reads/writes the shared intel

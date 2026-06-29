@@ -385,18 +385,28 @@ void MEM_ComputeCampaign()
    FalconCampaign cm;
    FalconHTF h=g_state.htf;
    FalconNetwork n=g_state.network;
+   FalconWave w=g_state.wave;
 
-   // control derives from fractal alignment + network pressure agreement
-   int side = h.stackDir;
+   // OWNERSHIP AUTHORITY — the single source of WHO owns price, and therefore
+   // the single source of DIRECTION. Ownership FLIPS only when a transition
+   // completes: price confirms the return out of the terminal zone
+   // (DEMAND/SUPPLY RETURN) or dominance has fully transferred (>=50%). Until a
+   // flip confirms, the established owner PERSISTS — building counter-moves do
+   // NOT change ownership. This flip is the event that drives direction; no vote.
+   bool flip = (w.phase==PH_DEMAND_RETURN || w.phase==PH_SUPPLY_RETURN || w.dominanceTransfer>=50.0);
+   if(flip && w.direction!=DIR_NONE && w.direction!=mem_campOwner)
+   { mem_campOwner=w.direction; mem_campStart=g_barCounter; }
+   // seed once at boot if there is no established owner yet
+   if(mem_campOwner==DIR_NONE && h.stackDir!=DIR_NONE){ mem_campOwner=h.stackDir; mem_campStart=g_barCounter; }
+
+   // control = how strongly the evidence agrees with the established owner
    double control = h.alignment;
-   if(n.pressureDir==side && side!=DIR_NONE) control = MathMin(100.0, control+15.0);
-
-   if(side!=mem_campOwner && side!=DIR_NONE){ mem_campOwner=side; mem_campStart=g_barCounter; }
+   if(n.pressureDir==mem_campOwner && mem_campOwner!=DIR_NONE) control=MathMin(100.0,control+15.0);
 
    cm.owner=mem_campOwner;
    cm.controlScore=FalconClamp(control,0,100);
    cm.objectiveDir=mem_campOwner;
-   cm.remainingEnergy=g_state.intel.residualEnergy; // filled later by intel; safe default
+   cm.remainingEnergy=g_state.intel.residualEnergy; // back-filled by Intelligence
    cm.age=g_barCounter-mem_campStart;
    cm.institution=(mem_campOwner==DIR_LONG?"Accumulation":mem_campOwner==DIR_SHORT?"Distribution":"Neutral");
 

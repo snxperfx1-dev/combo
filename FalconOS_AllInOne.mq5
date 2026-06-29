@@ -4,7 +4,7 @@
 //|   SINGLE-FILE BUILD (kernel + 6 engines + EA, auto-combined).     |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "2.10"
+#property version   "3.00"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -2366,10 +2366,27 @@ void ME_UpdateHTF()
    int bull=0, bear=0;
    for(int i=0;i<7;i++)
    {
-      int d = ME_TFCurve(me_htfTF[i], i);   // REAL per-TF wave engine
+      int d;
+      if(me_htfTF[i]==_Period)
+      {
+         // UNIFY (single source of truth): the chart rung REUSES the primary
+         // wave FSM (g_state.wave) instead of running a second FSM. Removes the
+         // one true duplication — chart phase now exists exactly once.
+         d = g_state.wave.direction;
+         g_tfCurve[i].oDir       = d;
+         g_tfCurve[i].oPhase     = g_state.wave.phase;
+         g_tfCurve[i].oCompletion= g_state.wave.completion;
+         g_tfCurve[i].oOrigin    = g_state.wave.origin;
+         g_tfCurve[i].oExtreme   = g_state.wave.extreme;
+         g_tfCurve[i].oObjective = g_state.wave.objective;
+         g_tfCurve[i].oRecBrk    = g_state.wave.recursionBreaks;
+         g_tfCurve[i].oDom       = g_state.wave.dominanceTransfer;
+         me_htfDirState[i]=d; me_htfOrigin[i]=g_state.wave.origin;
+      }
+      else d = ME_TFCurve(me_htfTF[i], i);   // REAL per-TF wave engine (other rungs)
       h.dir[i]=d;
       h.beliefs[i]=d;
-      h.prog[i]=g_tfCurve[i].oCompletion;   // genuine per-TF wave completion
+      h.prog[i]=g_tfCurve[i].oCompletion;
       if(d==1) bull++; else if(d==-1) bear++;
    }
    h.stackDir  = (bull>bear?DIR_LONG:bear>bull?DIR_SHORT:DIR_NONE);
@@ -2786,18 +2803,28 @@ void MEM_ComputeCampaign()
    FalconCampaign cm;
    FalconHTF h=g_state.htf;
    FalconNetwork n=g_state.network;
+   FalconWave w=g_state.wave;
 
-   // control derives from fractal alignment + network pressure agreement
-   int side = h.stackDir;
+   // OWNERSHIP AUTHORITY — the single source of WHO owns price, and therefore
+   // the single source of DIRECTION. Ownership FLIPS only when a transition
+   // completes: price confirms the return out of the terminal zone
+   // (DEMAND/SUPPLY RETURN) or dominance has fully transferred (>=50%). Until a
+   // flip confirms, the established owner PERSISTS — building counter-moves do
+   // NOT change ownership. This flip is the event that drives direction; no vote.
+   bool flip = (w.phase==PH_DEMAND_RETURN || w.phase==PH_SUPPLY_RETURN || w.dominanceTransfer>=50.0);
+   if(flip && w.direction!=DIR_NONE && w.direction!=mem_campOwner)
+   { mem_campOwner=w.direction; mem_campStart=g_barCounter; }
+   // seed once at boot if there is no established owner yet
+   if(mem_campOwner==DIR_NONE && h.stackDir!=DIR_NONE){ mem_campOwner=h.stackDir; mem_campStart=g_barCounter; }
+
+   // control = how strongly the evidence agrees with the established owner
    double control = h.alignment;
-   if(n.pressureDir==side && side!=DIR_NONE) control = MathMin(100.0, control+15.0);
-
-   if(side!=mem_campOwner && side!=DIR_NONE){ mem_campOwner=side; mem_campStart=g_barCounter; }
+   if(n.pressureDir==mem_campOwner && mem_campOwner!=DIR_NONE) control=MathMin(100.0,control+15.0);
 
    cm.owner=mem_campOwner;
    cm.controlScore=FalconClamp(control,0,100);
    cm.objectiveDir=mem_campOwner;
-   cm.remainingEnergy=g_state.intel.residualEnergy; // filled later by intel; safe default
+   cm.remainingEnergy=g_state.intel.residualEnergy; // back-filled by Intelligence
    cm.age=g_barCounter-mem_campStart;
    cm.institution=(mem_campOwner==DIR_LONG?"Accumulation":mem_campOwner==DIR_SHORT?"Distribution":"Neutral");
 
@@ -3414,10 +3441,13 @@ int DE_ChiefStrategist(const int master,const double conflict,const double confi
 
    if(resCode==RES_RESOLVED) return(ACT_EXIT);   // energy spent -> bank
 
-   // EXECUTE only when the ENTRY CYCLE has begun, in the terminal zone, in the
-   // continuation/return direction. This is the build-vs-execute distinction:
-   // no entries during expansion/transition/retracement (the building side).
-   if(ec.entryCycleActive && ec.entryDir!=DIR_NONE && gatesOk)
+   // EXECUTE only when the ENTRY CYCLE is active in the terminal zone AND the
+   // entry direction agrees with the OWNER (ownership has flipped/confirmed to
+   // this side). This is the flip-aware campaign gate: at a valid terminal the
+   // owner has just flipped to the wave direction, so they match and it fires;
+   // during a building counter-move ownership has NOT flipped, so entryDir !=
+   // owner and the entry is blocked. No vote — direction is inherited from WHO.
+   if(ec.entryCycleActive && ec.entryDir!=DIR_NONE && ec.entryDir==master && gatesOk)
       return(ec.entryDir==DIR_LONG ? ACT_BUY : ACT_SELL);
 
    // In the terminal zone but the entry cycle has not started yet -> armed/waiting.
@@ -3504,19 +3534,26 @@ void DecisionEngineRun()
    FalconHTF    h  = g_state.htf;
    FalconNetwork n = g_state.network;
 
-   //-- FOUR VOTERS -------------------------------------------------
-   int vWave  = w.direction;          // LETRA wave
-   int vStack = h.stackDir;           // fractal stack
-   int vNet   = n.bias;               // invisible network bias
-   int vPress = n.pressureDir;        // network authority pressure
-   int sum    = vWave+vStack+vNet+vPress;
-   int master = sum>0?DIR_LONG:sum<0?DIR_SHORT:DIR_NONE;
+   //-- OWNERSHIP IS THE DIRECTION AUTHORITY (no voting) ------------
+   // Direction EMERGES from who owns price (the flip-driven Campaign owner),
+   // scaled by the curve. The four signals below are NOT voters that pick a
+   // side — they are EVIDENCE measuring how strongly the market agrees with the
+   // established owner. That agreement sets conviction (confidence/threat),
+   // never direction.
+   int ownerDir = g_state.campaign.owner;
+   if(ownerDir==DIR_NONE) ownerDir = g_state.curve.ownerDir;   // fallback before first flip
+   int master   = ownerDir;
+
+   int vWave  = w.direction;          // LETRA wave        (evidence)
+   int vStack = h.stackDir;           // fractal stack     (evidence)
+   int vNet   = n.bias;               // network bias      (evidence)
+   int vPress = n.pressureDir;        // network pressure  (evidence)
 
    int cast = (vWave!=0?1:0)+(vStack!=0?1:0)+(vNet!=0?1:0)+(vPress!=0?1:0);
-   int forV = (vWave==master&&vWave!=0?1:0)+(vStack==master&&vStack!=0?1:0)
-             +(vNet==master&&vNet!=0?1:0)+(vPress==master&&vPress!=0?1:0);
+   int forV = (vWave==master&&master!=0?1:0)+(vStack==master&&master!=0?1:0)
+             +(vNet==master&&master!=0?1:0)+(vPress==master&&master!=0?1:0);
 
-   double alignment = (cast>0?(double)forV/(double)cast*100.0:50.0);
+   double alignment = (cast>0?(double)forV/(double)cast*100.0:50.0); // agreement WITH owner
    double conflict  = (cast>0?(double)(cast-forV)/(double)cast*100.0:0.0);
 
    //-- TIME / CYCLE conflict proxy (HTF stack disagreement) --------
@@ -3555,10 +3592,9 @@ void DecisionEngineRun()
    //==============================================================
    int action = DE_ChiefStrategist(master,conflict,confidence,threat,oppGrade,resCode);
 
-   // when the entry cycle is active, the EXECUTION direction is the entry-cycle
-   // direction (continuation/return), not the raw 4-voter master.
-   int execMaster = (g_state.entryCycle.entryCycleActive && g_state.entryCycle.entryDir!=DIR_NONE)
-                    ? g_state.entryCycle.entryDir : master;
+   // execution direction = ownership (master). When the entry cycle fires, its
+   // entryDir already equals the owner (enforced by the gate above).
+   int execMaster = master;
    action     = DE_CampaignAI(action,execMaster,threat);
 
    // commit the meta scores first so Master Chief reads/writes the shared intel
