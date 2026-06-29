@@ -4,7 +4,7 @@
 //|   SINGLE-FILE BUILD (kernel + 6 engines + EA, auto-combined).     |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "1.04"
+#property version   "1.05"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -90,6 +90,8 @@ input double  InpTrailDistATR   = 1.5;   // Trailing distance (ATR)
 input bool    InpDDProtect      = true;  // Enable drawdown protection
 input double  InpMaxDrawdownPct = 12.0;  // Block entries above this drawdown %
 input double  InpDDFlattenPct   = 20.0;  // Flatten everything above this drawdown %
+input double  InpMaxEntryComplete = 85.0;// Block NEW entries when wave completion >= this (no buying tops / selling bottoms)
+input double  InpMinEntryRoomPct  = 25.0;// Block NEW entries when geometry room to target < this
 
 input string  __sep_viz         = "════════ VISUALIZATION ════════"; // ──
 input bool    InpShowDashboard  = true;  // Show unified dashboard
@@ -123,6 +125,7 @@ struct FalconConfig
    double riskPercent, rdLimit, contractValue;
    bool   trailEnable, ddProtect;
    double trailStartATR, trailDistATR, maxDrawdownPct, ddFlattenPct;
+   double maxEntryComplete, minEntryRoomPct;
    // viz
    bool   showDashboard, verboseLog;  int dashboardTab;
    bool   showHUD;
@@ -186,6 +189,8 @@ void FalconConfigInit()
    g_cfg.ddProtect        = InpDDProtect;
    g_cfg.maxDrawdownPct   = InpMaxDrawdownPct;
    g_cfg.ddFlattenPct     = InpDDFlattenPct;
+   g_cfg.maxEntryComplete = InpMaxEntryComplete;
+   g_cfg.minEntryRoomPct  = InpMinEntryRoomPct;
 
    g_cfg.showDashboard    = InpShowDashboard;
    g_cfg.showHUD          = InpShowHUD;
@@ -3432,6 +3437,18 @@ void EE_HandleEntries(const EE_Market &m)
    if(!wantBuy && !wantSell) return;
    if(!EE_IsTradeTime()) return;
    if(g_cfg.blockIfBreach && !ee_lastRiskOk) return;
+
+   // LATE / NO-ROOM GUARD (symmetric for both sides): never OPEN a fresh
+   // campaign into exhaustion — no buying the top, no selling the bottom.
+   // Blocked when the wave is near terminal or there is little room to the
+   // owner target. SCALE (adding to a winner) is exempt.
+   if(action!=ACT_SCALE)
+   {
+      bool tooLate = (g_state.wave.completion    >= g_cfg.maxEntryComplete);
+      bool noRoom  = (g_state.convexity.geometryCapacity < g_cfg.minEntryRoomPct);
+      if(tooLate || noRoom){ wantBuy=false; wantSell=false; }
+   }
+   if(!wantBuy && !wantSell) return;
 
    double atr=g_state.physics.atr;
    double close1=gClose[1];

@@ -77,6 +77,8 @@ input double  InpTrailDistATR   = 1.5;   // Trailing distance (ATR)
 input bool    InpDDProtect      = true;  // Enable drawdown protection
 input double  InpMaxDrawdownPct = 12.0;  // Block entries above this drawdown %
 input double  InpDDFlattenPct   = 20.0;  // Flatten everything above this drawdown %
+input double  InpMaxEntryComplete = 85.0;// Block NEW entries when wave completion >= this (no buying tops / selling bottoms)
+input double  InpMinEntryRoomPct  = 25.0;// Block NEW entries when geometry room to target < this
 
 input string  __sep_viz         = "════════ VISUALIZATION ════════"; // ──
 input bool    InpShowDashboard  = true;  // Show unified dashboard
@@ -110,6 +112,7 @@ struct FalconConfig
    double riskPercent, rdLimit, contractValue;
    bool   trailEnable, ddProtect;
    double trailStartATR, trailDistATR, maxDrawdownPct, ddFlattenPct;
+   double maxEntryComplete, minEntryRoomPct;
    // viz
    bool   showDashboard, verboseLog;  int dashboardTab;
    bool   showHUD;
@@ -173,6 +176,8 @@ void FalconConfigInit()
    g_cfg.ddProtect        = InpDDProtect;
    g_cfg.maxDrawdownPct   = InpMaxDrawdownPct;
    g_cfg.ddFlattenPct     = InpDDFlattenPct;
+   g_cfg.maxEntryComplete = InpMaxEntryComplete;
+   g_cfg.minEntryRoomPct  = InpMinEntryRoomPct;
 
    g_cfg.showDashboard    = InpShowDashboard;
    g_cfg.showHUD          = InpShowHUD;

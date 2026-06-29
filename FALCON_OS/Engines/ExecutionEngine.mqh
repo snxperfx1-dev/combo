@@ -360,6 +360,18 @@ void EE_HandleEntries(const EE_Market &m)
    if(!EE_IsTradeTime()) return;
    if(g_cfg.blockIfBreach && !ee_lastRiskOk) return;
 
+   // LATE / NO-ROOM GUARD (symmetric for both sides): never OPEN a fresh
+   // campaign into exhaustion — no buying the top, no selling the bottom.
+   // Blocked when the wave is near terminal or there is little room to the
+   // owner target. SCALE (adding to a winner) is exempt.
+   if(action!=ACT_SCALE)
+   {
+      bool tooLate = (g_state.wave.completion    >= g_cfg.maxEntryComplete);
+      bool noRoom  = (g_state.convexity.geometryCapacity < g_cfg.minEntryRoomPct);
+      if(tooLate || noRoom){ wantBuy=false; wantSell=false; }
+   }
+   if(!wantBuy && !wantSell) return;
+
    double atr=g_state.physics.atr;
    double close1=gClose[1];
    double equity=AccountInfoDouble(ACCOUNT_EQUITY);
