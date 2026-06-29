@@ -5,7 +5,7 @@
 //|   Risk: PYRO thermal + TALON curve-convergent structural grip.   |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "4.40"
+#property version   "4.50"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -105,6 +105,11 @@ input string  __sep_self        = "════════ SELF-AWARENESS (meta
 input bool    InpUseSelfAware     = true; // The OS watches its own form/calibration/health -> global risk throttle + stand-down
 input double  InpSelfMinThrottle  = 0.25; // Lowest size multiplier when self-confidence is low (1.0 = full)
 input int     InpSelfLossHalt     = 6;    // Consecutive losses that trigger a self stand-down (health=false)
+input string  __sep_miss       = "════════ MISSED-TRADE LEARNING (regret) ════════"; // ──
+input bool    InpUseMissLearn    = true;  // Track blocked signals as shadow trades; override a soft filter that keeps missing winners
+input int     InpMissMinN        = 8;     // Min resolved shadow trades per reason before override can activate
+input double  InpMissOverrideR    = 0.30; // Override a soft veto whose shadow expectancy (R) reaches/exceeds this
+input int     InpMissMaxBars      = 120;  // Bars a shadow trade waits for target/stop before expiring (neutral)
 
 input string  __sep_execution   = "════════ EXECUTION / RISK ════════"; // ──
 input bool    InpEnableTrading  = true;  // Allow live order sending
@@ -199,6 +204,7 @@ struct FalconConfig
    bool   useAdaptive;  int adaptMinTrades;
    double adaptVetoR, adaptSizeK, adaptAlpha;  bool adaptPersist;
    bool   useSelfAware;  double selfMinThrottle;  int selfLossHalt;
+   bool   useMissLearn;  int missMinN, missMaxBars;  double missOverrideR;
    // execution
    bool   enableTrading, blockIfBreach, sessionFilter;
    double riskPercent, contractValue;
@@ -296,6 +302,10 @@ void FalconConfigInit()
    g_cfg.useSelfAware     = InpUseSelfAware;
    g_cfg.selfMinThrottle  = InpSelfMinThrottle;
    g_cfg.selfLossHalt     = InpSelfLossHalt;
+   g_cfg.useMissLearn     = InpUseMissLearn;
+   g_cfg.missMinN         = InpMissMinN;
+   g_cfg.missOverrideR    = InpMissOverrideR;
+   g_cfg.missMaxBars      = InpMissMaxBars;
 
    g_cfg.enableTrading    = InpEnableTrading;
    g_cfg.blockIfBreach    = InpBlockIfBreach;
@@ -6157,6 +6167,170 @@ bool   SA_StandDown(){ return(g_cfg.useSelfAware && !g_state.self.health); }
 #endif // FALCON_SELF_AWARENESS_MQH
 //+------------------------------------------------------------------+
 
+//  ===== Engines/MissTrade.mqh =====
+//+------------------------------------------------------------------+
+//|  FALCON OS — Intelligence : MissTrade.mqh                       |
+//|                                                                  |
+//|  LEARN FROM MISSED TRADES (counterfactual / regret learning).   |
+//|                                                                  |
+//|  When a valid phase-edge signal is BLOCKED by a soft filter, the |
+//|  OS opens a SHADOW (paper) trade with the same composed stop and |
+//|  target. It then watches what that trade WOULD have done:        |
+//|    • hit target first  -> the filter cost us a winner (+R)        |
+//|    • hit stop first     -> the filter saved us a loser  (-1R)     |
+//|  The realised shadow R is attributed to the VETO REASON. If a     |
+//|  reason's shadow expectancy turns firmly POSITIVE over a sample,  |
+//|  that filter is over-blocking -> the OS starts OVERRIDING it and  |
+//|  TAKES the trades it used to miss.                                |
+//|                                                                  |
+//|  SAFETY: only SOFT filters are override-eligible (timing/quality  |
+//|  — late-on-curve, no-zone, no-room, exhausted, network/participant|
+//|  counter). HARD filters (owner/HTF opposes, CHoCH against, self   |
+//|  stand-down, learned-avoid) are NEVER overridden. Bounded sample  |
+//|  + EWMA + persisted. Reads ComposeTradePlan; include AFTER        |
+//|  TradePlan, BEFORE SymphonyEngine.                                |
+//+------------------------------------------------------------------+
+#ifndef FALCON_MISS_TRADE_MQH
+#define FALCON_MISS_TRADE_MQH
+
+
+// veto reason codes (shared with the fact gate)
+#define VR_NONE        0
+#define VR_HTF         1   // hard
+#define VR_OWNER       2   // hard
+#define VR_NOZONE      3   // soft (override-eligible)
+#define VR_CHOCH       4   // hard
+#define VR_NOROOM      5   // soft
+#define VR_EXHAUST     6   // soft
+#define VR_LATE        7   // soft
+#define VR_NETWORK     8   // soft
+#define VR_PARTICIPANT 9   // soft
+#define VR_LEARNED     10  // hard (already learned)
+#define VR_SELF        11  // hard (health)
+#define VR_NREASONS    12
+
+double mt_R[VR_NREASONS];     // EWMA shadow expectancy per reason
+int    mt_n[VR_NREASONS];     // resolved shadow sample
+int    mt_win[VR_NREASONS];
+
+#define MT_MAXSHADOW 128
+struct MTShadow { bool open; int dir; double entry, stop, target; int reason; int age; };
+MTShadow mt_sh[MT_MAXSHADOW];
+string   mt_fileName="";
+int      mt_saveTick=0;
+
+bool MT_Eligible(const int code)
+{
+   return(code==VR_NOZONE || code==VR_NOROOM || code==VR_EXHAUST
+       || code==VR_LATE   || code==VR_NETWORK|| code==VR_PARTICIPANT);
+}
+
+//------------------------------------------------------------------
+// Persistence
+//------------------------------------------------------------------
+void MT_Load()
+{
+   for(int i=0;i<VR_NREASONS;i++){ mt_R[i]=0.0; mt_n[i]=0; mt_win[i]=0; }
+   if(!g_cfg.useMissLearn) return;
+   mt_fileName = StringFormat("FALCON_Miss_%s_%s_%d.csv",
+                              IntegerToString(g_cfg.magic), _Symbol, (int)g_cfg.operatingTF);
+   int fh=FileOpen(mt_fileName, FILE_READ|FILE_CSV|FILE_ANSI|FILE_COMMON, ',');
+   if(fh==INVALID_HANDLE) return;
+   while(!FileIsEnding(fh))
+   {
+      int r=(int)FileReadNumber(fh); if(r<0||r>=VR_NREASONS){ if(FileIsLineEnding(fh))continue; else break; }
+      mt_n[r]  =(int)FileReadNumber(fh);
+      mt_win[r]=(int)FileReadNumber(fh);
+      mt_R[r]  =     FileReadNumber(fh);
+   }
+   FileClose(fh);
+   FalconLog("INFO","MissTrade","loaded counterfactual table "+mt_fileName);
+}
+
+void MT_Save()
+{
+   if(!g_cfg.useMissLearn || !g_cfg.adaptPersist) return;
+   int fh=FileOpen(mt_fileName, FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_COMMON, ',');
+   if(fh==INVALID_HANDLE) return;
+   for(int r=0;r<VR_NREASONS;r++) FileWrite(fh, r, mt_n[r], mt_win[r], DoubleToString(mt_R[r],4));
+   FileClose(fh);
+}
+
+void MissTradeInit()
+{
+   for(int i=0;i<MT_MAXSHADOW;i++) mt_sh[i].open=false;
+   mt_saveTick=0;
+   MT_Load();
+}
+
+//------------------------------------------------------------------
+// OVERRIDE — has the OS learned to TAKE trades it used to skip for
+// this reason? (soft reason + robust sample + positive shadow edge)
+//------------------------------------------------------------------
+bool MT_Override(const int code)
+{
+   if(!g_cfg.useMissLearn || !MT_Eligible(code)) return(false);
+   if(mt_n[code] < g_cfg.missMinN) return(false);
+   return(mt_R[code] >= g_cfg.missOverrideR);
+}
+
+//------------------------------------------------------------------
+// Record a missed signal as a shadow trade (composed stop/target).
+//------------------------------------------------------------------
+void MT_RecordMiss(const int dir,const double entry,const int reason)
+{
+   if(!g_cfg.useMissLearn || !MT_Eligible(reason)) return;
+   double atr=FalconATR(1); if(atr<=0.0) return;
+   FalconTradePlan pl = ComposeTradePlan(dir, entry, atr);
+   if(!pl.valid) return;
+   int slot=-1;
+   for(int i=0;i<MT_MAXSHADOW;i++) if(!mt_sh[i].open){ slot=i; break; }
+   if(slot<0) return;   // book full — skip
+   mt_sh[slot].open=true; mt_sh[slot].dir=dir; mt_sh[slot].entry=entry;
+   mt_sh[slot].stop=pl.stop; mt_sh[slot].target=pl.target; mt_sh[slot].reason=reason; mt_sh[slot].age=0;
+}
+
+void MT_Resolve(const int reason,const double R,const bool win)
+{
+   if(reason<0||reason>=VR_NREASONS) return;
+   double a=g_cfg.adaptAlpha;
+   if(mt_n[reason]==0) mt_R[reason]=R; else mt_R[reason]=mt_R[reason]+a*(R-mt_R[reason]);
+   mt_n[reason]++; if(win) mt_win[reason]++;
+}
+
+//------------------------------------------------------------------
+// Each bar: advance shadow trades; resolve those that hit target/stop.
+//------------------------------------------------------------------
+void MissTradeOnBar()
+{
+   if(!g_cfg.useMissLearn) return;
+   double hi=gHigh[1], lo=gLow[1];
+   for(int i=0;i<MT_MAXSHADOW;i++)
+   {
+      if(!mt_sh[i].open) continue;
+      mt_sh[i].age++;
+      double e=mt_sh[i].entry, st=mt_sh[i].stop, tg=mt_sh[i].target;
+      double denom=MathAbs(e-st); if(denom<1e-9){ mt_sh[i].open=false; continue; }
+      if(mt_sh[i].dir==DIR_LONG)
+      {
+         if(lo<=st){ MT_Resolve(mt_sh[i].reason,-1.0,false); mt_sh[i].open=false; }
+         else if(hi>=tg){ MT_Resolve(mt_sh[i].reason, (tg-e)/denom, true); mt_sh[i].open=false; }
+      }
+      else
+      {
+         if(hi>=st){ MT_Resolve(mt_sh[i].reason,-1.0,false); mt_sh[i].open=false; }
+         else if(lo<=tg){ MT_Resolve(mt_sh[i].reason, (e-tg)/denom, true); mt_sh[i].open=false; }
+      }
+      if(mt_sh[i].open && mt_sh[i].age>=g_cfg.missMaxBars) mt_sh[i].open=false;  // expire (neutral)
+   }
+   if(++mt_saveTick>=25){ mt_saveTick=0; MT_Save(); }
+}
+
+void MissTradeDeinit(){ MT_Save(); }
+
+#endif // FALCON_MISS_TRADE_MQH
+//+------------------------------------------------------------------+
+
 //  ===== Engines/SymphonyEngine.mqh =====
 //+------------------------------------------------------------------+
 //|  FALCON OS — Execution Layer : SymphonyEngine.mqh               |
@@ -6751,6 +6925,17 @@ bool Sym_AtRealZone(const int dir,const double px)
    }
 }
 
+// Soft-filter veto with regret learning: if the OS has LEARNED (from shadow
+// trades) that this filter keeps missing winners, OVERRIDE it and take the
+// trade; otherwise record the miss (keep learning) and veto.
+bool SymVeto(const int code,const string reason,const int dir,const double px)
+{
+   if(MT_Override(code)) return(false);   // learned to take it -> allow
+   MT_RecordMiss(dir, px, code);          // count the miss (keeps learning)
+   sym_factVeto = reason;
+   return(true);
+}
+
 bool SymphonyFactsConfirm(const int dir)
 {
    sym_factVeto = "";
@@ -6758,44 +6943,40 @@ bool SymphonyFactsConfirm(const int dir)
 
    double px = gClose[1];
 
-   // 1) HTF PERMISSION — higher-TF stack must not oppose.
+   // 1) HTF PERMISSION — higher-TF stack must not oppose.  [HARD]
    int htfDir = g_state.htf.stackDir;
    if(htfDir!=DIR_NONE && htfDir!=dir){ sym_factVeto="HTF opposes"; return(false); }
 
-   // 2) OWNERSHIP — the owner of price must be this direction (authority).
+   // 2) OWNERSHIP — the owner of price must be this direction.  [HARD]
    int owner = g_state.campaign.owner;
    if(owner==DIR_NONE) owner = g_state.curve.ownerDir;
    if(owner!=DIR_NONE && owner!=dir){ sym_factVeto="owner opposes"; return(false); }
 
-   // 3) LOCATION — price must be AT a real zone.
-   if(g_cfg.factNeedZone && !Sym_AtRealZone(dir,px)){ sym_factVeto="no zone"; return(false); }
+   // 3) LOCATION — price must be AT a real zone.  [SOFT: regret-learnable]
+   if(g_cfg.factNeedZone && !Sym_AtRealZone(dir,px)){ if(SymVeto(VR_NOZONE,"no zone",dir,px)) return(false); }
 
-   // 4) STRUCTURE — no change-of-character against the trade.
+   // 4) STRUCTURE — no change-of-character against the trade.  [HARD]
    if(g_state.structure.choch == -dir){ sym_factVeto="CHoCH against"; return(false); }
 
-   // 5) CONVEXITY ROOM — capacity left + wave not exhausted.
-   if(g_state.convexity.geometryCapacity < g_cfg.minEntryRoomPct){ sym_factVeto="no room"; return(false); }
-   if(g_state.wave.completion >= g_cfg.maxEntryComplete){ sym_factVeto="wave exhausted"; return(false); }
+   // 5) CONVEXITY ROOM — capacity left + wave not exhausted.  [SOFT]
+   if(g_state.convexity.geometryCapacity < g_cfg.minEntryRoomPct){ if(SymVeto(VR_NOROOM,"no room",dir,px)) return(false); }
+   if(g_state.wave.completion >= g_cfg.maxEntryComplete){ if(SymVeto(VR_EXHAUST,"wave exhausted",dir,px)) return(false); }
 
-   // 5b) CURVE LOCATOR — never enter LATE on the OWNER leg (continuous, multi-TF
-   //     "you are here"). If price is already past maxOwnerLegPos of the owning
-   //     curve, there's no curve left to trade in that direction.
+   // 5b) CURVE LOCATOR — never enter LATE on the OWNER leg.  [SOFT]
    if(g_cfg.useCurveLocator && g_state.curveLocator.pos >= g_cfg.maxOwnerLegPos)
-   { sym_factVeto="late on curve"; return(false); }
+   { if(SymVeto(VR_LATE,"late on curve",dir,px)) return(false); }
 
-   // 6) THREAT — dominant opposing network authority OR participant.
+   // 6) THREAT — dominant opposing network authority OR participant.  [SOFT]
    if(g_state.network.pressureDir == -dir
-      && MathAbs(g_state.network.pressure) >= g_cfg.factNetPressure){ sym_factVeto="network counter"; return(false); }
+      && MathAbs(g_state.network.pressure) >= g_cfg.factNetPressure){ if(SymVeto(VR_NETWORK,"network counter",dir,px)) return(false); }
    double oppPart = (dir==DIR_LONG ? g_state.participants.seller : g_state.participants.buyer);
    double ownPart = (dir==DIR_LONG ? g_state.participants.buyer  : g_state.participants.seller);
-   if(oppPart>=g_cfg.factPartThreat && oppPart>ownPart){ sym_factVeto="participant counter"; return(false); }
+   if(oppPart>=g_cfg.factPartThreat && oppPart>ownPart){ if(SymVeto(VR_PARTICIPANT,"participant counter",dir,px)) return(false); }
 
-   // 7) LEARNED AVOIDANCE — the engine refuses to repeat its own mistakes: a
-   //     context bucket that has lost persistently is vetoed by the adaptive layer.
+   // 7) LEARNED AVOIDANCE — refuse to repeat its own losing context.  [HARD]
    if(AD_Veto(AD_Bucket(dir))){ sym_factVeto="learned avoid"; return(false); }
 
-   // 8) SELF-AWARENESS — if the OS has stood itself down (broken health / loss
-   //     cluster / drawdown halt), it does not trust itself enough to trade.
+   // 8) SELF-AWARENESS — stood itself down (health / loss cluster / DD).  [HARD]
    if(SA_StandDown()){ sym_factVeto="self standdown"; return(false); }
 
    return(true);
@@ -7721,6 +7902,7 @@ void FalconPipeline()
       SymphonyTradeManage();
    TradeJournalOnBar();   // snapshot MFE/MAE + finalise closed trades to the CSV
    AdaptiveOnBar();       // learn from closed trades -> update per-context edge
+   MissTradeOnBar();      // resolve shadow (missed) trades -> regret learning
    FalconModuleEnd(MOD_EXEC,t0);
 
    // ── PERSISTENCE ───────────────────────────────────────────────
@@ -7761,6 +7943,7 @@ int OnInit()
    CurveLocatorInit();
    AdaptiveInit();
    SelfAwarenessInit();
+   MissTradeInit();
    if(g_cfg.useSymphony) SymphonyInit();
    TradeJournalInit();
 
@@ -7782,6 +7965,7 @@ void OnDeinit(const int reason)
 {
    TradeJournalDeinit();
    AdaptiveDeinit();
+   MissTradeDeinit();
    FalconPersistenceFlush();
    VisualizationDeinit();
    FalconReleaseHandles();

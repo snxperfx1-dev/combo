@@ -44,6 +44,7 @@
 #include "Engines/TradeJournal.mqh"        // Diagnostics — per-trade CSV journal (before Symphony so entries can record)
 #include "Engines/Adaptive.mqh"            // Intelligence — self-learning feedback (size/veto from own results)
 #include "Engines/SelfAwareness.mqh"       // Intelligence — metacognition (self form/calibration/health -> throttle)
+#include "Engines/MissTrade.mqh"           // Intelligence — counterfactual / regret learning (take trades it used to miss)
 #include "Engines/SymphonyEngine.mqh"      // Execution Layer — Symphony phase entries/exits (after EE helpers)
 #include "Engines/Visualization.mqh"       // Visualization Layer
 
@@ -134,6 +135,7 @@ void FalconPipeline()
       SymphonyTradeManage();
    TradeJournalOnBar();   // snapshot MFE/MAE + finalise closed trades to the CSV
    AdaptiveOnBar();       // learn from closed trades -> update per-context edge
+   MissTradeOnBar();      // resolve shadow (missed) trades -> regret learning
    FalconModuleEnd(MOD_EXEC,t0);
 
    // ── PERSISTENCE ───────────────────────────────────────────────
@@ -174,6 +176,7 @@ int OnInit()
    CurveLocatorInit();
    AdaptiveInit();
    SelfAwarenessInit();
+   MissTradeInit();
    if(g_cfg.useSymphony) SymphonyInit();
    TradeJournalInit();
 
@@ -195,6 +198,7 @@ void OnDeinit(const int reason)
 {
    TradeJournalDeinit();
    AdaptiveDeinit();
+   MissTradeDeinit();
    FalconPersistenceFlush();
    VisualizationDeinit();
    FalconReleaseHandles();

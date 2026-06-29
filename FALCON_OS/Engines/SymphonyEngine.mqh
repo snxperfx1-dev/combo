@@ -596,6 +596,17 @@ bool Sym_AtRealZone(const int dir,const double px)
    }
 }
 
+// Soft-filter veto with regret learning: if the OS has LEARNED (from shadow
+// trades) that this filter keeps missing winners, OVERRIDE it and take the
+// trade; otherwise record the miss (keep learning) and veto.
+bool SymVeto(const int code,const string reason,const int dir,const double px)
+{
+   if(MT_Override(code)) return(false);   // learned to take it -> allow
+   MT_RecordMiss(dir, px, code);          // count the miss (keeps learning)
+   sym_factVeto = reason;
+   return(true);
+}
+
 bool SymphonyFactsConfirm(const int dir)
 {
    sym_factVeto = "";
@@ -603,44 +614,40 @@ bool SymphonyFactsConfirm(const int dir)
 
    double px = gClose[1];
 
-   // 1) HTF PERMISSION — higher-TF stack must not oppose.
+   // 1) HTF PERMISSION — higher-TF stack must not oppose.  [HARD]
    int htfDir = g_state.htf.stackDir;
    if(htfDir!=DIR_NONE && htfDir!=dir){ sym_factVeto="HTF opposes"; return(false); }
 
-   // 2) OWNERSHIP — the owner of price must be this direction (authority).
+   // 2) OWNERSHIP — the owner of price must be this direction.  [HARD]
    int owner = g_state.campaign.owner;
    if(owner==DIR_NONE) owner = g_state.curve.ownerDir;
    if(owner!=DIR_NONE && owner!=dir){ sym_factVeto="owner opposes"; return(false); }
 
-   // 3) LOCATION — price must be AT a real zone.
-   if(g_cfg.factNeedZone && !Sym_AtRealZone(dir,px)){ sym_factVeto="no zone"; return(false); }
+   // 3) LOCATION — price must be AT a real zone.  [SOFT: regret-learnable]
+   if(g_cfg.factNeedZone && !Sym_AtRealZone(dir,px)){ if(SymVeto(VR_NOZONE,"no zone",dir,px)) return(false); }
 
-   // 4) STRUCTURE — no change-of-character against the trade.
+   // 4) STRUCTURE — no change-of-character against the trade.  [HARD]
    if(g_state.structure.choch == -dir){ sym_factVeto="CHoCH against"; return(false); }
 
-   // 5) CONVEXITY ROOM — capacity left + wave not exhausted.
-   if(g_state.convexity.geometryCapacity < g_cfg.minEntryRoomPct){ sym_factVeto="no room"; return(false); }
-   if(g_state.wave.completion >= g_cfg.maxEntryComplete){ sym_factVeto="wave exhausted"; return(false); }
+   // 5) CONVEXITY ROOM — capacity left + wave not exhausted.  [SOFT]
+   if(g_state.convexity.geometryCapacity < g_cfg.minEntryRoomPct){ if(SymVeto(VR_NOROOM,"no room",dir,px)) return(false); }
+   if(g_state.wave.completion >= g_cfg.maxEntryComplete){ if(SymVeto(VR_EXHAUST,"wave exhausted",dir,px)) return(false); }
 
-   // 5b) CURVE LOCATOR — never enter LATE on the OWNER leg (continuous, multi-TF
-   //     "you are here"). If price is already past maxOwnerLegPos of the owning
-   //     curve, there's no curve left to trade in that direction.
+   // 5b) CURVE LOCATOR — never enter LATE on the OWNER leg.  [SOFT]
    if(g_cfg.useCurveLocator && g_state.curveLocator.pos >= g_cfg.maxOwnerLegPos)
-   { sym_factVeto="late on curve"; return(false); }
+   { if(SymVeto(VR_LATE,"late on curve",dir,px)) return(false); }
 
-   // 6) THREAT — dominant opposing network authority OR participant.
+   // 6) THREAT — dominant opposing network authority OR participant.  [SOFT]
    if(g_state.network.pressureDir == -dir
-      && MathAbs(g_state.network.pressure) >= g_cfg.factNetPressure){ sym_factVeto="network counter"; return(false); }
+      && MathAbs(g_state.network.pressure) >= g_cfg.factNetPressure){ if(SymVeto(VR_NETWORK,"network counter",dir,px)) return(false); }
    double oppPart = (dir==DIR_LONG ? g_state.participants.seller : g_state.participants.buyer);
    double ownPart = (dir==DIR_LONG ? g_state.participants.buyer  : g_state.participants.seller);
-   if(oppPart>=g_cfg.factPartThreat && oppPart>ownPart){ sym_factVeto="participant counter"; return(false); }
+   if(oppPart>=g_cfg.factPartThreat && oppPart>ownPart){ if(SymVeto(VR_PARTICIPANT,"participant counter",dir,px)) return(false); }
 
-   // 7) LEARNED AVOIDANCE — the engine refuses to repeat its own mistakes: a
-   //     context bucket that has lost persistently is vetoed by the adaptive layer.
+   // 7) LEARNED AVOIDANCE — refuse to repeat its own losing context.  [HARD]
    if(AD_Veto(AD_Bucket(dir))){ sym_factVeto="learned avoid"; return(false); }
 
-   // 8) SELF-AWARENESS — if the OS has stood itself down (broken health / loss
-   //     cluster / drawdown halt), it does not trust itself enough to trade.
+   // 8) SELF-AWARENESS — stood itself down (health / loss cluster / DD).  [HARD]
    if(SA_StandDown()){ sym_factVeto="self standdown"; return(false); }
 
    return(true);
