@@ -2,23 +2,15 @@
 //|                                              FalconOS_AllInOne.mq5 |
 //|   FALCON OS — Unified Trading Intelligence Platform               |
 //|   SINGLE-FILE BUILD (kernel + 6 engines + EA, auto-combined).     |
-//|                                                                   |
-//|   This is the modular FALCON_OS/ tree flattened into one file:    |
-//|   Config -> State -> Series -> EventBus -> Log -> Persistence ->   |
-//|   Market -> Memory -> Intelligence -> Decision -> Execution ->     |
-//|   Visualization -> EA lifecycle. Local #include lines were         |
-//|   stripped; include-guards are retained and harmless.             |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "1.00"
+#property version   "1.01"
 #property strict
 
 #include <Trade\Trade.mqh>
 
 
-//================================================================================
 //  ===== Kernel/FalconConfig.mqh =====
-//================================================================================
 //+------------------------------------------------------------------+
 //|  FALCON OS — Kernel : FalconConfig.mqh                           |
 //|  Centralized configuration service with profile support.        |
@@ -82,7 +74,7 @@ input string  __sep_decision    = "════════ DECISION (SENSEEI) �
 input int     InpMinConf        = 55;    // Min confidence to ATTACK
 input double  InpMaxThreat      = 45.0;  // Max threat to ATTACK
 input double  InpMaxConflict    = 60.0;  // Conflict above this => WAIT
-input double  InpExecProbArm    = 0.90;  // Execution probability to arm (phases are outputs)
+input double  InpExecProbArm    = 0.62;  // Execution probability to arm (calibrated 0..1)
 
 input string  __sep_execution   = "════════ EXECUTION / RISK ════════"; // ──
 input bool    InpEnableTrading  = true;  // Allow live order sending
@@ -215,9 +207,7 @@ void FalconConfigInit()
 #endif // FALCON_CONFIG_MQH
 //+------------------------------------------------------------------+
 
-//================================================================================
 //  ===== Kernel/FalconState.mqh =====
-//================================================================================
 //+------------------------------------------------------------------+
 //|  FALCON OS — Kernel : FalconState.mqh                            |
 //|  THE SINGLE SOURCE OF TRUTH                                      |
@@ -834,9 +824,7 @@ string FalconResStr(const int r)
 #endif // FALCON_STATE_MQH
 //+------------------------------------------------------------------+
 
-//================================================================================
 //  ===== Kernel/FalconSeries.mqh =====
-//================================================================================
 //+------------------------------------------------------------------+
 //|  FALCON OS — Kernel : FalconSeries.mqh                          |
 //|  Single source of truth for price series + primitive math.      |
@@ -1004,9 +992,7 @@ void FalconReleaseHandles()
 #endif // FALCON_SERIES_MQH
 //+------------------------------------------------------------------+
 
-//================================================================================
 //  ===== Kernel/FalconEventBus.mqh =====
-//================================================================================
 //+------------------------------------------------------------------+
 //|  FALCON OS — Kernel : FalconEventBus.mqh                         |
 //|  Lightweight publish/subscribe event bus.                       |
@@ -1126,9 +1112,7 @@ int FalconEventCount(const int type)
 #endif // FALCON_EVENTBUS_MQH
 //+------------------------------------------------------------------+
 
-//================================================================================
 //  ===== Kernel/FalconLog.mqh =====
-//================================================================================
 //+------------------------------------------------------------------+
 //|  FALCON OS — Kernel : FalconLog.mqh                             |
 //|  Structured logging, timing metrics, module health checks.      |
@@ -1240,9 +1224,7 @@ double FalconAvgMicros(const int m)
 #endif // FALCON_LOG_MQH
 //+------------------------------------------------------------------+
 
-//================================================================================
 //  ===== Kernel/FalconPersistence.mqh =====
-//================================================================================
 //+------------------------------------------------------------------+
 //|  FALCON OS — Kernel : FalconPersistence.mqh                     |
 //|  Optional persistence layer.                                    |
@@ -1415,9 +1397,7 @@ void FalconPersistenceFlush()
 #endif // FALCON_PERSISTENCE_MQH
 //+------------------------------------------------------------------+
 
-//================================================================================
 //  ===== Engines/MarketEngine.mqh =====
-//================================================================================
 //+------------------------------------------------------------------+
 //|  FALCON OS — Market Layer : MarketEngine.mqh                     |
 //|  Source: LETRA (Core Market Intelligence)                       |
@@ -2162,9 +2142,7 @@ void MarketEngineRun()
 #endif // FALCON_MARKET_ENGINE_MQH
 //+------------------------------------------------------------------+
 
-//================================================================================
 //  ===== Engines/MemoryEngine.mqh =====
-//================================================================================
 //+------------------------------------------------------------------+
 //|  FALCON OS — Intelligence Layer : MemoryEngine.mqh              |
 //|  Source: F16 Raptor (Invisible Network)                         |
@@ -2557,9 +2535,7 @@ void MemoryEngineRun()
 #endif // FALCON_MEMORY_ENGINE_MQH
 //+------------------------------------------------------------------+
 
-//================================================================================
 //  ===== Engines/IntelligenceEngine.mqh =====
-//================================================================================
 //+------------------------------------------------------------------+
 //|  FALCON OS — Intelligence Layer : IntelligenceEngine.mqh        |
 //|  Source: LETRA + F16 (reasoning)                                |
@@ -2751,14 +2727,23 @@ void IE_Forecast(FalconIntelligence &x)
                               + (x.dissipationProgress>60?0.25:0.0),0,1);
 
    // CONTINUOUS EXECUTION PROBABILITY (the law: this drives decisions, not phase)
-   // ownership * maturity * geometry * destination * recursion
+   // Combines ownership · maturity · geometry · destination · recursion.
+   // NOTE: a raw 5-way product collapses toward zero (0.7^5 ~ 0.17) and can
+   // essentially never exceed 0.90, so the engine would never arm. Instead we
+   // use a calibrated WEIGHTED BLEND, and preserve the multiplicative SPIRIT
+   // with a "weakest-link" veto: if ownership/geometry/recursion are weak, the
+   // probability is capped (a single broken pillar still kills the shot).
    double ownership   = g_state.htf.alignment/100.0;
    double maturity     = FalconClamp(cv.maturity/100.0,0,1);
    double geometry     = FalconClamp(1.0 - cv.geometryCapacity/100.0,0,1); // less room left = closer to resolve
    double destination  = FalconClamp(x.attractorScore/100.0,0,1);
    double recursion    = FalconClamp(1.0 - x.failureSwingProb,0,1);
-   x.executionProbability = FalconClamp(ownership*maturity*geometry*destination*recursion,0,1);
-   // blend with immediate-execution proximity so a clean magnet can arm directly
+
+   double blend   = 0.30*ownership + 0.20*maturity + 0.20*geometry + 0.15*destination + 0.15*recursion;
+   double weakest = MathMin(ownership, MathMin(geometry, recursion));
+   double veto    = FalconClamp(0.45 + 0.55*weakest, 0, 1); // weak core pillar caps conviction
+   x.executionProbability = FalconClamp(blend*veto, 0, 1);
+   // a clean immediate magnet can arm directly
    x.executionProbability = FalconClamp(MathMax(x.executionProbability, x.immediateExecutionProb*ownership),0,1);
 }
 
@@ -2885,9 +2870,7 @@ void IntelligenceEngineRun()
 #endif // FALCON_INTEL_ENGINE_MQH
 //+------------------------------------------------------------------+
 
-//================================================================================
 //  ===== Engines/DecisionEngine.mqh =====
-//================================================================================
 //+------------------------------------------------------------------+
 //|  FALCON OS — Decision Layer : DecisionEngine.mqh               |
 //|  Source: F16 Senseei / Chief Strategist                         |
@@ -2932,18 +2915,21 @@ int DE_ChiefStrategist(const int master,const double conflict,const double confi
                        const int resCode)
 {
    bool strongOpp = (oppGrade=="STRONG" || oppGrade=="EXCEPTIONAL");
-   bool goodOpp   = (oppGrade=="GOOD"   || oppGrade=="STRONG");
+   bool goodOpp   = (oppGrade=="GOOD"   || oppGrade=="STRONG" || oppGrade=="EXCEPTIONAL");
    bool confOk    = (confidence>=g_cfg.minConf);
    bool threatOk  = (threat<g_cfg.maxThreat);
    bool probArmed = (execProb>=g_cfg.execProbArm);
 
+   // A GOOD-or-better opportunity with healthy confidence and low threat is
+   // tradeable. STRONG/EXCEPTIONAL simply arm faster. (Phases never gate this.)
+   bool tradeable = (goodOpp && confOk && threatOk);
+
    if(master==DIR_NONE)                 return(ACT_WAIT);
    if(conflict>g_cfg.maxConflict)       return(ACT_WAIT);
    if(resCode==RES_RESOLVED)            return(ACT_EXIT);        // energy spent -> bank
-   if(strongOpp && confOk && threatOk && probArmed)
-                                        return(master==DIR_LONG?ACT_BUY:ACT_SELL);
-   if(strongOpp && confOk && threatOk)  return(ACT_ATTACK);      // armed, prob building
-   if(goodOpp)                          return(ACT_PREPARE);
+   if(tradeable && probArmed)           return(master==DIR_LONG?ACT_BUY:ACT_SELL);
+   if(tradeable)                        return(ACT_ATTACK);      // armed, probability building
+   if(goodOpp || strongOpp)             return(ACT_PREPARE);
    return(ACT_WAIT);
 }
 
@@ -2992,12 +2978,12 @@ int DE_MasterChief(int action,const int master)
                  + (100.0-x.threat)*0.10;
    g_state.intel.masterChiefScore = FalconClamp(score,0,100);
 
-   bool commitOk = (ownerAgree && netAgree && valOk && execOk && score>=60.0);
+   bool commitOk = ((ownerAgree || netAgree) && valOk && execOk && score>=55.0);
    g_state.intel.masterChiefConfirm = commitOk;
 
    if((action==ACT_BUY||action==ACT_SELL) && !commitOk)
    {
-      g_state.intel.masterChiefNote = "hold fire — "+(!ownerAgree?"owner split":!netAgree?"network split":!valOk?"unvalidated":"low conviction");
+      g_state.intel.masterChiefNote = "hold fire — "+((!ownerAgree && !netAgree)?"owner+net split":!valOk?"unvalidated":!execOk?"low exec prob":"low conviction");
       return(ACT_ATTACK);   // stay armed, do not pull the trigger
    }
    g_state.intel.masterChiefNote = commitOk ? "cleared to engage" : "standby";
@@ -3085,9 +3071,7 @@ void DecisionEngineRun()
 #endif // FALCON_DECISION_ENGINE_MQH
 //+------------------------------------------------------------------+
 
-//================================================================================
 //  ===== Engines/ExecutionEngine.mqh =====
-//================================================================================
 //+------------------------------------------------------------------+
 //|  FALCON OS — Execution Layer : ExecutionEngine.mqh             |
 //|  Source: Symphony (Execution & Risk)                            |
@@ -3742,9 +3726,7 @@ void ExecutionEngineRun()
 #endif // FALCON_EXEC_ENGINE_MQH
 //+------------------------------------------------------------------+
 
-//================================================================================
 //  ===== Engines/Visualization.mqh =====
-//================================================================================
 //+------------------------------------------------------------------+
 //|  FALCON OS — Visualization Layer : Visualization.mqh           |
 //|                                                                  |
@@ -4016,9 +3998,7 @@ void VisualizationDeinit()
 #endif // FALCON_VIZ_MQH
 //+------------------------------------------------------------------+
 
-//================================================================================
 //  ===== FalconOS.mq5 =====
-//================================================================================
 //+------------------------------------------------------------------+
 //|                                                      FalconOS.mq5 |
 //|   FALCON OS — Unified Trading Intelligence Platform              |

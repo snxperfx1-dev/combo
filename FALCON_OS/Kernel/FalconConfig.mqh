@@ -61,7 +61,7 @@ input string  __sep_decision    = "════════ DECISION (SENSEEI) �
 input int     InpMinConf        = 55;    // Min confidence to ATTACK
 input double  InpMaxThreat      = 45.0;  // Max threat to ATTACK
 input double  InpMaxConflict    = 60.0;  // Conflict above this => WAIT
-input double  InpExecProbArm    = 0.90;  // Execution probability to arm (phases are outputs)
+input double  InpExecProbArm    = 0.62;  // Execution probability to arm (calibrated 0..1)
 
 input string  __sep_execution   = "════════ EXECUTION / RISK ════════"; // ──
 input bool    InpEnableTrading  = true;  // Allow live order sending

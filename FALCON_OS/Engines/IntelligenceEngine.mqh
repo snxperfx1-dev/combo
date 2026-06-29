@@ -193,14 +193,23 @@ void IE_Forecast(FalconIntelligence &x)
                               + (x.dissipationProgress>60?0.25:0.0),0,1);
 
    // CONTINUOUS EXECUTION PROBABILITY (the law: this drives decisions, not phase)
-   // ownership * maturity * geometry * destination * recursion
+   // Combines ownership · maturity · geometry · destination · recursion.
+   // NOTE: a raw 5-way product collapses toward zero (0.7^5 ~ 0.17) and can
+   // essentially never exceed 0.90, so the engine would never arm. Instead we
+   // use a calibrated WEIGHTED BLEND, and preserve the multiplicative SPIRIT
+   // with a "weakest-link" veto: if ownership/geometry/recursion are weak, the
+   // probability is capped (a single broken pillar still kills the shot).
    double ownership   = g_state.htf.alignment/100.0;
    double maturity     = FalconClamp(cv.maturity/100.0,0,1);
    double geometry     = FalconClamp(1.0 - cv.geometryCapacity/100.0,0,1); // less room left = closer to resolve
    double destination  = FalconClamp(x.attractorScore/100.0,0,1);
    double recursion    = FalconClamp(1.0 - x.failureSwingProb,0,1);
-   x.executionProbability = FalconClamp(ownership*maturity*geometry*destination*recursion,0,1);
-   // blend with immediate-execution proximity so a clean magnet can arm directly
+
+   double blend   = 0.30*ownership + 0.20*maturity + 0.20*geometry + 0.15*destination + 0.15*recursion;
+   double weakest = MathMin(ownership, MathMin(geometry, recursion));
+   double veto    = FalconClamp(0.45 + 0.55*weakest, 0, 1); // weak core pillar caps conviction
+   x.executionProbability = FalconClamp(blend*veto, 0, 1);
+   // a clean immediate magnet can arm directly
    x.executionProbability = FalconClamp(MathMax(x.executionProbability, x.immediateExecutionProb*ownership),0,1);
 }
 

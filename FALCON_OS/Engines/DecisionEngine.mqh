@@ -46,18 +46,21 @@ int DE_ChiefStrategist(const int master,const double conflict,const double confi
                        const int resCode)
 {
    bool strongOpp = (oppGrade=="STRONG" || oppGrade=="EXCEPTIONAL");
-   bool goodOpp   = (oppGrade=="GOOD"   || oppGrade=="STRONG");
+   bool goodOpp   = (oppGrade=="GOOD"   || oppGrade=="STRONG" || oppGrade=="EXCEPTIONAL");
    bool confOk    = (confidence>=g_cfg.minConf);
    bool threatOk  = (threat<g_cfg.maxThreat);
    bool probArmed = (execProb>=g_cfg.execProbArm);
 
+   // A GOOD-or-better opportunity with healthy confidence and low threat is
+   // tradeable. STRONG/EXCEPTIONAL simply arm faster. (Phases never gate this.)
+   bool tradeable = (goodOpp && confOk && threatOk);
+
    if(master==DIR_NONE)                 return(ACT_WAIT);
    if(conflict>g_cfg.maxConflict)       return(ACT_WAIT);
    if(resCode==RES_RESOLVED)            return(ACT_EXIT);        // energy spent -> bank
-   if(strongOpp && confOk && threatOk && probArmed)
-                                        return(master==DIR_LONG?ACT_BUY:ACT_SELL);
-   if(strongOpp && confOk && threatOk)  return(ACT_ATTACK);      // armed, prob building
-   if(goodOpp)                          return(ACT_PREPARE);
+   if(tradeable && probArmed)           return(master==DIR_LONG?ACT_BUY:ACT_SELL);
+   if(tradeable)                        return(ACT_ATTACK);      // armed, probability building
+   if(goodOpp || strongOpp)             return(ACT_PREPARE);
    return(ACT_WAIT);
 }
 
@@ -106,12 +109,12 @@ int DE_MasterChief(int action,const int master)
                  + (100.0-x.threat)*0.10;
    g_state.intel.masterChiefScore = FalconClamp(score,0,100);
 
-   bool commitOk = (ownerAgree && netAgree && valOk && execOk && score>=60.0);
+   bool commitOk = ((ownerAgree || netAgree) && valOk && execOk && score>=55.0);
    g_state.intel.masterChiefConfirm = commitOk;
 
    if((action==ACT_BUY||action==ACT_SELL) && !commitOk)
    {
-      g_state.intel.masterChiefNote = "hold fire — "+(!ownerAgree?"owner split":!netAgree?"network split":!valOk?"unvalidated":"low conviction");
+      g_state.intel.masterChiefNote = "hold fire — "+((!ownerAgree && !netAgree)?"owner+net split":!valOk?"unvalidated":!execOk?"low exec prob":"low conviction");
       return(ACT_ATTACK);   // stay armed, do not pull the trigger
    }
    g_state.intel.masterChiefNote = commitOk ? "cleared to engage" : "standby";
