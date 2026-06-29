@@ -1,0 +1,37 @@
+{
+  "id": "FEAT-003",
+  "type": "feat",
+  "description": "Part 3 - Intelligence Engines (Energy Resolution Framework, Belief Engine, Senseei Meta-Intelligence). Ports the EDE/RE/EAE energy framework, the 6-belief simultaneous belief engine, physics observation layer, hypothesis engine, prediction engine, wave intelligence (similarity scoring, convexity maturity, wave progress), and the Senseei meta-intelligence layer (alignment/contradiction/threat/confidence/timing/intent/opportunity/action) from F16 V70 and Letra 37 into MQL5.",
+  "status": "in_progress",
+  "steps": [
+    "Create file /projects/sandbox/combo/MasterAlgo_Part3_Intelligence.mq5",
+    "Implement Physics Observation Layer: velocityScore, accelerationScore, convexityScore, obs_ExpansionScore, obs_DecayScore, obs_CurvatureScore, obs_AbsorptionScore, obs_LiquidityScore, physicsMax, physicsDiff, physicsConsensus - all computed from the M5 structure engine physics outputs",
+    "Implement Energy Dissipation Engine (EDE): ede_state mapping from canonical phase (1=accumulating through 6=resolving), ede_expansionEnergy (from obs_ExpansionScore + impulse), ede_dissipatedEnergy (accumulates through pre-conv/induction/liquidation), ede_dissipationProgress (0-100 across 4 stages)",
+    "Implement Resolution Engine (RE): re_expectedCycles, re_completedCycles, re_recursiveCompletionScore, re_residualEnergy, re_objectiveReached, re_fullDissipation, re_resolutionState (RESOLVED/PARTIALLY_RESOLVED/UNRESOLVED), re_residualEnergyScore, re_revisitProbability",
+    "Implement Energy Attractor Engine (EAE): eae_primaryAttractorPrice (flipzone for unresolved, origin for partial), eae_primaryAttractorScore, eae_primaryAttractorLabel, eae_energyState",
+    "Implement Wave Intelligence similarity scoring: f_idealSim() computing Euclidean distance in 4D normalized physics space, compute sim_Expansion/PreConv/Induction/Liquidity/Creation/Absorption/Retracement/DemandReturn",
+    "Implement Convexity Maturity Engine: expWeaknessScore, inductionMatScore, liqMatScore, rawConvexityMaturity with EMA smoothing",
+    "Implement Wave Progress estimation: geometry-based progress + physics-based progress (similarity anchor + convexity weight), EMA smoothed waveProgress 0-100",
+    "Implement Belief Engine: 6 simultaneous raw beliefs (expansion, convexity, creation, absorption, retracement, demandReturn) each with position-multiplier gating, then EMA smoothed into persistent belief state",
+    "Implement Hypothesis Engine: hyp_LateExpansion, hyp_TerminalConvexity, hyp_CreationForming, hyp_AbsorptionActive, hyp_RetracementActive, hyp_DemandReturn - each normalized to 0-100 with model-fit multiplier",
+    "Implement Prediction Engine: predScore for each phase (Expansion/Convexity/Creation/Absorption/Retracement/DemandReturn), expectedNextPhase selection, expectedNextProb scoring",
+    "Implement Senseei Meta-Intelligence (from F16): compute master direction from 4 voters (waveDir, stackDir, netBias, pressureDir), alignment/conflict/threat/confidence/timing/intent/opportunity/action scores, final actionState (ATTACK/PREPARE/MANAGE/WAIT)",
+    "Implement the liquidation wave overlay (Engine 1A.7): liqg_active tracking, distance compression, objective arrival detection (structure+momentum+physics), true CHoCH gate, sub-phase classification (Initialization/Push/Displacement/Induction/TerminalLiquidation/ObjectiveArrival)"
+  ],
+  "acceptance_criteria": [
+    "File exists at /projects/sandbox/combo/MasterAlgo_Part3_Intelligence.mq5",
+    "All 3 ERF sub-engines (EDE, RE, EAE) are implemented with correct state transitions",
+    "6 belief scores are computed with position-aware multipliers and EMA smoothing",
+    "Senseei meta-intelligence produces alignment/conflict/threat/confidence/opportunity/action",
+    "Wave progress combines geometric + physics-based estimation",
+    "Liquidation wave overlay tracks objective arrival with triple-confirmation",
+    "Code is syntactically valid MQL5"
+  ],
+  "verification": [
+    "Read the output file and verify ERF state machine matches Letra specification",
+    "Verify all 6 beliefs have position multipliers and EMA smoothing",
+    "Check Senseei produces the 4 key voters and 8 meta-scores"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}
