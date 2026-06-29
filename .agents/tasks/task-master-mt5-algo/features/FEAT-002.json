@@ -1,0 +1,26 @@
+{
+  "id": "FEAT-002",
+  "type": "feat",
+  "description": "Create Part2_PhaseEngine.mqh - Symphony's Phase Engine (curvature-based impulse detection + Phases 1-4) and ARC v2 convexity exit system. This is the ENTRY generation core - kept verbatim from Symphony minus the DRDWCT risk engine.",
+  "status": "in_progress",
+  "steps": [
+    "Create Part2_PhaseEngine.mqh at the repo root",
+    "Port UpdatePhaseEngine() verbatim from Symphony: pivot detection, SHORT impulse detection (last high -> new low > ATR * mult), LONG impulse detection (last low -> new high > ATR * mult), mode/anchor state, flipzone/inducement level finding, phase assignment for both SHORT side (retracement-based with pre-conv gating) and LONG side (same logic inverted), impulse invalidation on close beyond anchor, previous phase tracking",
+    "Port UpdateARC() verbatim from Symphony: LONG ARC calculation (from anchorLow projected with convexity power), SHORT ARC calculation (from anchorHigh projected with convexity power), horizon normalization",
+    "Port ManageArcInstitutionalExits() verbatim from Symphony: ARC exhaustion detection, institutional band calculation (inner/outer from inducement/anchor), outer-band sweep tracking per impulse, phase-change detection at extreme, composite exit condition (ARC exhaust + outer sweep + inner re-entry + phase-end), position closure execution for matching positions"
+  ],
+  "acceptance_criteria": [
+    "Part2_PhaseEngine.mqh exists with valid MQL5 syntax",
+    "UpdatePhaseEngine() matches Symphony logic exactly (pivot detection, impulse detection, phase assignment 1-4, invalidation)",
+    "UpdateARC() matches Symphony logic exactly (convexity arc projection)",
+    "ManageArcInstitutionalExits() matches Symphony logic exactly (composite exit conditions)",
+    "All functions reference global state from Part1_Core.mqh structs"
+  ],
+  "verification": [
+    "Read the file and verify logic matches symphony.txt sections 6, 6B, and 16",
+    "Verify no DRDWCT risk engine code is present",
+    "Verify proper use of global PhaseEngineState struct fields"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}
