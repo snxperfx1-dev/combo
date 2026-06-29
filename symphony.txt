@@ -1,0 +1,1755 @@
+//+------------------------------------------------------------------+
+//| SYMPHONY_Physics_Engine_Elite_Max_Phase34_DRDWCT_v1_6.mq5       |
+//| Phase Engine (curvature-based) + DRDWCT v1.6 Risk Engine        |
+//| Entries: Phase 3 + Phase 4 only (long & short)                  |
+//| TP: ARC + institutional sweep + phase-change composite exit     |
+//| MT5 HEDGING VERSION - RAW MqlTradeRequest (IOC)                 |
+//+------------------------------------------------------------------+
+#property strict
+
+#include <Trade\Trade.mqh>
+
+//------------------------------------------------------------------
+// 0. SERIES BUFFERS - EMULATE MT4 Time[], Open[], High[], Low[], Close[]
+//------------------------------------------------------------------
+double   gCloseSeries[];
+double   gHighSeries[];
+double   gLowSeries[];
+datetime gTimeSeries[];
+
+#define Close gCloseSeries
+#define High  gHighSeries
+#define Low   gLowSeries
+#define Time  gTimeSeries
+
+bool RefreshSeries(int barsNeeded = 5000)
+{
+   int need = barsNeeded;
+   if(need < 500) need = 500;
+
+   ArraySetAsSeries(gCloseSeries,true);
+   ArraySetAsSeries(gHighSeries,true);
+   ArraySetAsSeries(gLowSeries,true);
+   ArraySetAsSeries(gTimeSeries,true);
+
+   int c1 = CopyClose(_Symbol,_Period,0,need,gCloseSeries);
+   int c2 = CopyHigh(_Symbol,_Period,0,need,gHighSeries);
+   int c3 = CopyLow(_Symbol,_Period,0,need,gLowSeries);
+   int c4 = CopyTime(_Symbol,_Period,0,need,gTimeSeries);
+
+   if(c1 <= 0 || c2 <= 0 || c3 <= 0 || c4 <= 0)
+   {
+      Print("RefreshSeries failed: ",c1," ",c2," ",c3," ",c4);
+      return(false);
+   }
+   return(true);
+}
+
+//==================================================================
+// 1. INPUTS - CORE ENGINE
+//==================================================================
+input int    InpPivotLen          = 5;      // Pivot length
+input int    InpATRLen            = 14;     // ATR length
+input double InpImpulseAtrMult    = 1.5;    // Impulse ATR multiple
+input double InpRetrMin           = 0.30;   // Min retracement (fraction)
+input double InpRetrMax           = 0.80;   // Max retracement (fraction)
+input int    InpInducLookbackBars = 80;     // Flipzone lookback (bars)
+input double InpInducZoneATRWidth = 0.25;   // Flipzone half-width (ATR)
+
+//==================================================================
+// 1B. ARC v2 INPUTS (CONVEXITY ARC)
+//==================================================================
+input int    InpArcHorizonBars = 80;        // Arc horizon (bars)
+input double InpConvPower      = 1.5;       // Arc convexity power
+input double InpArcExtMult     = 1.5;       // Arc extension (imp multiple)
+
+//==================================================================
+// 1C. ARC + INSTITUTIONAL EXIT CONTROLS
+//==================================================================
+input double InpOuterBandAtrMult = 0.75;    // distance from induc/anchor to outer band (ATR)
+input double InpArcToleranceAtr  = 0.20;    // how close to ARC counts as "exhaust" (ATR)
+
+//==================================================================
+// 2. INPUTS - TRADING LAYER
+//==================================================================
+input double InpRiskPercent       = 0.5;    // Risk % per trade
+input int    InpMagic             = 240220; // EA magic number
+
+// Risk engine toggles
+input bool   InpEnableRiskEngine  = true;   // Enable DRDWCT risk engine
+input bool   InpBlockNewIfBreach  = true;   // Block new entries if VaR breached
+
+// Timing - target session timezone (GMT baseline)
+input int    InpTargetGMT         = 0;      // Target session timezone (GMT offset)
+
+//==================================================================
+// 3. GLOBAL STATE - PHASE ENGINE
+//==================================================================
+
+// Pivot history
+double g_lastPivotPrice = 0.0;
+int    g_lastPivotShift = -1;
+int    g_lastPivotDir   = 0;   // 1 = high, -1 = low, 0 = none
+
+double g_prevPivotPrice = 0.0;
+int    g_prevPivotShift = -1;
+int    g_prevPivotDir   = 0;
+
+// Impulse / mode
+int    g_mode           = 0;   // -1 short, 1 long, 0 none
+double g_anchorHigh     = 0.0;
+double g_anchorLow      = 0.0;
+int    g_anchorHighShift= -1;
+int    g_anchorLowShift = -1;
+
+// Phases
+int    g_phaseShort     = 0;
+int    g_phaseLong      = 0;
+int    g_prevPhaseShort = 0;
+int    g_prevPhaseLong  = 0;
+
+// Flipzone / inducement
+double g_shortInducPrice = 0.0;
+double g_shortInducLow   = 0.0;
+double g_shortInducHigh  = 0.0;
+double g_longInducPrice  = 0.0;
+double g_longInducLow    = 0.0;
+double g_longInducHigh   = 0.0;
+
+// Pre-Conv seen flags (per impulse)
+bool   g_shortPreConvSeen = false;
+bool   g_longPreConvSeen  = false;
+
+// ARC v2 state
+double g_arcLong  = 0.0;
+double g_arcShort = 0.0;
+
+// Institutional outer-band sweep flags
+bool   g_longOuterBreachSeen  = false;
+bool   g_shortOuterBreachSeen = false;
+
+// New bar detection + one trade per direction per bar
+datetime g_lastBarTime        = 0;
+datetime g_lastLongTradeTime  = 0;
+datetime g_lastShortTradeTime = 0;
+
+//==================================================================
+// 4. DRDWCT STRUCTS
+//==================================================================
+enum RE_RiskProfile { RE_PROFILE_AGGRESSIVE = 0 };
+enum RE_RiskMode    { RE_MODE_INTRADAY = 0, RE_MODE_OVERNIGHT = 1 };
+
+struct RE_Position
+{
+   long   ticket;
+   double lots;
+   double entry;
+   double sl;
+   int    direction; // 1 long, -1 short
+   double pnl;
+};
+
+struct RE_Market
+{
+   double spot;
+   double atr15;
+   double atr30;
+   double equity;
+   double marginUsed;
+};
+
+struct RE_Metrics
+{
+   long   ticket;
+   double lots;
+   int    direction;
+   double entry;
+   double sl;
+   double distSL;
+   double riskToSL;
+   double rd;
+   double sag;
+   double gammaRaw;
+   double gammaVolScaled;
+   double liqProx;
+   double dVar2;
+   double uds;
+};
+
+struct RE_VarResult
+{
+   double var2;
+   double var3;
+};
+
+struct RE_Trim
+{
+   long   ticket;
+   double closeLots;
+};
+
+struct RE_BottomLayer
+{
+   double pCore;
+   int    status; // 0 = sacrificial, 1 = core
+};
+
+struct RE_Config
+{
+   RE_RiskProfile profile;
+   double rdLimit;
+
+   double w_rd;
+   double w_dVar2;
+   double w_gamma;
+   double w_liq;
+   double w_sag;
+
+   double udsDangerThreshold;
+
+   double partialCloseFraction;
+   double minLotsForPartial;
+
+   double highLayerQuantile;
+   double logisticK;
+   double logisticPivot;
+   double coreLowerBand;
+   double coreUpperBand;
+
+   double volSpikeMultiplier;
+   double volSpikeThreshold;
+
+   double liquidityLevels[32];
+   int    liqCount;
+};
+
+struct RE_ModelState
+{
+   bool   hasWeights;
+   double w_rd;
+   double w_dVar2;
+   double w_gamma;
+   double w_liq;
+   double w_sag;
+};
+
+struct RE_RiskResult
+{
+   RE_Position  positions[64];
+   int          posCount;
+   RE_Metrics   metrics[64];
+   int          metCount;
+   RE_VarResult varRes;
+   RE_BottomLayer bottom;
+   RE_Trim      trims[64];
+   int          trimCount;
+   double       udsMax;
+   bool         anyBomb;
+};
+
+// Global risk engine config/state
+RE_Config      g_reConfig;
+RE_ModelState  g_reModelState;
+RE_BottomLayer g_reBottom;
+bool           g_reBottomInit = false;
+bool           g_lastRiskOk   = true;
+
+//==================================================================
+// 5. BASIC HELPERS
+//==================================================================
+bool IsNewBar()
+{
+   datetime t = Time[0];
+   if(t != g_lastBarTime)
+   {
+      g_lastBarTime = t;
+      return(true);
+   }
+   return(false);
+}
+
+double GetATR(int shift)
+{
+   static int handleATR = INVALID_HANDLE;
+   if(handleATR == INVALID_HANDLE)
+   {
+      handleATR = iATR(_Symbol,_Period,InpATRLen);
+      if(handleATR == INVALID_HANDLE)
+      {
+         Print("iATR handle failed");
+         return(0.0);
+      }
+   }
+   double buffer[];
+   ArraySetAsSeries(buffer,true);
+   if(CopyBuffer(handleATR,0,shift+1,1,buffer) < 1)
+      return(0.0);
+   return(buffer[0]);
+}
+
+double GetATRSmooth(int shift, int len)
+{
+   double sum = 0.0;
+   int    c   = 0;
+   int    maxBars = (int)ArraySize(Close);
+   for(int i = shift; i < shift + len; i++)
+   {
+      if(i >= maxBars) break;
+      sum += GetATR(i);
+      c++;
+   }
+   if(c <= 0) return(GetATR(shift));
+   return(sum / c);
+}
+
+bool IsPivotHigh(int c)
+{
+   int maxBars = (int)ArraySize(High);
+   if(c <= 0 || c >= maxBars) return(false);
+   double h = High[c];
+   for(int k = 1; k <= InpPivotLen; k++)
+   {
+      if(c + k >= maxBars || c - k < 0) return(false);
+      if(h <= High[c + k]) return(false);
+      if(h <= High[c - k]) return(false);
+   }
+   return(true);
+}
+
+bool IsPivotLow(int c)
+{
+   int maxBars = (int)ArraySize(Low);
+   if(c <= 0 || c >= maxBars) return(false);
+   double l = Low[c];
+   for(int k = 1; k <= InpPivotLen; k++)
+   {
+      if(c + k >= maxBars || c - k < 0) return(false);
+      if(l >= Low[c + k]) return(false);
+      if(l >= Low[c - k]) return(false);
+   }
+   return(true);
+}
+
+//==================================================================
+// 5. LOT ENGINE – MATCHES YOUR XAUUSD MODEL
+//==================================================================
+double ComputeLots(double riskCash, double entry, double sl)
+{
+   // Absolute distance in price
+   double dist = MathAbs(entry - sl);           // e.g. 2648.50 - 2630.00 = 18.50
+   if(dist <= 0.0) return(0.0);
+
+   // Distance in "gold pips": $0.10 = 1 pip → dist * 10
+   double distancePips = dist * 10.0;           // 18.50 × 10 = 185 pips
+
+   // Pip value per 1.00 lot (your model): $10 per pip
+   double pipValuePerLot = 10.0;                // 1 lot → $10 per pip
+
+   // Total risk per full lot at this SL distance
+   double riskPerLot = distancePips * pipValuePerLot;
+   // Example: 185 pips × $10/pip = $1850 risk for 1.00 lot
+
+   if(riskPerLot <= 0.0) return(0.0);
+
+   // Raw lots from risk
+   double lots = riskCash / riskPerLot;
+   // Example: riskCash=250 → 250/1850 ≈ 0.135 lots
+
+   // Broker constraints
+   double minLot  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+
+   // Normalise to broker increment, floor
+   lots = MathFloor(lots / lotStep) * lotStep;
+   if(lots < minLot) lots = minLot;
+
+   return(NormalizeDouble(lots, 2));
+}
+
+//==================================================================
+// 5A. TIME HELPERS – LONDON + US SESSIONS, NO ASIA (GMT baseline)
+//==================================================================
+bool IsTradeTime()
+{
+   // GMT baseline
+   MqlDateTime g;
+   TimeGMT(g);
+
+   int h = g.hour + InpTargetGMT;
+   int m = g.min;
+
+   if(h < 0)   h += 24;
+   if(h >= 24) h -= 24;
+
+   int curMin = h * 60 + m;
+
+   // London AM 08:00–11:45
+   bool w1 = (curMin >= 480 && curMin <= 705);
+
+   // UK micro 11:45–12:15
+   bool w2 = (curMin >= 705 && curMin <= 735);
+
+   // 13:15–13:45 (13:30 ± 15 min)
+   bool w3 = (curMin >= 795 && curMin <= 825);
+
+   // US session 14:30–18:00
+   bool w4 = (curMin >= 870 && curMin <= 1080);
+
+   // early London window 08:00–09:00
+   bool key_0800_0900 = (curMin >= 480 && curMin <= 540);
+
+   // 08:30 ± 15 → 08:15–08:45
+   bool key_0830 = (curMin >= 495 && curMin <= 525);
+
+   // 15:00 ± 15 → 14:45–15:15
+   bool key_1500 = (curMin >= 885 && curMin <= 915);
+
+   // 17:00 ± 15 → 16:45–17:15
+   bool key_1700 = (curMin >= 1005 && curMin <= 1035);
+
+   return (
+      w1 || w2 || w3 || w4 ||
+      key_0800_0900 ||
+      key_0830 ||
+      key_1500 ||
+      key_1700
+   );
+}
+
+//==================================================================
+// 6. PHASE ENGINE - IMPULSE + PHASES (1–4)
+//==================================================================
+void UpdatePhaseEngine()
+{
+   int barsAvail = (int)ArraySize(Close);
+   if(barsAvail <= (2 * InpPivotLen + 5)) return;
+
+   int    shiftNow   = 1;
+   double closeNow   = Close[shiftNow];
+   double atrNow     = GetATR(shiftNow);
+   double atrRef     = atrNow;
+
+   int    centerShift = InpPivotLen + 1;
+   int    pivotDir    = 0;
+   double pivotPrice  = 0.0;
+   int    pivotShift  = -1;
+
+   if(centerShift < barsAvail - InpPivotLen)
+   {
+      if(IsPivotHigh(centerShift))
+      {
+         pivotDir   = 1;
+         pivotPrice = High[centerShift];
+         pivotShift = centerShift;
+      }
+      else if(IsPivotLow(centerShift))
+      {
+         pivotDir   = -1;
+         pivotPrice = Low[centerShift];
+         pivotShift = centerShift;
+      }
+   }
+
+   // SHORT impulse: last high -> new low
+   if(pivotDir == -1 && g_lastPivotDir == 1)
+   {
+      double r = g_lastPivotPrice - pivotPrice;
+      if(r > atrRef * InpImpulseAtrMult)
+      {
+         g_mode            = -1;
+         g_anchorHigh      = g_lastPivotPrice;
+         g_anchorHighShift = g_lastPivotShift;
+         g_anchorLow       = pivotPrice;
+         g_anchorLowShift  = pivotShift;
+
+         g_phaseShort      = 1;
+         g_phaseLong       = 0;
+
+         g_shortPreConvSeen = false;
+         g_longPreConvSeen  = false;
+
+         g_shortInducPrice = 0.0;
+         g_shortInducLow   = 0.0;
+         g_shortInducHigh  = 0.0;
+         g_longInducPrice  = 0.0;
+         g_longInducLow    = 0.0;
+         g_longInducHigh   = 0.0;
+
+         g_longOuterBreachSeen  = false;
+         g_shortOuterBreachSeen = false;
+
+         double lvlS = 0.0;
+         int    bestDistS = -1;
+         if(g_anchorHighShift > 0)
+         {
+            for(int s = g_anchorHighShift - 1;
+                s >= 0 && s >= g_anchorHighShift - InpInducLookbackBars;
+                s--)
+            {
+               bool inside = (High[s] < g_anchorHigh && Low[s] > g_anchorLow);
+               if(inside)
+               {
+                  int dist = MathAbs(g_anchorHighShift - s);
+                  if(bestDistS < 0 || dist < bestDistS)
+                  {
+                     bestDistS = dist;
+                     lvlS      = (High[s] + Low[s]) * 0.5;
+                  }
+               }
+            }
+         }
+         if(bestDistS >= 0)
+         {
+            g_shortInducPrice = lvlS;
+            g_shortInducLow   = lvlS - atrRef * InpInducZoneATRWidth;
+            g_shortInducHigh  = lvlS + atrRef * InpInducZoneATRWidth;
+         }
+      }
+   }
+   // LONG impulse: last low -> new high
+   else if(pivotDir == 1 && g_lastPivotDir == -1)
+   {
+      double r = pivotPrice - g_lastPivotPrice;
+      if(r > atrRef * InpImpulseAtrMult)
+      {
+         g_mode            = 1;
+         g_anchorLow       = g_lastPivotPrice;
+         g_anchorLowShift  = g_lastPivotShift;
+         g_anchorHigh      = pivotPrice;
+         g_anchorHighShift = pivotShift;
+
+         g_phaseLong       = 1;
+         g_phaseShort      = 0;
+
+         g_shortPreConvSeen = false;
+         g_longPreConvSeen  = false;
+
+         g_shortInducPrice = 0.0;
+         g_shortInducLow   = 0.0;
+         g_shortInducHigh  = 0.0;
+         g_longInducPrice  = 0.0;
+         g_longInducLow    = 0.0;
+         g_longInducHigh   = 0.0;
+
+         g_longOuterBreachSeen  = false;
+         g_shortOuterBreachSeen = false;
+
+         double lvlL = 0.0;
+         int    bestDistL = -1;
+         if(g_anchorLowShift > 0)
+         {
+            for(int s = g_anchorLowShift - 1;
+                s >= 0 && s >= g_anchorLowShift - InpInducLookbackBars;
+                s--)
+            {
+               bool inside = (High[s] < g_anchorHigh && Low[s] > g_anchorLow);
+               if(inside)
+               {
+                  int dist = MathAbs(g_anchorLowShift - s);
+                  if(bestDistL < 0 || dist < bestDistL)
+                  {
+                     bestDistL = dist;
+                     lvlL      = (High[s] + Low[s]) * 0.5;
+                  }
+               }
+            }
+         }
+         if(bestDistL >= 0)
+         {
+            g_longInducPrice = lvlL;
+            g_longInducLow   = lvlL - atrRef * InpInducZoneATRWidth;
+            g_longInducHigh  = lvlL + atrRef * InpInducZoneATRWidth;
+         }
+      }
+   }
+
+   // Persist pivot history
+   if(pivotDir != 0)
+   {
+      g_prevPivotPrice = g_lastPivotPrice;
+      g_prevPivotShift = g_lastPivotShift;
+      g_prevPivotDir   = g_lastPivotDir;
+
+      g_lastPivotPrice = pivotPrice;
+      g_lastPivotShift = pivotShift;
+      g_lastPivotDir   = pivotDir;
+   }
+
+   // Impulse invalidation
+   if(g_mode == -1 && closeNow > g_anchorHigh)
+   {
+      g_mode             = 0;
+      g_phaseShort       = 0;
+      g_shortInducPrice  = 0.0;
+      g_shortInducLow    = 0.0;
+      g_shortInducHigh   = 0.0;
+      g_shortPreConvSeen = false;
+      g_longPreConvSeen  = false;
+      g_longOuterBreachSeen  = false;
+      g_shortOuterBreachSeen = false;
+   }
+   if(g_mode == 1 && closeNow < g_anchorLow)
+   {
+      g_mode             = 0;
+      g_phaseLong        = 0;
+      g_longInducPrice   = 0.0;
+      g_longInducLow     = 0.0;
+      g_longInducHigh    = 0.0;
+      g_shortPreConvSeen = false;
+      g_longPreConvSeen  = false;
+      g_longOuterBreachSeen  = false;
+      g_shortOuterBreachSeen = false;
+   }
+
+   int oldPhaseShort = g_phaseShort;
+   int oldPhaseLong  = g_phaseLong;
+
+   // SHORT side
+   if(g_mode != -1) g_phaseShort = 0;
+   if(g_mode == -1 && g_anchorHighShift >= 0 && g_anchorLowShift >= 0)
+   {
+      double impS  = g_anchorHigh - g_anchorLow;
+      double retrS = (impS > 0.0) ? (closeNow - g_anchorLow) / impS : 0.0;
+      double dS    = Close[shiftNow] - Close[shiftNow+1];
+
+      int phaseTmpS;
+      if(retrS > InpRetrMax || retrS < 0.0)
+         phaseTmpS = 0;
+      else if(closeNow <= g_anchorLow)
+         phaseTmpS = 4;
+      else if(retrS >= InpRetrMin)
+         phaseTmpS = (dS > 0.0 ? 2 : 3);
+      else
+         phaseTmpS = 1;
+
+      bool hasShortZone = (g_shortInducLow != 0.0 || g_shortInducHigh != 0.0);
+      if(phaseTmpS == 3 && hasShortZone && closeNow <= g_shortInducHigh)
+         phaseTmpS = 2;
+      else if(phaseTmpS == 3)
+         g_shortPreConvSeen = true;
+
+      if(phaseTmpS == 4 && !g_shortPreConvSeen)
+         phaseTmpS = 2;
+
+      g_phaseShort = phaseTmpS;
+   }
+
+   // LONG side
+   if(g_mode != 1) g_phaseLong = 0;
+   if(g_mode == 1 && g_anchorHighShift >= 0 && g_anchorLowShift >= 0)
+   {
+      double impL  = g_anchorHigh - g_anchorLow;
+      double retrL = (impL > 0.0) ? (g_anchorHigh - closeNow) / impL : 0.0;
+      double dL    = Close[shiftNow] - Close[shiftNow+1];
+
+      int phaseTmpL;
+      if(retrL > InpRetrMax || retrL < 0.0)
+         phaseTmpL = 0;
+      else if(closeNow >= g_anchorHigh)
+         phaseTmpL = 4;
+      else if(retrL >= InpRetrMin)
+         phaseTmpL = (dL < 0.0 ? 2 : 3);
+      else
+         phaseTmpL = 1;
+
+      bool hasLongZone = (g_longInducLow != 0.0 || g_longInducHigh != 0.0);
+      if(phaseTmpL == 3 && hasLongZone && closeNow >= g_longInducLow)
+         phaseTmpL = 2;
+      else if(phaseTmpL == 3)
+         g_longPreConvSeen = true;
+
+      if(phaseTmpL == 4 && !g_longPreConvSeen)
+         phaseTmpL = 2;
+
+      g_phaseLong = phaseTmpL;
+   }
+
+   g_prevPhaseShort = oldPhaseShort;
+   g_prevPhaseLong  = oldPhaseLong;
+}
+
+//==================================================================
+// 6B. ARC v2 CALCULATION (CONVEXITY ARC)
+//==================================================================
+void UpdateARC()
+{
+   g_arcLong  = 0.0;
+   g_arcShort = 0.0;
+
+   int bars = ArraySize(Close);
+   if(bars < 10) return;
+
+   int shift = 1; // last closed bar
+
+   // LONG ARC: from anchorLow → projected high target
+   if(g_mode == 1 && g_anchorLowShift >= 0 && g_anchorHighShift >= 0)
+   {
+      double impL = g_anchorHigh - g_anchorLow;
+      if(impL > 0)
+      {
+         double targetL = g_anchorLow + impL * InpArcExtMult;
+
+         double tL = (double)(g_anchorLowShift - shift) / (double)InpArcHorizonBars;
+         if(tL < 0.0) tL = 0.0;
+         if(tL > 1.0) tL = 1.0;
+
+         g_arcLong = g_anchorLow + (targetL - g_anchorLow) * MathPow(tL, InpConvPower);
+      }
+   }
+
+   // SHORT ARC: from anchorHigh → projected low target
+   if(g_mode == -1 && g_anchorLowShift >= 0 && g_anchorHighShift >= 0)
+   {
+      double impS = g_anchorHigh - g_anchorLow;
+      if(impS > 0)
+      {
+         double targetS = g_anchorHigh - impS * InpArcExtMult;
+
+         double tS = (double)(g_anchorHighShift - shift) / (double)InpArcHorizonBars;
+         if(tS < 0.0) tS = 0.0;
+         if(tS > 1.0) tS = 1.0;
+
+         g_arcShort = g_anchorHigh + (targetS - g_anchorHigh) * MathPow(tS, InpConvPower);
+      }
+   }
+}
+
+//==================================================================
+// 7. DRDWCT CORE MATH (lot value, RD, SAG, gamma, liq, VaR)
+//==================================================================
+double RE_LotValue(double lots) { return(lots * 100.0); } // contract size 100, consistent with XAUUSD model
+
+double RE_StructuralSL(int direction, double spot)
+{
+   return(direction < 0 ? spot + 10.0 : spot - 10.0);
+}
+
+double RE_DistSL(double entry, double sl) { return(MathAbs(sl - entry)); }
+
+double RE_RiskToSL(double lots, double distSL)
+{
+   return(distSL * RE_LotValue(lots));
+}
+
+double RE_RD(double lots, double distSL)
+{
+   if(distSL == 0) return(1e10);
+   return(lots / distSL);
+}
+
+double RE_SAG(double lots, double distSL)
+{
+   if(distSL == 0) return(1e10);
+   return((lots * lots) / (distSL * distSL));
+}
+
+double RE_Gamma(double entry, double spot, double lots)
+{
+   double d = entry - spot;
+   return(d*d*lots);
+}
+
+double RE_GammaVolScaled(double gammaRaw, double atr15, double atr30)
+{
+   if(atr30 == 0) return(gammaRaw);
+   return(gammaRaw * (atr15/atr30));
+}
+
+double RE_LiqProx(double sl, RE_Config &cfg)
+{
+   if(cfg.liqCount <= 0) return(0);
+   double best = 1e10;
+   for(int i=0;i<cfg.liqCount;i++)
+   {
+      double d = MathAbs(cfg.liquidityLevels[i] - sl);
+      if(d < best) best = d;
+   }
+   return(1.0/(1.0+best));
+}
+
+//==================================================================
+// 8. VAR ENGINE
+//==================================================================
+void RE_BuildScenarios(RE_Market &m, RE_Config &cfg, double &scen[], int &scCount)
+{
+   double sigma = m.atr30;
+   double spot  = m.spot;
+
+   double tmp[64];
+   int count=0;
+
+   tmp[count++] = spot - 1*sigma;
+   tmp[count++] = spot - 2*sigma;
+   tmp[count++] = spot - 3*sigma;
+   tmp[count++] = spot + 1*sigma;
+   tmp[count++] = spot + 2*sigma;
+   tmp[count++] = spot + 3*sigma;
+
+   for(int i=0;i<cfg.liqCount && count<64;i++)
+      tmp[count++] = cfg.liquidityLevels[i];
+
+   scCount=0;
+   for(int i=0;i<count;i++)
+   {
+      bool exists=false;
+      for(int j=0;j<scCount;j++)
+      {
+         if(MathAbs(tmp[i]-scen[j])<1e-5){ exists=true; break;}
+      }
+      if(!exists){ scen[scCount]=tmp[i]; scCount++; }
+   }
+
+   for(int i=0;i<scCount-1;i++)
+      for(int j=i+1;j<scCount;j++)
+         if(scen[j]<scen[i])
+         { double t=scen[i]; scen[i]=scen[j]; scen[j]=t; }
+}
+
+double RE_ScenarioPnL(RE_Position &pos[], int posCount, double scenPrice)
+{
+   double tot=0;
+   for(int i=0;i<posCount;i++)
+   {
+      double move       = scenPrice - pos[i].entry;
+      double signedMove = (pos[i].direction<0 ? -move : move);
+      tot += signedMove * RE_LotValue(pos[i].lots);
+   }
+   return(tot);
+}
+
+void RE_ComputeVaR(RE_Position &pos[], int posCount, RE_Market &m, RE_Config &cfg, RE_VarResult &out)
+{
+   out.var2=0; out.var3=0;
+   if(posCount<=0) return;
+
+   double scen[64]; int scCount=0;
+   RE_BuildScenarios(m,cfg,scen,scCount);
+   if(scCount<=0) return;
+
+   double sigma = m.atr30;
+   double netLots=0;
+   for(int i=0;i<posCount;i++)
+   {
+      int sgn = (pos[i].direction<0 ? -1 : 1);
+      netLots += sgn * pos[i].lots;
+   }
+   double target2 = (netLots<0 ? m.spot+2*sigma : m.spot-2*sigma);
+
+   bool   worstInit=false, closestInit=false;
+   double worstPnl=0, closestPnl=0, closestDist=0;
+
+   for(int i=0;i<scCount;i++)
+   {
+      double price = scen[i];
+      double pnl   = RE_ScenarioPnL(pos,posCount,price);
+
+      if(!worstInit || pnl < worstPnl){ worstPnl=pnl; worstInit=true; }
+
+      double d = MathAbs(price-target2);
+      if(!closestInit || d<closestDist){ closestDist=d; closestPnl=pnl; closestInit=true; }
+   }
+
+   out.var3 = MathAbs(worstPnl);
+   out.var2 = MathAbs(closestPnl);
+}
+
+void RE_ComputeDeltaVar2(RE_Position &pos[], int posCount, RE_Market &m, RE_Config &cfg, double &out[])
+{
+   RE_VarResult full;
+   RE_ComputeVaR(pos,posCount,m,cfg,full);
+   double full2 = full.var2;
+
+   for(int i=0;i<posCount;i++)
+   {
+      RE_Position tmp[64];
+      int tCount=0;
+      for(int j=0;j<posCount;j++)
+      {
+         if(j==i) continue;
+         tmp[tCount]=pos[j];
+         tCount++;
+      }
+      RE_VarResult v;
+      RE_ComputeVaR(tmp,tCount,m,cfg,v);
+      out[i]=full2 - v.var2;
+   }
+}
+
+//==================================================================
+// 9. UDS & NORMALIZATION
+//==================================================================
+void RE_Normalize(double &src[], int n, double &dst[])
+{
+   if(n<=0) return;
+   double mn=src[0], mx=src[0];
+   for(int i=1;i<n;i++){ if(src[i]<mn) mn=src[i]; if(src[i]>mx) mx=src[i]; }
+   if(MathAbs(mx-mn)<1e-9){ for(int i=0;i<n;i++) dst[i]=0; return; }
+   for(int i=0;i<n;i++) dst[i]=(src[i]-mn)/(mx-mn);
+}
+
+int RE_BuildMetrics(RE_Position &pos[], int posCount, RE_Market &m, RE_Config &cfg, RE_ModelState &ms, RE_Metrics &met[])
+{
+   if(posCount<=0) return(0);
+
+   for(int i=0;i<posCount;i++)
+   {
+      RE_Metrics x;
+      x.ticket    = pos[i].ticket;
+      x.lots      = pos[i].lots;
+      x.direction = pos[i].direction;
+      x.entry     = pos[i].entry;
+
+      double sl = pos[i].sl;
+      if(sl==0) sl = RE_StructuralSL(x.direction, m.spot);
+      x.sl      = sl;
+      x.distSL  = RE_DistSL(x.entry, sl);
+      x.riskToSL= RE_RiskToSL(x.lots, x.distSL);
+      x.rd      = RE_RD(x.lots, x.distSL);
+      x.sag     = RE_SAG(x.lots, x.distSL);
+      x.gammaRaw= RE_Gamma(x.entry, m.spot, x.lots);
+      x.gammaVolScaled = RE_GammaVolScaled(x.gammaRaw, m.atr15, m.atr30);
+      x.liqProx = RE_LiqProx(sl, cfg);
+      x.dVar2   = 0;
+      x.uds     = 0;
+      met[i]=x;
+   }
+
+   double dVar2Arr[64];
+   RE_ComputeDeltaVar2(pos,posCount,m,cfg,dVar2Arr);
+   for(int i=0;i<posCount;i++) met[i].dVar2 = dVar2Arr[i];
+
+   double rd[64], d2[64], gV[64], liq[64], sag[64];
+   for(int i=0;i<posCount;i++)
+   {
+      rd[i] = met[i].rd;
+      d2[i] = met[i].dVar2;
+      gV[i] = met[i].gammaVolScaled;
+      liq[i]= met[i].liqProx;
+      sag[i]= met[i].sag;
+   }
+
+   double rdN[64], d2N[64], gVN[64], liqN[64], sagN[64];
+   RE_Normalize(rd,posCount,rdN);
+   RE_Normalize(d2,posCount,d2N);
+   RE_Normalize(gV,posCount,gVN);
+   RE_Normalize(liq,posCount,liqN);
+   RE_Normalize(sag,posCount,sagN);
+
+   double w_rd    = ms.hasWeights ? ms.w_rd    : cfg.w_rd;
+   double w_d2    = ms.hasWeights ? ms.w_dVar2 : cfg.w_dVar2;
+   double w_gamma = ms.hasWeights ? ms.w_gamma : cfg.w_gamma;
+   double w_liq   = ms.hasWeights ? ms.w_liq   : cfg.w_liq;
+   double w_sag   = ms.hasWeights ? ms.w_sag   : cfg.w_sag;
+
+   for(int i=0;i<posCount;i++)
+   {
+      double uds = w_rd*rdN[i] + w_d2*d2N[i] + w_gamma*gVN[i] + w_liq*liqN[i] + w_sag*sagN[i];
+      met[i].uds = uds;
+   }
+
+   if(m.atr30>0 && (m.atr15/m.atr30) > cfg.volSpikeThreshold)
+   {
+      for(int i=0;i<posCount;i++)
+      {
+         double v = met[i].uds * cfg.volSpikeMultiplier;
+         if(v>1) v=1;
+         met[i].uds = v;
+      }
+   }
+
+   return(posCount);
+}
+
+//==================================================================
+// 10. HIGH LAYER & BOTTOM LAYER
+//==================================================================
+double RE_HighLayerFraction(RE_Metrics &met[], int mCount, RE_Config &cfg)
+{
+   if(mCount<=0) return(0);
+
+   int idx[64];
+   for(int i=0;i<mCount;i++) idx[i]=i;
+
+   for(int i=0;i<mCount-1;i++)
+      for(int j=i+1;j<mCount;j++)
+         if(met[idx[j]].uds > met[idx[i]].uds)
+         {int t=idx[i];idx[i]=idx[j];idx[j]=t;}
+
+   int n = MathMax(1,(int)MathFloor(mCount*(1.0-cfg.highLayerQuantile)));
+   if(n>mCount) n=mCount;
+
+   double totalUDS=0, highUDS=0;
+   for(int i=0;i<mCount;i++) totalUDS+=met[i].uds;
+   if(totalUDS<=0) return(0);
+
+   for(int i=0;i<n;i++) highUDS+=met[idx[i]].uds;
+   return(highUDS/totalUDS);
+}
+
+void RE_ComputeBottomLayer(RE_Metrics &met[], int mCount, RE_Config &cfg, bool hasPrev, RE_BottomLayer &prev, RE_BottomLayer &out)
+{
+   if(mCount<=0)
+   {
+      out.pCore  = hasPrev ? prev.pCore  : 0.0;
+      out.status = hasPrev ? prev.status : 0;
+      return;
+   }
+
+   double frac = RE_HighLayerFraction(met,mCount,cfg);
+   double z    = cfg.logisticK * (frac - cfg.logisticPivot);
+   double pCore= 1.0/(1.0+MathExp(z));
+   out.pCore   = pCore;
+
+   int status;
+   if(hasPrev)
+   {
+      if(pCore >= cfg.coreUpperBand) status = 1;
+      else if(pCore <= cfg.coreLowerBand) status = 0;
+      else status = prev.status;
+   }
+   else
+   {
+      status = (pCore>=0.5 ? 1 : 0);
+   }
+   out.status = status;
+}
+
+//==================================================================
+// 11. VAR LIMITS + TRIMMING
+//==================================================================
+void RE_DynamicVarLimits(double equity, RE_RiskProfile profile, RE_RiskMode mode, double &v2Frac, double &v3Frac)
+{
+   if(equity <= 0){ v2Frac=0.05; v3Frac=0.10; return; }
+
+   if(profile == RE_PROFILE_AGGRESSIVE)
+   {
+      if(mode == RE_MODE_OVERNIGHT)
+      {
+         if(equity<1000){ v2Frac=0.07; v3Frac=0.14; }
+         else if(equity<10000){ v2Frac=0.06; v3Frac=0.12; }
+         else if(equity<100000){ v2Frac=0.05; v3Frac=0.10; }
+         else if(equity<1000000){ v2Frac=0.035; v3Frac=0.07; }
+         else if(equity<10000000){ v2Frac=0.02; v3Frac=0.04; }
+         else { v2Frac=0.01; v3Frac=0.02; }
+      }
+      else
+      {
+         if(equity<1000){ v2Frac=0.04; v3Frac=0.08; }
+         else if(equity<10000){ v2Frac=0.035; v3Frac=0.07; }
+         else if(equity<100000){ v2Frac=0.03; v3Frac=0.06; }
+         else if(equity<1000000){ v2Frac=0.025; v3Frac=0.05; }
+         else if(equity<10000000){ v2Frac=0.015; v3Frac=0.03; }
+         else { v2Frac=0.01; v3Frac=0.02; }
+      }
+   }
+   else
+   {
+      v2Frac=0.04; v3Frac=0.08;
+   }
+}
+
+bool RE_IsMicroBomb(RE_Metrics &m, RE_Config &cfg)
+{
+   if(m.distSL==0) return(true);
+   double rd = m.lots / m.distSL;
+   return(rd > cfg.rdLimit);
+}
+
+int RE_SelectTrimIndex(RE_Metrics &met[], int mCount, RE_Config &cfg)
+{
+   if(mCount<=0) return(-1);
+   int viol[64]; int vC=0;
+   for(int i=0;i<mCount;i++)
+      if(RE_IsMicroBomb(met[i],cfg)){ viol[vC]=i; vC++; }
+
+   int pool[64]; int pC=0;
+   if(vC>0){ for(int i=0;i<vC;i++) pool[pC++]=viol[i]; }
+   else { for(int i=0;i<mCount;i++) pool[pC++]=i; }
+
+   int best = pool[0];
+   for(int i=1;i<pC;i++)
+      if(met[pool[i]].uds > met[best].uds) best = pool[i];
+   return(best);
+}
+
+void RE_DecideTrim(RE_Metrics &m, RE_Config &cfg, RE_Trim &t)
+{
+   t.ticket = m.ticket;
+   if(m.lots >= cfg.minLotsForPartial)
+      t.closeLots = m.lots * cfg.partialCloseFraction;
+   else
+      t.closeLots = m.lots;
+}
+
+//==================================================================
+// 12. RAW ORDER EXECUTION HELPERS (IOC)
+//==================================================================
+bool SendMarketOrder(int direction, double lots, double sl, const string comment)
+{
+   if(lots <= 0.0) return(false);
+
+   MqlTradeRequest req;
+   MqlTradeResult  res;
+   ZeroMemory(req);
+   ZeroMemory(res);
+
+   double ask = SymbolInfoDouble(_Symbol,SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol,SYMBOL_BID);
+
+   req.action      = TRADE_ACTION_DEAL;
+   req.symbol      = _Symbol;
+   req.magic       = InpMagic;
+   req.volume      = lots;
+   req.sl          = sl;
+   req.tp          = 0.0;
+   req.deviation   = 20;
+   req.type_filling= ORDER_FILLING_IOC;
+   req.type_time   = ORDER_TIME_GTC;
+   req.comment     = comment;
+
+   if(direction > 0)
+   {
+      req.type  = ORDER_TYPE_BUY;
+      req.price = ask;
+   }
+   else
+   {
+      req.type  = ORDER_TYPE_SELL;
+      req.price = bid;
+   }
+
+   if(!OrderSend(req,res))
+   {
+      Print("OrderSend failed dir=",direction," lots=",lots," retcode=",res.retcode);
+      return(false);
+   }
+
+   if(res.retcode != TRADE_RETCODE_DONE && res.retcode != TRADE_RETCODE_DONE_PARTIAL)
+   {
+      Print("OrderSend not DONE, retcode=",res.retcode);
+      return(false);
+   }
+
+   return(true);
+}
+
+bool ClosePositionPartial(ulong ticket, double lotsToClose)
+{
+   if(lotsToClose <= 0.0) return(false);
+   if(!PositionSelectByTicket(ticket)) return(false);
+
+   string sym  = PositionGetString(POSITION_SYMBOL);
+   long   mgc  = PositionGetInteger(POSITION_MAGIC);
+   long   type = PositionGetInteger(POSITION_TYPE);
+   double posLots = PositionGetDouble(POSITION_VOLUME);
+
+   if(sym != _Symbol) return(false);
+   if(mgc != InpMagic) return(false);
+
+   lotsToClose = NormalizeDouble(lotsToClose,2);
+   if(lotsToClose > posLots) lotsToClose = posLots;
+   if(lotsToClose <= 0) return(false);
+
+   double ask = SymbolInfoDouble(_Symbol,SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol,SYMBOL_BID);
+
+   MqlTradeRequest req;
+   MqlTradeResult  res;
+   ZeroMemory(req);
+   ZeroMemory(res);
+
+   req.action      = TRADE_ACTION_DEAL;
+   req.symbol      = _Symbol;
+   req.magic       = InpMagic;
+   req.position    = ticket;
+   req.volume      = lotsToClose;
+   req.deviation   = 20;
+   req.type_filling= ORDER_FILLING_IOC;
+   req.type_time   = ORDER_TIME_GTC;
+   req.comment     = "SYM TRIM";
+
+   if(type == POSITION_TYPE_BUY)
+   {
+      req.type  = ORDER_TYPE_SELL;
+      req.price = bid;
+   }
+   else
+   {
+      req.type  = ORDER_TYPE_BUY;
+      req.price = ask;
+   }
+
+   if(!OrderSend(req,res))
+   {
+      Print("ClosePositionPartial failed ticket=",ticket," lots=",lotsToClose," retcode=",res.retcode);
+      return(false);
+   }
+
+   if(res.retcode != TRADE_RETCODE_DONE && res.retcode != TRADE_RETCODE_DONE_PARTIAL)
+   {
+      Print("ClosePositionPartial not DONE ticket=",ticket," retcode=",res.retcode);
+      return(false);
+   }
+
+   return(true);
+}
+
+bool ClosePositionFull(ulong ticket)
+{
+   if(!PositionSelectByTicket(ticket)) return(false);
+   double lots = PositionGetDouble(POSITION_VOLUME);
+   return(ClosePositionPartial(ticket,lots));
+}
+
+//==================================================================
+// 13. CONFIG FACTORY + BRIDGES
+//==================================================================
+int RE_ApplyTrimToPositions(RE_Position &pos[], int posCount, RE_Trim &t, RE_Position &out[])
+{
+   int n=0;
+   for(int i=0;i<posCount;i++)
+   {
+      RE_Position p = pos[i];
+      if(p.ticket != t.ticket)
+      {
+         out[n]=p; n++;
+      }
+      else
+      {
+         double newLots = p.lots - t.closeLots;
+         if(newLots > 1e-4)
+         {
+            p.lots = newLots;
+            out[n]=p; n++;
+         }
+      }
+   }
+   return(n);
+}
+
+void RE_BuildDefaultConfig(double equity, RE_Config &cfg)
+{
+   cfg.profile = RE_PROFILE_AGGRESSIVE;
+   cfg.rdLimit = 0.0095;
+   cfg.w_rd    = 0.35;
+   cfg.w_dVar2 = 0.25;
+   cfg.w_gamma = 0.20;
+   cfg.w_liq   = 0.10;
+   cfg.w_sag   = 0.10;
+   cfg.udsDangerThreshold = 0.80;
+   cfg.highLayerQuantile  = 0.75;
+   cfg.logisticK          = 8;
+   cfg.logisticPivot      = 0.26;
+   cfg.coreLowerBand      = 0.45;
+   cfg.coreUpperBand      = 0.55;
+   cfg.volSpikeMultiplier = 1.2;
+   cfg.volSpikeThreshold  = 3.0;
+
+   double liq[] = {2300,2320,2350,2380,2400,2415,2430,2450};
+   int n = ArraySize(liq);
+   cfg.liqCount = (n>32 ? 32 : n);
+   for(int i=0;i<cfg.liqCount;i++) cfg.liquidityLevels[i]=liq[i];
+
+   if(equity<1000){ cfg.partialCloseFraction=0.5; cfg.minLotsForPartial=0.02; }
+   else if(equity<10000){ cfg.partialCloseFraction=0.4; cfg.minLotsForPartial=0.03; }
+   else if(equity<100000){ cfg.partialCloseFraction=0.3; cfg.minLotsForPartial=0.03; }
+   else if(equity<1000000){ cfg.partialCloseFraction=0.25; cfg.minLotsForPartial=0.05; }
+   else { cfg.partialCloseFraction=0.15; cfg.minLotsForPartial=0.05; }
+}
+
+int RE_CollectPositions(RE_Position &out[])
+{
+   int c=0;
+   int total = PositionsTotal();
+   for(int i=0; i<total && c<64; i++)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket))
+         continue;
+      string sym = PositionGetString(POSITION_SYMBOL);
+      long   mgc = PositionGetInteger(POSITION_MAGIC);
+      if(sym != _Symbol) continue;
+      if(mgc != InpMagic) continue;
+
+      long  type   = PositionGetInteger(POSITION_TYPE);
+      double lots  = PositionGetDouble(POSITION_VOLUME);
+      double price = PositionGetDouble(POSITION_PRICE_OPEN);
+      double sl    = PositionGetDouble(POSITION_SL);
+      double profit= PositionGetDouble(POSITION_PROFIT);
+      double swap  = PositionGetDouble(POSITION_SWAP);
+      double comm  = PositionGetDouble(POSITION_COMMISSION);
+
+      RE_Position p;
+      p.ticket    = (long)ticket;
+      p.lots      = lots;
+      p.entry     = price;
+      p.sl        = (sl>0 ? sl : 0.0);
+      p.direction = (type==POSITION_TYPE_BUY ? 1 : -1);
+      p.pnl       = profit + swap + comm;
+      out[c]=p; c++;
+   }
+   return(c);
+}
+
+void RE_BuildMarket(RE_Market &m)
+{
+   m.spot       = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   m.equity     = AccountInfoDouble(ACCOUNT_EQUITY);
+   m.marginUsed = AccountInfoDouble(ACCOUNT_MARGIN);
+
+   static int atr15Handle = INVALID_HANDLE;
+   static int atr30Handle = INVALID_HANDLE;
+
+   if(atr15Handle == INVALID_HANDLE)
+      atr15Handle = iATR(_Symbol, _Period, 15);
+   if(atr30Handle == INVALID_HANDLE)
+      atr30Handle = iATR(_Symbol, _Period, 30);
+
+   double buf15[1], buf30[1];
+   ArraySetAsSeries(buf15, true);
+   ArraySetAsSeries(buf30, true);
+
+   if(CopyBuffer(atr15Handle, 0, 0, 1, buf15) <= 0)
+      buf15[0] = 0.0;
+   if(CopyBuffer(atr30Handle, 0, 0, 1, buf30) <= 0)
+      buf30[0] = 0.0;
+
+   m.atr15 = buf15[0];
+   m.atr30 = buf30[0];
+}
+
+void RE_ApplyTrimsToOrders(RE_Trim &trims[], int trimCount)
+{
+   if(trimCount<=0) return;
+   for(int i=0;i<trimCount;i++)
+   {
+      long ticket = trims[i].ticket;
+      double lotsToClose = trims[i].closeLots;
+      if(lotsToClose<=0) continue;
+      ClosePositionPartial((ulong)ticket,lotsToClose);
+   }
+}
+
+//==================================================================
+// 14. RISK ENGINE DRIVER
+//==================================================================
+void RE_RunRiskEngine(RE_RiskMode mode,
+                      RE_Position &initPos[], int initCount,
+                      RE_Market &m,
+                      RE_Config &cfg,
+                      RE_ModelState &ms,
+                      bool hasPrevBottom,
+                      RE_BottomLayer &prevBottom,
+                      RE_RiskResult &out)
+{
+   out.posCount  = 0;
+   out.metCount  = 0;
+   out.trimCount = 0;
+   out.udsMax    = 0;
+   out.anyBomb   = false;
+   out.varRes.var2=0;
+   out.varRes.var3=0;
+
+   RE_Position pos[64];
+   int posCount = initCount;
+   for(int i=0;i<posCount;i++) pos[i]=initPos[i];
+
+   RE_BottomLayer bottomLocal;
+
+   while(true)
+   {
+      if(posCount<=0)
+      {
+         bottomLocal.pCore  = hasPrevBottom ? prevBottom.pCore  : 0.0;
+         bottomLocal.status = hasPrevBottom ? prevBottom.status : 0;
+         out.bottom = bottomLocal;
+         return;
+      }
+
+      RE_Metrics met[64];
+      int mCount = RE_BuildMetrics(pos,posCount,m,cfg,ms,met);
+
+      RE_VarResult vr;
+      RE_ComputeVaR(pos,posCount,m,cfg,vr);
+
+      double v2Frac,v3Frac;
+      RE_DynamicVarLimits(m.equity,cfg.profile,mode,v2Frac,v3Frac);
+      double v2Lim = v2Frac*m.equity;
+      double v3Lim = v3Frac*m.equity;
+
+      bool var2Ok = (vr.var2 <= v2Lim);
+      bool var3Ok = (vr.var3 <= v3Lim);
+
+      double udsMax=0; bool anyBomb=false;
+      for(int i=0;i<mCount;i++)
+      {
+         if(met[i].uds > udsMax) udsMax=met[i].uds;
+         if(RE_IsMicroBomb(met[i],cfg)) anyBomb=true;
+      }
+
+      RE_ComputeBottomLayer(met,mCount,cfg,hasPrevBottom,prevBottom,bottomLocal);
+
+      bool allOk = (var2Ok && var3Ok && !anyBomb);
+      if(allOk)
+      {
+         for(int i=0;i<posCount;i++) out.positions[i]=pos[i];
+         for(int i=0;i<mCount;i++)  out.metrics[i]=met[i];
+         out.posCount  = posCount;
+         out.metCount  = mCount;
+         out.varRes    = vr;
+         out.bottom    = bottomLocal;
+         out.udsMax    = udsMax;
+         out.anyBomb   = anyBomb;
+         return;
+      }
+
+      int idx = RE_SelectTrimIndex(met,mCount,cfg);
+      if(idx<0)
+      {
+         for(int i=0;i<posCount;i++) out.positions[i]=pos[i];
+         for(int i=0;i<mCount;i++)   out.metrics[i]=met[i];
+         out.posCount = posCount;
+         out.metCount = mCount;
+         out.varRes   = vr;
+         out.bottom   = bottomLocal;
+         out.udsMax   = udsMax;
+         out.anyBomb  = anyBomb;
+         return;
+      }
+
+      RE_Trim tr;
+      RE_DecideTrim(met[idx],cfg,tr);
+      out.trims[out.trimCount] = tr;
+      out.trimCount++;
+
+      RE_Position newPos[64];
+      int newCount = RE_ApplyTrimToPositions(pos,posCount,tr,newPos);
+      posCount = newCount;
+      for(int i=0;i<posCount;i++) pos[i]=newPos[i];
+   }
+}
+
+//==================================================================
+// 15. TRADING EXECUTION - ONLY PHASE 3 & PHASE 4 ENTRIES (RAW REQUEST)
+//==================================================================
+void ExecuteTrading()
+{
+   int barsAvail = (int)ArraySize(Close);
+   if(barsAvail < 3) return;
+
+   int    shiftNow = 1;
+   double closeNow = Close[shiftNow];
+   double atrNow   = GetATR(shiftNow);
+   datetime barTime= Time[0];
+
+   double equity   = AccountInfoDouble(ACCOUNT_EQUITY);
+   double riskCash = equity * InpRiskPercent * 0.01;
+
+   if(InpEnableRiskEngine && InpBlockNewIfBreach && !g_lastRiskOk)
+      return;
+
+   // Time filter
+   if(!IsTradeTime())
+      return;
+
+   bool L3 = (g_mode==1  && g_phaseLong ==3);
+   bool L4 = (g_mode==1  && g_phaseLong ==4);
+   bool S3 = (g_mode==-1 && g_phaseShort==3);
+   bool S4 = (g_mode==-1 && g_phaseShort==4);
+
+   double impL = g_anchorHigh - g_anchorLow;
+   double impS = g_anchorHigh - g_anchorLow;
+
+   // LONG P3
+   if(L3 && g_lastLongTradeTime!=barTime)
+   {
+      double entry = closeNow;
+      double sl    = g_anchorLow - atrNow*0.25;
+      double lots  = ComputeLots(riskCash,entry,sl);
+      if(sl>0 && entry>sl && lots>0)
+      {
+         if(SendMarketOrder(+1,lots,sl,"SYM P3 Long"))
+            g_lastLongTradeTime=barTime;
+      }
+   }
+
+   // LONG P4
+   if(L4 && g_lastLongTradeTime!=barTime && impL>0)
+   {
+      bool breakout = (closeNow>g_anchorHigh || closeNow>High[shiftNow+1] + 0.20*atrNow);
+      if(breakout)
+      {
+         double entry = closeNow;
+         double sl    = g_anchorLow - atrNow*0.25;
+         double lots  = ComputeLots(riskCash,entry,sl);
+         if(sl>0 && entry>sl && lots>0)
+         {
+            if(SendMarketOrder(+1,lots,sl,"SYM P4 Long"))
+               g_lastLongTradeTime=barTime;
+         }
+      }
+   }
+
+   // SHORT P3
+   if(S3 && g_lastShortTradeTime!=barTime)
+   {
+      double entry = closeNow;
+      double sl    = g_anchorHigh + atrNow*0.25;
+      double lots  = ComputeLots(riskCash,entry,sl);
+      if(sl>0 && sl>entry && lots>0)
+      {
+         if(SendMarketOrder(-1,lots,sl,"SYM P3 Short"))
+            g_lastShortTradeTime=barTime;
+      }
+   }
+
+   // SHORT P4
+   if(S4 && g_lastShortTradeTime!=barTime && impS>0)
+   {
+      bool breakout = (closeNow<g_anchorLow || closeNow<Low[shiftNow+1] - 0.20*atrNow);
+      if(breakout)
+      {
+         double entry = closeNow;
+         double sl    = g_anchorHigh + atrNow*0.25;
+         double lots  = ComputeLots(riskCash,entry,sl);
+         if(sl>0 && sl>entry && lots>0)
+         {
+            if(SendMarketOrder(-1,lots,sl,"SYM P4 Short"))
+               g_lastShortTradeTime=barTime;
+         }
+      }
+   }
+}
+
+//==================================================================
+// 16. ARC + INSTITUTIONAL + PHASE EXIT (REPLACES OLD STRUCTURAL EXIT)
+//==================================================================
+void ManageArcInstitutionalExits()
+{
+   int barsAvail = (int)ArraySize(Close);
+   if(barsAvail <= (2*InpPivotLen + 5)) return;
+
+   int    shiftNow = 1;
+   double closeNow = Close[shiftNow];
+   double atrNow   = GetATR(shiftNow);
+
+   // --- 1) ARC exhaustion flags ---
+   bool arcExhaustLong  = (g_mode == 1  && g_arcLong  > 0.0 && closeNow >= (g_arcLong  - InpArcToleranceAtr * atrNow));
+   bool arcExhaustShort = (g_mode == -1 && g_arcShort > 0.0 && closeNow <= (g_arcShort + InpArcToleranceAtr * atrNow));
+
+   // --- 2) INSTITUTIONAL BANDS ---
+
+   // LONG side
+   double instLevelL = (g_longInducPrice != 0.0 ? g_longInducPrice : (g_anchorHigh > 0.0 ? g_anchorHigh : 0.0));
+   double innerTopL  = (g_longInducHigh > 0.0 ? g_longInducHigh : instLevelL);
+   double outerTopL  = innerTopL + InpOuterBandAtrMult * atrNow;
+
+   // SHORT side
+   double instLevelS = (g_shortInducPrice != 0.0 ? g_shortInducPrice : (g_anchorLow > 0.0 ? g_anchorLow : 0.0));
+   double innerBotS  = (g_shortInducLow != 0.0 ? g_shortInducLow : instLevelS);
+   double outerBotS  = innerBotS - InpOuterBandAtrMult * atrNow;
+
+   // --- 3) TRACK OUTER-BAND SWEEPS PER IMPULSE ---
+
+   if(g_mode == 1 && instLevelL > 0.0)
+   {
+      if(closeNow > outerTopL)
+         g_longOuterBreachSeen = true;
+   }
+
+   if(g_mode == -1 && instLevelS > 0.0)
+   {
+      if(closeNow < outerBotS)
+         g_shortOuterBreachSeen = true;
+   }
+
+   // --- 4) PHASE-CHANGE AT EXTREME ---
+
+   bool phaseTrendEndLong =
+      (g_mode == 1 &&
+       (g_prevPhaseLong == 3 || g_prevPhaseLong == 4) &&
+       (g_phaseLong <= 1));
+
+   bool phaseTrendEndShort =
+      (g_mode == -1 &&
+       (g_prevPhaseShort == 3 || g_prevPhaseShort == 4) &&
+       (g_phaseShort <= 1));
+
+   // --- 5) FULL EXIT CONDITIONS ---
+
+   bool exitLong = false;
+   bool exitShort = false;
+
+   // LONG: ARC exhaust + outer sweep + inner-band re-entry + phase-end
+   if(g_mode == 1 && arcExhaustLong && phaseTrendEndLong)
+   {
+      bool hasInstL = (instLevelL > 0.0);
+      bool instPatternOK =
+         !hasInstL ||
+         (g_longOuterBreachSeen && closeNow < innerTopL);
+
+      if(instPatternOK)
+         exitLong = true;
+   }
+
+   // SHORT: ARC exhaust + outer sweep + inner-band re-entry + phase-end
+   if(g_mode == -1 && arcExhaustShort && phaseTrendEndShort)
+   {
+      bool hasInstS = (instLevelS > 0.0);
+      bool instPatternOK =
+         !hasInstS ||
+         (g_shortOuterBreachSeen && closeNow > innerBotS);
+
+      if(instPatternOK)
+         exitShort = true;
+   }
+
+   if(!exitLong && !exitShort)
+      return;
+
+   // --- 6) EXECUTE EXITS ON MATCHING POSITIONS ---
+   int total = PositionsTotal();
+   for(int i=0;i<total;i++)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+
+      string sym  = PositionGetString(POSITION_SYMBOL);
+      long   mgc  = PositionGetInteger(POSITION_MAGIC);
+      long   type = PositionGetInteger(POSITION_TYPE);
+
+      if(sym != _Symbol) continue;
+      if(mgc != InpMagic) continue;
+
+      // LONG positions: close if long exit signal
+      if(exitLong && type == POSITION_TYPE_BUY)
+      {
+         if(!ClosePositionFull(ticket))
+            Print("ARC/INST LONG EXIT failed ticket ",ticket," err ",GetLastError());
+      }
+
+      // SHORT positions: close if short exit signal
+      if(exitShort && type == POSITION_TYPE_SELL)
+      {
+         if(!ClosePositionFull(ticket))
+            Print("ARC/INST SHORT EXIT failed ticket ",ticket," err ",GetLastError());
+      }
+   }
+}
+
+//==================================================================
+// 17. STANDARD CALLBACKS
+//==================================================================
+int OnInit()
+{
+   g_lastBarTime        = 0;
+   g_lastPivotPrice     = 0.0;
+   g_lastPivotShift     = -1;
+   g_lastPivotDir       = 0;
+   g_prevPivotPrice     = 0.0;
+   g_prevPivotShift     = -1;
+   g_prevPivotDir       = 0;
+
+   g_mode               = 0;
+   g_anchorHigh         = 0.0;
+   g_anchorLow          = 0.0;
+   g_anchorHighShift    = -1;
+   g_anchorLowShift     = -1;
+
+   g_phaseShort         = 0;
+   g_phaseLong          = 0;
+   g_prevPhaseShort     = 0;
+   g_prevPhaseLong      = 0;
+
+   g_shortInducPrice    = 0.0;
+   g_shortInducLow      = 0.0;
+   g_shortInducHigh     = 0.0;
+   g_longInducPrice     = 0.0;
+   g_longInducLow       = 0.0;
+   g_longInducHigh      = 0.0;
+
+   g_shortPreConvSeen   = false;
+   g_longPreConvSeen    = false;
+
+   g_arcLong            = 0.0;
+   g_arcShort           = 0.0;
+   g_longOuterBreachSeen  = false;
+   g_shortOuterBreachSeen = false;
+
+   g_lastLongTradeTime  = 0;
+   g_lastShortTradeTime = 0;
+
+   double eq = AccountInfoDouble(ACCOUNT_EQUITY);
+   RE_BuildDefaultConfig(eq,g_reConfig);
+   g_reModelState.hasWeights = false;
+   g_reBottomInit            = false;
+   g_lastRiskOk              = true;
+
+   if(!RefreshSeries())
+      return(INIT_FAILED);
+
+   Print("SYMPHONY Elite Max - Phase 3+4 + DRDWCT v1.6 + ARC v2 (MT5 RAW, IOC, time-gated) loaded.");
+   return(INIT_SUCCEEDED);
+}
+
+void OnDeinit(const int reason)
+{
+}
+
+void OnTick()
+{
+   if(!RefreshSeries())
+      return;
+
+   if(!IsNewBar())
+      return;
+
+   // 1) Update structure & phases
+   UpdatePhaseEngine();
+
+   // 2) Update ARC v2 (convexity arc)
+   UpdateARC();
+
+   // 3) Run risk engine and trim if needed
+   if(InpEnableRiskEngine)
+   {
+      RE_Position pos[64];
+      int posCount = RE_CollectPositions(pos);
+      if(posCount>0)
+      {
+         RE_Market m;
+         RE_BuildMarket(m);
+
+         RE_RiskResult res;
+         RE_RunRiskEngine(RE_MODE_INTRADAY,pos,posCount,m,g_reConfig,g_reModelState,
+                          g_reBottomInit,g_reBottom,res);
+
+         RE_ApplyTrimsToOrders(res.trims,res.trimCount);
+
+         g_reBottom     = res.bottom;
+         g_reBottomInit = true;
+
+         double v2Frac,v3Frac;
+         RE_DynamicVarLimits(m.equity,g_reConfig.profile,RE_MODE_INTRADAY,v2Frac,v3Frac);
+         double v2Lim=v2Frac*m.equity, v3Lim=v3Frac*m.equity;
+         bool var2Ok=(res.varRes.var2<=v2Lim);
+         bool var3Ok=(res.varRes.var3<=v3Lim);
+         g_lastRiskOk = (var2Ok && var3Ok && !res.anyBomb);
+      }
+      else
+      {
+         g_lastRiskOk = true;
+      }
+   }
+   else
+   {
+      g_lastRiskOk = true;
+   }
+
+   // 4) ARC + institutional + phase composite exits (replaces old structural TP)
+   ManageArcInstitutionalExits();
+
+   // 5) Open new Phase 3 / Phase 4 trades (time-gated inside)
+   ExecuteTrading();
+}
+//+------------------------------------------------------------------+
