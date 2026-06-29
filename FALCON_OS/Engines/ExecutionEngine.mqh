@@ -125,86 +125,9 @@ bool EE_IsTradeTime()
 //==================================================================
 // DRDWCT MATH
 //==================================================================
-double EE_LotValue(const double lots){ return(lots*EE_ValuePerPoint()); }
-double EE_RD(const double lots,const double distSL){ return(distSL==0?1e10:lots/distSL); }
-double EE_SAG(const double lots,const double distSL){ return(distSL==0?1e10:(lots*lots)/(distSL*distSL)); }
-double EE_Gamma(const double entry,const double spot,const double lots){ double d=entry-spot; return(d*d*lots); }
-double EE_GammaVol(const double g,const double a15,const double a30){ return(a30==0?g:g*(a15/a30)); }
-double EE_LiqProx(const double sl)
-{
-   if(ee_liqCount<=0) return(0.0);
-   double best=1e10;
-   for(int i=0;i<ee_liqCount;i++){ double d=MathAbs(ee_liqLevels[i]-sl); if(d<best)best=d; }
-   return(1.0/(1.0+best));
-}
+// [DRDWCT math + VaR scenario engine REMOVED — RD/SAG/gamma/UDS/VaR helpers
+//  deleted with the risk engine.]
 
-void EE_BuildLiquidity()
-{
-   // pull liquidity scenario levels from the shared liquidity pools
-   ee_liqCount=0;
-   FalconLiquidity lq=g_state.liquidity;
-   for(int i=0;i<lq.poolCount && ee_liqCount<32;i++)
-      ee_liqLevels[ee_liqCount++]=lq.pools[i];
-}
-
-//==================================================================
-// VAR ENGINE (scenario based, per-position set)
-//==================================================================
-void EE_BuildScenarios(const EE_Market &m,double &scen[],int &sc)
-{
-   double sigma=m.atr30; double spot=m.spot;
-   double tmp[64]; int c=0;
-   tmp[c++]=spot-1*sigma; tmp[c++]=spot-2*sigma; tmp[c++]=spot-3*sigma;
-   tmp[c++]=spot+1*sigma; tmp[c++]=spot+2*sigma; tmp[c++]=spot+3*sigma;
-   for(int i=0;i<ee_liqCount&&c<64;i++) tmp[c++]=ee_liqLevels[i];
-   sc=0;
-   for(int i=0;i<c;i++)
-   {
-      bool ex=false;
-      for(int j=0;j<sc;j++) if(MathAbs(tmp[i]-scen[j])<1e-5){ ex=true; break; }
-      if(!ex){ scen[sc++]=tmp[i]; }
-   }
-}
-double EE_ScenarioPnL(const EE_Position &pos[],const int n,const double price)
-{
-   double tot=0;
-   for(int i=0;i<n;i++)
-   {
-      double move=price-pos[i].entry;
-      double sm=(pos[i].direction<0?-move:move);
-      tot+=sm*EE_LotValue(pos[i].lots);
-   }
-   return(tot);
-}
-void EE_ComputeVaR(const EE_Position &pos[],const int n,const EE_Market &m,EE_VarResult &out)
-{
-   out.var2=0; out.var3=0; if(n<=0) return;
-   double scen[64]; int sc=0; EE_BuildScenarios(m,scen,sc); if(sc<=0) return;
-   double sigma=m.atr30; double netLots=0;
-   for(int i=0;i<n;i++){ int s=(pos[i].direction<0?-1:1); netLots+=s*pos[i].lots; }
-   double target2=(netLots<0?m.spot+2*sigma:m.spot-2*sigma);
-   bool wI=false,cI=false; double worst=0,closest=0,cd=0;
-   for(int i=0;i<sc;i++)
-   {
-      double pnl=EE_ScenarioPnL(pos,n,scen[i]);
-      if(!wI||pnl<worst){ worst=pnl; wI=true; }
-      double d=MathAbs(scen[i]-target2);
-      if(!cI||d<cd){ cd=d; closest=pnl; cI=true; }
-   }
-   out.var3=MathAbs(worst); out.var2=MathAbs(closest);
-}
-
-void EE_DynamicVarLimits(const double equity,double &v2,double &v3)
-{
-   // aggressive intraday band (Symphony profile)
-   if(equity<=0){ v2=0.04; v3=0.08; return; }
-   if(equity<1000){ v2=0.04; v3=0.08; }
-   else if(equity<10000){ v2=0.035; v3=0.07; }
-   else if(equity<100000){ v2=0.03; v3=0.06; }
-   else if(equity<1000000){ v2=0.025; v3=0.05; }
-   else if(equity<10000000){ v2=0.015; v3=0.03; }
-   else { v2=0.01; v3=0.02; }
-}
 
 //==================================================================
 // POSITION COLLECTION (grouped by direction = campaign)
@@ -280,7 +203,7 @@ bool EE_ClosePartial(const ulong ticket,double lots)
    MqlTradeRequest req; MqlTradeResult res; ZeroMemory(req); ZeroMemory(res);
    req.action=TRADE_ACTION_DEAL; req.symbol=_Symbol; req.magic=g_cfg.magic;
    req.position=ticket; req.volume=lots; req.deviation=20;
-   req.type_filling=ORDER_FILLING_IOC; req.type_time=ORDER_TIME_GTC; req.comment="FALCON TRIM";
+   req.type_filling=ORDER_FILLING_IOC; req.type_time=ORDER_TIME_GTC; req.comment="FALCON PARTIAL";
    if(type==POSITION_TYPE_BUY){ req.type=ORDER_TYPE_SELL; req.price=SymbolInfoDouble(_Symbol,SYMBOL_BID); }
    else                       { req.type=ORDER_TYPE_BUY;  req.price=SymbolInfoDouble(_Symbol,SYMBOL_ASK); }
    if(!OrderSend(req,res) || (res.retcode!=TRADE_RETCODE_DONE && res.retcode!=TRADE_RETCODE_DONE_PARTIAL))
@@ -301,131 +224,8 @@ bool EE_CloseFull(const ulong ticket)
 //   position until VaR + bomb limits clear. Trims are simulated on a
 //   local book and only the final set is applied to the market.
 //==================================================================
-void EE_Normalize(double &src[],const int n,double &dst[])
-{
-   if(n<=0) return;
-   double mn=src[0],mx=src[0];
-   for(int i=1;i<n;i++){ if(src[i]<mn)mn=src[i]; if(src[i]>mx)mx=src[i]; }
-   if(MathAbs(mx-mn)<1e-9){ for(int i=0;i<n;i++) dst[i]=0.0; return; }
-   for(int i=0;i<n;i++) dst[i]=(src[i]-mn)/(mx-mn);
-}
-
-// Build normalized UDS for a local book; returns count and fills met[].
-int EE_BuildMetrics(EE_Position &pos[],const int n,const EE_Market &m,EE_Metrics &met[])
-{
-   if(n<=0) return(0);
-   double rd[64],sg[64],gv[64],lq[64];
-   for(int i=0;i<n;i++)
-   {
-      double sl=(pos[i].sl>0?pos[i].sl:(pos[i].direction<0?m.spot+10.0:m.spot-10.0));
-      double distSL=MathAbs(sl-pos[i].entry);
-      met[i].ticket=pos[i].ticket; met[i].lots=pos[i].lots; met[i].direction=pos[i].direction;
-      met[i].entry=pos[i].entry; met[i].sl=sl; met[i].distSL=distSL;
-      met[i].rd=EE_RD(pos[i].lots,distSL);
-      met[i].sag=EE_SAG(pos[i].lots,distSL);
-      met[i].gammaRaw=EE_Gamma(pos[i].entry,m.spot,pos[i].lots);
-      met[i].gammaVolScaled=EE_GammaVol(met[i].gammaRaw,m.atr15,m.atr30);
-      met[i].liqProx=EE_LiqProx(sl);
-      met[i].dVar2=0;
-      rd[i]=met[i].rd; sg[i]=met[i].sag; gv[i]=met[i].gammaVolScaled; lq[i]=met[i].liqProx;
-   }
-   double rdN[64],sgN[64],gvN[64],lqN[64];
-   EE_Normalize(rd,n,rdN); EE_Normalize(sg,n,sgN); EE_Normalize(gv,n,gvN); EE_Normalize(lq,n,lqN);
-   for(int i=0;i<n;i++)
-      met[i].uds = ee_w_rd*rdN[i] + ee_w_sag*sgN[i] + ee_w_gamma*gvN[i] + ee_w_liq*lqN[i];
-   // vol-spike scaling
-   if(m.atr30>0 && (m.atr15/m.atr30)>ee_volSpikeThresh)
-      for(int i=0;i<n;i++){ double v=met[i].uds*ee_volSpikeMult; met[i].uds=(v>1?1:v); }
-   return(n);
-}
-
-double EE_HighLayerFraction(EE_Metrics &met[],const int n)
-{
-   if(n<=0) return(0.0);
-   int idx[64]; for(int i=0;i<n;i++) idx[i]=i;
-   for(int i=0;i<n-1;i++) for(int j=i+1;j<n;j++) if(met[idx[j]].uds>met[idx[i]].uds){ int t=idx[i];idx[i]=idx[j];idx[j]=t; }
-   int hi=(int)MathMax(1,MathFloor(n*(1.0-ee_highLayerQuantile))); if(hi>n)hi=n;
-   double tot=0,high=0; for(int i=0;i<n;i++) tot+=met[i].uds; if(tot<=0) return(0.0);
-   for(int i=0;i<hi;i++) high+=met[idx[i]].uds;
-   return(high/tot);
-}
-
-void EE_BottomLayer(EE_Metrics &met[],const int n,const int slot)
-{
-   if(n<=0) return;
-   double frac=EE_HighLayerFraction(met,n);
-   double z=ee_logisticK*(frac-ee_logisticPivot);
-   double pCore=1.0/(1.0+MathExp(z));
-   int status;
-   if(ee_botInit[slot])
-   {
-      if(pCore>=ee_coreUpperBand) status=1;
-      else if(pCore<=ee_coreLowerBand) status=0;
-      else status=ee_botStatus[slot];
-   }
-   else status=(pCore>=0.5?1:0);
-   ee_botPCore[slot]=pCore; ee_botStatus[slot]=status; ee_botInit[slot]=true;
-}
-
-bool EE_RunCampaignRisk(const int dir,const EE_Market &m,double &grossLots,double &grossVaR,double &udsMax,bool &anyBomb)
-{
-   grossLots=0; grossVaR=0; udsMax=0; anyBomb=false;
-   EE_Position pos[64];
-   int n=EE_CollectPositions(pos,dir);
-   if(n<=0) return(true);
-   for(int i=0;i<n;i++) grossLots+=pos[i].lots;
-
-   int slot=(dir>0?0:1);
-   double v2f,v3f; EE_DynamicVarLimits(m.equity,v2f,v3f);
-   double v3Lim=v3f*m.equity, v2Lim=v2f*m.equity;
-   double minLot=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN); if(minLot<=0)minLot=0.01;
-
-   // simulated trims accumulated then applied
-   long   trimTicket[64]; double trimLots[64]; int trimCount=0;
-   int    guard=0, maxIter=n*2+2;
-
-   bool safe=false;
-   while(guard++<maxIter)
-   {
-      if(n<=0){ safe=true; break; }
-      EE_Metrics met[64];
-      int mc=EE_BuildMetrics(pos,n,m,met);
-      EE_BottomLayer(met,mc,slot);
-
-      EE_VarResult vr; EE_ComputeVaR(pos,n,m,vr);
-      grossVaR=vr.var3;
-
-      udsMax=0; anyBomb=false; int worst=-1; double worstU=-1; int bombIdx=-1; double bombU=-1;
-      for(int i=0;i<mc;i++)
-      {
-         if(met[i].uds>udsMax) udsMax=met[i].uds;
-         if(met[i].uds>worstU){ worstU=met[i].uds; worst=i; }
-         bool bomb=(met[i].distSL<=0 || (met[i].lots/MathMax(met[i].distSL,1e-9))>g_cfg.rdLimit);
-         if(bomb){ anyBomb=true; if(met[i].uds>bombU){ bombU=met[i].uds; bombIdx=i; } }
-      }
-
-      bool var2Ok=(vr.var2<=v2Lim), var3Ok=(vr.var3<=v3Lim);
-      if(var2Ok && var3Ok && !anyBomb){ safe=true; break; }
-
-      int trim=(bombIdx>=0?bombIdx:worst);
-      if(trim<0){ safe=false; break; }
-
-      double closeLots=(pos[trim].lots>=ee_minLotsForPartial)? pos[trim].lots*ee_partialCloseFrac : pos[trim].lots;
-      if(closeLots<minLot) closeLots=pos[trim].lots;
-      // record + simulate
-      trimTicket[trimCount]=pos[trim].ticket; trimLots[trimCount]=closeLots; trimCount++;
-      double remain=pos[trim].lots-closeLots;
-      if(remain>1e-4){ pos[trim].lots=remain; }
-      else { for(int j=trim;j<n-1;j++) pos[j]=pos[j+1]; n--; }
-   }
-
-   // apply the final trim set to the live book
-   for(int i=0;i<trimCount;i++)
-      if(trimLots[i]>0 && EE_ClosePartial((ulong)trimTicket[i],trimLots[i]))
-         FalconPublish(EVT_TRIM,dir,"DRDWCT iterative trim");
-
-   return(safe);
-}
+// [DRDWCT metrics + iterative trim engine REMOVED — the per-campaign VaR/UDS
+//  trimmer that closed open positions has been deleted.]
 
 //==================================================================
 // EXPOSURE SNAPSHOT into shared state (used by Decision DEFEND/SCALE)
@@ -860,38 +660,23 @@ void EE_ManagePartialTP()
 void ExecutionEngineRun()
 {
    EE_Market m; EE_BuildMarket(m);
-   EE_BuildLiquidity();
    EE_UpdateExposure(m);
-   if(ee_riskCooldown>0) ee_riskCooldown--;   // event-driven cooldown decay
+   if(ee_riskCooldown>0) ee_riskCooldown--;
 
-   // ---- PER-CAMPAIGN RISK (multi-direction, gross, never netted) ----
-   bool longOk=true, shortOk=true;
-   double lLots=0,sLots=0,lVaR=0,sVaR=0,lUds=0,sUds=0; bool lBomb=false,sBomb=false;
-   if(g_cfg.enableRiskEng)
-   {
-      longOk  = EE_RunCampaignRisk( 1,m,lLots,lVaR,lUds,lBomb);
-      shortOk = EE_RunCampaignRisk(-1,m,sLots,sVaR,sUds,sBomb);
-   }
-   g_state.exec.longGrossVaR=lVaR;
-   g_state.exec.shortGrossVaR=sVaR;
-   g_state.exec.udsMax=MathMax(lUds,sUds);
-   g_state.exec.anyBomb=(lBomb||sBomb);
+   // ---- DRDWCT RISK ENGINE REMOVED ----
+   // The VaR/UDS per-campaign trimmer was closing every position ("FALCON TRIM").
+   // Risk is now controlled ONLY by: per-trade stop sizing (lot engine),
+   // drawdown protection (equity kill-switch), and decision-layer DEFEND/EXIT.
+   // No automatic VaR/bomb trimming of open positions.
+   g_state.exec.longGrossVaR=0; g_state.exec.shortGrossVaR=0;
+   g_state.exec.udsMax=0; g_state.exec.anyBomb=false;
+   g_state.exec.var2Limit=0; g_state.exec.var3Limit=0; g_state.exec.var3=0;
 
-   // ---- PORTFOLIO BACKSTOP on COMBINED GROSS VaR ----
-   double v2f,v3f; EE_DynamicVarLimits(m.equity,v2f,v3f);
-   g_state.exec.var2Limit=v2f*m.equity;
-   g_state.exec.var3Limit=v3f*m.equity;
-   double combinedGrossVaR=lVaR+sVaR;   // GROSS sum, not net
-   g_state.exec.var3=combinedGrossVaR;
-   bool portfolioOk=(combinedGrossVaR <= g_state.exec.var3Limit*1.5);
-
-   // ---- DRAWDOWN PROTECTION (may flatten / block) ----
-   bool ddOk = EE_DrawdownProtection();
-
-   ee_lastRiskOk=(longOk && shortOk && portfolioOk && ddOk);
-   g_state.exec.riskOk=ee_lastRiskOk;
-   g_state.exec.sessionOpen=EE_IsTradeTime();
-   if(!ee_lastRiskOk) FalconPublish(EVT_RISK_BREACH,combinedGrossVaR);
+   bool ddOk = EE_DrawdownProtection();   // equity kill-switch only (no trimming)
+   ee_lastRiskOk = ddOk;
+   g_state.exec.riskOk = ee_lastRiskOk;
+   g_state.exec.sessionOpen = EE_IsTradeTime();
+   if(!ddOk) FalconPublish(EVT_RISK_BREACH,0.0);
 
    // ---- TRAILING + PARTIAL TAKE-PROFIT (manage open winners) ----
    EE_Trailing();
