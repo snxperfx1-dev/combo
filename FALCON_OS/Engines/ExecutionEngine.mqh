@@ -228,7 +228,7 @@ int EE_CollectPositions(EE_Position &out[],const int dirFilter)
       double sl=PositionGetDouble(POSITION_SL);
       p.sl=(sl>0?sl:0.0);
       p.direction=dir;
-      p.pnl=PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP)+PositionGetDouble(POSITION_COMMISSION);
+      p.pnl=PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP); // commission is per-deal in MT5
       out[c++]=p;
    }
    return(c);

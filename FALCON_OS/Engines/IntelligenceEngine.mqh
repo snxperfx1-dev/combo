@@ -488,7 +488,6 @@ void IE_EntryCycle(FalconIntelligence &x)
    double node = g_state.network.nextNodePrice;
    bool nearNode = (g_cfg.attentionATR>0.0 && node!=0.0
                     && MathAbs(gClose[1]-node) <= atr*g_cfg.attentionATR);
-   bool inZone   = (sd.activeZone!=DIR_NONE);
    bool attentionOK = (nearNode || inZone || g_cfg.attentionATR<=0.0);
 
    ec.entryCycleActive = (cycleGo && attentionOK);

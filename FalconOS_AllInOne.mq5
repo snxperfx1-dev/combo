@@ -4,7 +4,7 @@
 //|   SINGLE-FILE BUILD (kernel + 6 engines + EA, auto-combined).     |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "3.10"
+#property version   "3.11"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -3369,7 +3369,6 @@ void IE_EntryCycle(FalconIntelligence &x)
    double node = g_state.network.nextNodePrice;
    bool nearNode = (g_cfg.attentionATR>0.0 && node!=0.0
                     && MathAbs(gClose[1]-node) <= atr*g_cfg.attentionATR);
-   bool inZone   = (sd.activeZone!=DIR_NONE);
    bool attentionOK = (nearNode || inZone || g_cfg.attentionATR<=0.0);
 
    ec.entryCycleActive = (cycleGo && attentionOK);
@@ -3859,7 +3858,7 @@ int EE_CollectPositions(EE_Position &out[],const int dirFilter)
       double sl=PositionGetDouble(POSITION_SL);
       p.sl=(sl>0?sl:0.0);
       p.direction=dir;
-      p.pnl=PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP)+PositionGetDouble(POSITION_COMMISSION);
+      p.pnl=PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP); // commission is per-deal in MT5
       out[c++]=p;
    }
    return(c);
