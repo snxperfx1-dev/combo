@@ -70,7 +70,8 @@ void AD_Load()
 {
    for(int i=0;i<AD_NBUCKETS;i++){ ad_ewmaR[i]=0.0; ad_n[i]=0; ad_wins[i]=0; }
    if(!g_cfg.useAdaptive) return;
-   ad_fileName = StringFormat("FALCON_Learn_%s_%d.csv", _Symbol, (int)g_cfg.operatingTF);
+   ad_fileName = StringFormat("FALCON_Learn_%s_%s_%d.csv",
+                              IntegerToString(g_cfg.magic), _Symbol, (int)g_cfg.operatingTF);
    int fh = FileOpen(ad_fileName, FILE_READ|FILE_CSV|FILE_ANSI|FILE_COMMON, ',');
    if(fh==INVALID_HANDLE) return;
    while(!FileIsEnding(fh))
