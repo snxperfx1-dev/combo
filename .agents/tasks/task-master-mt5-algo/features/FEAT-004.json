@@ -1,0 +1,38 @@
+{
+  "id": "FEAT-004",
+  "type": "feat",
+  "description": "Create Part4_EnergyFramework.mqh - Energy Resolution Framework (EDE + RE + EAE) from Letra 37, plus Wave Intelligence System (belief engine, hypothesis engine, prediction engine, validation engine, adaptive confidence). Also includes the physics observation layer and convexity maturity engine.",
+  "status": "in_progress",
+  "steps": [
+    "Create Part4_EnergyFramework.mqh at the repo root",
+    "Port Physics Observation Layer: obs_ExpansionScore, obs_DecayScore, obs_CurvatureScore, obs_AbsorptionScore, obs_LiquidityScore (all 0-100 scores derived from physics primitives)",
+    "Port Energy Dissipation Engine (EDE): ede_state (1-6 from canonical phase), ede_expansionEnergy (from obs_ExpansionScore + impulse + efficiency), ede_dissipatedEnergy (accumulates through phases), ede_dissipationProgress (0-100, 25 per phase stage)",
+    "Port Resolution Engine (RE): re_expectedCycles, re_completedCycles, re_recursiveCompletionScore, re_residualEnergy, re_resolutionState (RESOLVED/PARTIALLY RESOLVED/UNRESOLVED), re_residualEnergyScore",
+    "Port Energy Attractor Engine (EAE): eae_primaryAttractorPrice (from flipzone/origin based on resolution state), eae_primaryAttractorScore (weighted by residual + resolution + distance), eae_energyState",
+    "Port Convexity Maturity Engine: expWeaknessScore, inductionMatScore, liqMatScore -> rawConvexityMaturity -> EMA smoothed convexityMaturity",
+    "Port Wave Progress Estimation: geometric progress (origin->extreme->flipzone) + physics progress (similarity anchor + convexity adjustment) -> rawWaveProgress -> EMA smoothed",
+    "Port Belief Engine: 6 simultaneous beliefs (expansion, convexity, creation, absorption, retracement, demandReturn) each with position-weighted raw scores -> EMA smoothed",
+    "Port Hypothesis Engine: 6 hypotheses (LateExpansion, TerminalConvexity, CreationForming, AbsorptionActive, RetracementActive, DemandReturn) normalized to 0-100",
+    "Port Prediction Engine: predScore for each next phase weighted by wave progress/position/physics -> expectedNextPhase + probability",
+    "Port Validation Engine: track phase transitions, compute prediction accuracy over rolling windows",
+    "Port Adaptive Confidence Engine: modelConfidence with increase/decrease drivers + decay toward 50",
+    "Port Liquidation Wave overlay (Engine 1A.7): liqg_active/target/distPct/subPhase/objArrival/trueCHoCH logic that overlays on Induction phases"
+  ],
+  "acceptance_criteria": [
+    "Part4_EnergyFramework.mqh exists with valid MQL5 syntax",
+    "EDE correctly maps canonical phases to energy states 1-6",
+    "RE produces resolution state from dissipation progress + recursive completion",
+    "EAE computes attractor prices based on resolution state",
+    "All 6 beliefs are computed and EMA smoothed",
+    "Hypothesis engine produces normalized scores",
+    "Prediction engine forecasts next phase with probability",
+    "Liquidation wave overlay activates/deactivates correctly"
+  ],
+  "verification": [
+    "Read the file and verify EDE/RE/EAE logic matches LETRA 37.txt ERF section",
+    "Verify belief engine formulas match LETRA 37 Section 12A",
+    "Verify hypothesis normalization uses fixed theoretical maxima (not rescale-to-100)"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}
