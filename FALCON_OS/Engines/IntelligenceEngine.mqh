@@ -360,7 +360,7 @@ void IE_LiquidationWave(FalconIntelligence &x, FalconEntryCycle &ec)
    double atr=MathMax(p.atr,1e-10);
 
    bool isRetr = (w.phase==PH_INDUCTION);                       // retracement-side induction
-   bool arm    = (w.phase==PH_EXP_INDUCTION || isRetr);
+   bool arm    = (w.phase>=PH_HTF_FLIP_ZONE || w.phase==PH_EXP_INDUCTION);
    double obj  = w.objective;
 
    if(arm && !ie_liqActive && obj!=0)
@@ -472,11 +472,19 @@ void IE_EntryCycle(FalconIntelligence &x)
    // confirmed terminal CHoCH ARE the entry cycle. Use them directly.
    if(ec.liqSubPhase=="Terminal Liquidation" && rd<ER_PRE_ENTRY) rd=ER_PRE_ENTRY;
    if(ec.liqObjArrival || ec.liqTrueChoch) rd=ER_ENTRY_ACTIVE;
+   // RECLAIM TRIGGER: a confirmed CHoCH in the owner/continuation direction while
+   // in the terminal zone IS the entry cycle (the turn off supply/demand). This
+   // is the reliable on-chart trigger — without it the strict FSM can sit at the
+   // flip zone for hundreds of bars and never crawl to the RETURN phase, so no
+   // entry ever fires.
+   bool reclaim = (g_state.structure.choch==w.direction && w.direction!=DIR_NONE);
+   if(ec.terminal && reclaim) rd=ER_ENTRY_ACTIVE;
    ec.readiness = rd;
 
-   // entry cycle is active on F16's native terminal arrival/CHoCH, or once the
-   // terminal phase band confirms the return.
+   // entry cycle is active on a terminal reclaim, F16 liquidation arrival/CHoCH,
+   // or once the terminal phase band confirms the return.
    bool cycleGo = (ec.liqObjArrival || ec.liqTrueChoch
+                   || (ec.terminal && reclaim)
                    || w.phase==PH_DEMAND_RETURN || w.phase==PH_SUPPLY_RETURN
                    || (rd==ER_ENTRY_ACTIVE && ec.terminal));
 
