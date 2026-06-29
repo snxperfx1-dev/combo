@@ -1,0 +1,31 @@
+{
+  "id": "FEAT-003",
+  "type": "feat",
+  "description": "Create Part3_LetraEngine.mqh - Ported from Letra 37's fixed-timeframe structure engine (f_se), physics engine (f_phys), Engine 1A lifecycle authority, and multi-TF fractal stack alignment. This provides the multi-timeframe wave analysis that feeds into the probability engines.",
+  "status": "in_progress",
+  "steps": [
+    "Create Part3_LetraEngine.mqh at the repo root",
+    "Port the physics engine f_phys as ComputePhysics(): ATR, velocity (EMA of close-close[1],3), acceleration, convexity (jerk), convSmooth (EMA of convexity,3), efficiency (distance/path), displacement (range/ATR), bullImpulse/bearImpulse detection, bullMomDecay/bearMomDecay, convexity shift, velocity decay flags (vd70, vd50)",
+    "Port the fixed-TF structure engine f_se as ComputeStructureEngine(): internal physics, swing detection (pivothigh/pivotlow), pivot memory (last/prev), BOS/CHoCH detection (with buffer), impulse detection (high-low > ATR*mult), direction/lifecycle state machine (spawn on impulse or CHoCH flip), point4/invalidation/target calculation, monotonic phase state machine (0->13 states: expansion, pre-convexity, induction, liquidity, new high/low, transition, retracement, HTF flip, induction, liquidation, terminal, demand/supply return), wave progress/convexity maturity/model fit calculation, recursive transition tracking (Phase-2 CHoCH count), dominance transfer, compression index",
+    "Implement multi-TF instantiation: call ComputeStructureEngine for each of 6 fixed timeframes (M1/M3/M5/M15/H1/H4) using CopyRates + CopyBuffer approach, store results in array of LetraStructureResult",
+    "Port fractal stack alignment: count bull/bear across all 6 timeframes, compute fractalStackDir and fractalStackScore (max/6 * 100)",
+    "Port Engine 1A output: ie1a_currentPhase = M5 canonical phase string, ie1a_phaseConfidence from fractal context + model fit + wave progress",
+    "Port f_phaseStr() mapping phase codes to canonical lifecycle strings (14 phases)",
+    "Port the origin-based wave direction: f_waveDirByOrigin(origin, fallbackDir) = close > origin ? 1 : close < origin ? -1 : fallback"
+  ],
+  "acceptance_criteria": [
+    "Part3_LetraEngine.mqh exists with valid MQL5 syntax",
+    "Physics engine computes all derivatives correctly (vel/acc/convexity/efficiency/displacement)",
+    "Structure engine implements full lifecycle state machine with all 14 phases",
+    "Multi-TF instantiation retrieves data from 6 fixed timeframes",
+    "Fractal stack alignment produces direction and score",
+    "Engine 1A outputs canonical phase and confidence"
+  ],
+  "verification": [
+    "Read the file and verify the lifecycle state machine matches Letra 37's f_se logic",
+    "Verify physics calculations match the f_phys pattern",
+    "Verify all 14 phase strings are defined in the mapping function"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}
