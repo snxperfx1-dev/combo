@@ -43,6 +43,7 @@
 #include "Engines/TradePlan.mqh"           // Decision/Execution — subsystem-composed trade plan (stop/target/size each owned by an engine)
 #include "Engines/TradeJournal.mqh"        // Diagnostics — per-trade CSV journal (before Symphony so entries can record)
 #include "Engines/Adaptive.mqh"            // Intelligence — self-learning feedback (size/veto from own results)
+#include "Engines/SelfAwareness.mqh"       // Intelligence — metacognition (self form/calibration/health -> throttle)
 #include "Engines/SymphonyEngine.mqh"      // Execution Layer — Symphony phase entries/exits (after EE helpers)
 #include "Engines/Visualization.mqh"       // Visualization Layer
 
@@ -116,6 +117,7 @@ void FalconPipeline()
    // (never decides, only executes)
    FalconModuleStart(MOD_EXEC,t0);
    ExecutionEngineRun();
+   SelfAwarenessRun();   // metacognition: refresh self-confidence + throttle before entries
    // PYRO campaign-thermodynamics risk: compute per-direction basket HEAT,
    // set stack admissions (OPEN/THROTTLED/FROZEN/DE-RISK), run the portfolio
    // thermostat, and manage baskets (breakeven-lock winners / catastrophe-
@@ -171,6 +173,7 @@ int OnInit()
    MoneyManagerInit();
    CurveLocatorInit();
    AdaptiveInit();
+   SelfAwarenessInit();
    if(g_cfg.useSymphony) SymphonyInit();
    TradeJournalInit();
 

@@ -458,6 +458,30 @@ struct FalconCurveLocator
 };
 
 //==================================================================
+// SUB-STATE : SELF-AWARENESS  (metacognition — the OS watching itself)
+//   Not market state — this is the system's model of ITSELF: how well
+//   calibrated its own confidence is, its current form, whether it's in
+//   a regime it performs in, and whether its own inputs are healthy. It
+//   synthesises one selfConfidence and a risk THROTTLE, and can stand the
+//   system down when it shouldn't trust itself.
+//==================================================================
+struct FalconSelfAwareness
+{
+   double selfConfidence;  // 0..100 how much the OS should trust itself now
+   double calibration;     // 0..100 predicted-prob vs realised win-rate alignment
+   double form;            // 0..100 streak + equity slope + drawdown
+   double regimeFit;       // 0..100 current regime vs profitable regime
+   int    winStreak;
+   int    lossStreak;
+   double ddFromPeakPct;
+   double equitySlope;     // recency-weighted equity change
+   double throttle;        // 0..1 global risk multiplier from self-confidence + health
+   bool   health;          // are own inputs sane?
+   string healthNote;
+   string label;           // CONFIDENT / CAUTIOUS / DEFENSIVE / STANDDOWN
+};
+
+//==================================================================
 // SUB-STATE : PARTICIPANTS
 //==================================================================
 struct FalconParticipants
@@ -674,6 +698,7 @@ struct FalconMarketState
    FalconCampaign     campaign;
    FalconParticipants participants;
    FalconCurveLocator curveLocator;
+   FalconSelfAwareness self;
    FalconIntelligence intel;
    FalconEntryCycle   entryCycle;
    FalconExecution    exec;

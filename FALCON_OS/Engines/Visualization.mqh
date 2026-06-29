@@ -92,6 +92,9 @@ string VZ_Body(const int tab)
          s+="Opportunity : "+x.opportunityGrade+"  ("+DoubleToString(x.opportunity,0)+")\n";
          s+="Exec Prob   : "+DoubleToString(x.executionProbability*100.0,0)+"%   Resolution "+FalconResStr(x.resolutionState)+"\n";
          s+="Master Chief: "+(x.masterChiefConfirm?"CLEARED":"HOLD")+"  ("+DoubleToString(x.masterChiefScore,0)+")  "+x.masterChiefNote+"\n";
+         s+="SELF        : "+g_state.self.label+"  conf "+DoubleToString(g_state.self.selfConfidence,0)
+            +"  throttle x"+DoubleToString(g_state.self.throttle,2)+"  (calib "+DoubleToString(g_state.self.calibration,0)
+            +" form "+DoubleToString(g_state.self.form,0)+" streak "+IntegerToString(g_state.self.winStreak)+"/"+IntegerToString(g_state.self.lossStreak)+")\n";
          s+="Story       : "+x.story;
          break;
       case 1: // PHYSICS

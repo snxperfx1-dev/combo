@@ -5,7 +5,7 @@
 //|   Risk: PYRO thermal + TALON curve-convergent structural grip.   |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "4.31"
+#property version   "4.40"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -101,6 +101,10 @@ input double  InpAdaptVetoR       = -0.30; // Veto a context whose learned expec
 input double  InpAdaptSizeK       = 0.40; // Size sensitivity to learned edge (lots *= clamp(1 + K*expectancyR, .3, 1.6))
 input double  InpAdaptAlpha       = 0.10; // EWMA weight on the newest trade (higher = adapts faster, noisier)
 input bool    InpAdaptPersist     = true; // Persist the learning table to Common\Files (survives restarts)
+input string  __sep_self        = "════════ SELF-AWARENESS (metacognition) ════════"; // ──
+input bool    InpUseSelfAware     = true; // The OS watches its own form/calibration/health -> global risk throttle + stand-down
+input double  InpSelfMinThrottle  = 0.25; // Lowest size multiplier when self-confidence is low (1.0 = full)
+input int     InpSelfLossHalt     = 6;    // Consecutive losses that trigger a self stand-down (health=false)
 
 input string  __sep_execution   = "════════ EXECUTION / RISK ════════"; // ──
 input bool    InpEnableTrading  = true;  // Allow live order sending
@@ -194,6 +198,7 @@ struct FalconConfig
    bool   useCurveLocator;  double maxOwnerLegPos;
    bool   useAdaptive;  int adaptMinTrades;
    double adaptVetoR, adaptSizeK, adaptAlpha;  bool adaptPersist;
+   bool   useSelfAware;  double selfMinThrottle;  int selfLossHalt;
    // execution
    bool   enableTrading, blockIfBreach, sessionFilter;
    double riskPercent, contractValue;
@@ -288,6 +293,9 @@ void FalconConfigInit()
    g_cfg.adaptSizeK       = InpAdaptSizeK;
    g_cfg.adaptAlpha       = InpAdaptAlpha;
    g_cfg.adaptPersist     = InpAdaptPersist;
+   g_cfg.useSelfAware     = InpUseSelfAware;
+   g_cfg.selfMinThrottle  = InpSelfMinThrottle;
+   g_cfg.selfLossHalt     = InpSelfLossHalt;
 
    g_cfg.enableTrading    = InpEnableTrading;
    g_cfg.blockIfBreach    = InpBlockIfBreach;
@@ -820,6 +828,30 @@ struct FalconCurveLocator
 };
 
 //==================================================================
+// SUB-STATE : SELF-AWARENESS  (metacognition — the OS watching itself)
+//   Not market state — this is the system's model of ITSELF: how well
+//   calibrated its own confidence is, its current form, whether it's in
+//   a regime it performs in, and whether its own inputs are healthy. It
+//   synthesises one selfConfidence and a risk THROTTLE, and can stand the
+//   system down when it shouldn't trust itself.
+//==================================================================
+struct FalconSelfAwareness
+{
+   double selfConfidence;  // 0..100 how much the OS should trust itself now
+   double calibration;     // 0..100 predicted-prob vs realised win-rate alignment
+   double form;            // 0..100 streak + equity slope + drawdown
+   double regimeFit;       // 0..100 current regime vs profitable regime
+   int    winStreak;
+   int    lossStreak;
+   double ddFromPeakPct;
+   double equitySlope;     // recency-weighted equity change
+   double throttle;        // 0..1 global risk multiplier from self-confidence + health
+   bool   health;          // are own inputs sane?
+   string healthNote;
+   string label;           // CONFIDENT / CAUTIOUS / DEFENSIVE / STANDDOWN
+};
+
+//==================================================================
 // SUB-STATE : PARTICIPANTS
 //==================================================================
 struct FalconParticipants
@@ -1036,6 +1068,7 @@ struct FalconMarketState
    FalconCampaign     campaign;
    FalconParticipants participants;
    FalconCurveLocator curveLocator;
+   FalconSelfAwareness self;
    FalconIntelligence intel;
    FalconEntryCycle   entryCycle;
    FalconExecution    exec;
@@ -5872,11 +5905,18 @@ int    ad_n[AD_NBUCKETS];       // sample count
 int    ad_wins[AD_NBUCKETS];    // winning trades
 
 // open-trade attribution records
-struct ADRec { ulong ticket; bool open; int bucket; double risk; };
+struct ADRec { ulong ticket; bool open; int bucket; double risk; double predProb; };
 ADRec  ad_rec[512];
 int    ad_recCount = 0;
 int    ad_saveTick = 0;
 string ad_fileName = "";
+
+// self-awareness accumulators (fed on each close; read by SelfAwareness)
+int    ad_winStreak  = 0;
+int    ad_lossStreak = 0;
+double ad_calPredSum = 0.0;   // sum of entry executionProbability
+double ad_calWinSum  = 0.0;   // sum of realised wins (0/1)
+int    ad_calN       = 0;
 
 int AD_BandIdx(const double pos)
 {
@@ -5958,12 +5998,13 @@ bool AD_Veto(const int bucket)
 //------------------------------------------------------------------
 // Record an entry's context for later attribution.
 //------------------------------------------------------------------
-void AD_RecordEntry(const ulong ticket,const int bucket,const double riskMoney)
+void AD_RecordEntry(const ulong ticket,const int bucket,const double riskMoney,const double predProb=0.0)
 {
    if(!g_cfg.useAdaptive || ticket==0 || riskMoney<=0.0) return;
    if(ad_recCount>=512) return;
    ad_rec[ad_recCount].ticket=ticket; ad_rec[ad_recCount].open=true;
    ad_rec[ad_recCount].bucket=bucket; ad_rec[ad_recCount].risk=riskMoney;
+   ad_rec[ad_recCount].predProb=predProb;
    ad_recCount++;
 }
 
@@ -6000,7 +6041,11 @@ void AdaptiveOnBar()
       if(PositionSelectByTicket(ad_rec[i].ticket)) continue;   // still open
       double profit = AD_RealizedProfit(ad_rec[i].ticket);
       double R = (ad_rec[i].risk>0.0 ? profit/ad_rec[i].risk : 0.0);
+      bool   win = (profit>0.0);
       AD_Learn(ad_rec[i].bucket, R);
+      // feed self-awareness: form (streaks) + calibration (predicted vs realised)
+      if(win){ ad_winStreak++; ad_lossStreak=0; } else { ad_lossStreak++; ad_winStreak=0; }
+      ad_calPredSum += ad_rec[i].predProb; ad_calWinSum += (win?1.0:0.0); ad_calN++;
       ad_rec[i].open=false;
    }
    if(++ad_saveTick >= 25){ ad_saveTick=0; AD_Save(); }
@@ -6009,6 +6054,107 @@ void AdaptiveOnBar()
 void AdaptiveDeinit(){ AD_Save(); }
 
 #endif // FALCON_ADAPTIVE_MQH
+//+------------------------------------------------------------------+
+
+//  ===== Engines/SelfAwareness.mqh =====
+//+------------------------------------------------------------------+
+//|  FALCON OS — Intelligence : SelfAwareness.mqh                   |
+//|                                                                  |
+//|  METACOGNITION — the OS watching ITSELF, not the market.        |
+//|                                                                  |
+//|  It maintains a live model of its own reliability and form, and  |
+//|  modulates how much it trusts itself right now:                  |
+//|    • CALIBRATION — do my stated probabilities match my realised  |
+//|      win-rate? (am I over/under-confident)                       |
+//|    • FORM        — win/loss streak, equity slope, drawdown        |
+//|    • REGIME FIT  — am I in conditions I perform in (learned)      |
+//|    • HEALTH      — are my own inputs sane (ATR, locator conf, DD, |
+//|      loss cluster)? if not, STAND DOWN.                          |
+//|                                                                  |
+//|  Output: selfConfidence (0..100) and a global risk THROTTLE that |
+//|  scales size; a hard stand-down veto when health fails. Reads the |
+//|  adaptive accumulators (ad_*), so include AFTER Adaptive and      |
+//|  BEFORE SymphonyEngine. Writes g_state.self.                      |
+//+------------------------------------------------------------------+
+#ifndef FALCON_SELF_AWARENESS_MQH
+#define FALCON_SELF_AWARENESS_MQH
+
+
+double sa_equityPeak = 0.0;
+double sa_equityPrev = 0.0;
+double sa_slope      = 0.0;
+
+void SelfAwarenessInit()
+{
+   sa_equityPeak = AccountInfoDouble(ACCOUNT_EQUITY);
+   sa_equityPrev = sa_equityPeak;
+   sa_slope      = 0.0;
+}
+
+void SelfAwarenessRun()
+{
+   if(!g_cfg.useSelfAware) return;
+   FalconSelfAwareness s; ZeroMemory(s);
+
+   double eq = AccountInfoDouble(ACCOUNT_EQUITY);
+   if(sa_equityPeak<=0.0) sa_equityPeak=eq;
+   if(eq>sa_equityPeak) sa_equityPeak=eq;
+   double ddPct = (sa_equityPeak>0.0 ? (sa_equityPeak-eq)/sa_equityPeak*100.0 : 0.0);
+   sa_slope = FalconEMA(sa_slope, eq-sa_equityPrev, 10);
+   sa_equityPrev = eq;
+
+   s.winStreak     = ad_winStreak;
+   s.lossStreak    = ad_lossStreak;
+   s.ddFromPeakPct = ddPct;
+   s.equitySlope   = sa_slope;
+
+   // 1) CALIBRATION — |avg predicted prob - actual win rate| (lower = better)
+   if(ad_calN>=5)
+   {
+      double avgPred = ad_calPredSum/ad_calN;
+      double actWin  = ad_calWinSum /ad_calN;
+      s.calibration  = FalconClamp(100.0 - MathAbs(avgPred-actWin)*100.0, 0, 100);
+   }
+   else s.calibration = 60.0;   // neutral until enough samples
+
+   // 2) FORM — streak + equity slope, penalised by drawdown
+   double streakF = FalconClamp(55.0 + s.winStreak*8.0 - s.lossStreak*12.0, 0, 100);
+   double slopeF  = (sa_slope>0?60.0:sa_slope<0?40.0:50.0);
+   s.form = FalconClamp(0.6*streakF + 0.2*slopeF + 0.2*FalconClamp(100.0-ddPct*5.0,0,100), 0, 100);
+
+   // 3) REGIME FIT — am I in conditions I perform in? best learned bucket edge at
+   //    the current curve band, blended with HTF fractal agreement.
+   int bL=AD_Bucket(DIR_LONG), bS=AD_Bucket(DIR_SHORT);
+   double edge = MathMax(ad_ewmaR[bL], ad_ewmaR[bS]);          // best available edge here
+   double edgeF = FalconClamp(50.0 + edge*40.0, 0, 100);
+   s.regimeFit = FalconClamp(0.5*edgeF + 0.5*g_state.htf.alignment, 0, 100);
+
+   // 4) HEALTH — own-input integrity. If broken, do not trust self.
+   double atr = FalconATR(1);
+   s.health = true; s.healthNote = "ok";
+   if(atr<=0.0)                                   { s.health=false; s.healthNote="no ATR/data"; }
+   else if(g_cfg.useCurveLocator && g_state.curveLocator.conf < 20.0) { s.health=false; s.healthNote="lost on curve"; }
+   else if(ddPct >= g_cfg.maxDrawdownPct)         { s.health=false; s.healthNote="drawdown halt"; }
+   else if(ad_lossStreak >= g_cfg.selfLossHalt)   { s.health=false; s.healthNote="loss cluster"; }
+
+   // SYNTHESIS — one self-confidence, then a bounded throttle.
+   s.selfConfidence = FalconClamp(0.30*s.calibration + 0.35*s.form + 0.20*s.regimeFit
+                                  + 0.15*(s.health?100.0:0.0), 0, 100);
+   if(!s.health) s.throttle = 0.0;     // stand down: no new size
+   else          s.throttle = FalconClamp(s.selfConfidence/100.0, g_cfg.selfMinThrottle, 1.0);
+
+   s.label = (!s.health ? "STANDDOWN"
+              : s.selfConfidence>70 ? "CONFIDENT"
+              : s.selfConfidence>45 ? "CAUTIOUS" : "DEFENSIVE");
+
+   g_state.self = s;
+}
+
+// helpers for the entry path
+double SA_Throttle(){ return(g_cfg.useSelfAware ? g_state.self.throttle : 1.0); }
+bool   SA_StandDown(){ return(g_cfg.useSelfAware && !g_state.self.health); }
+
+#endif // FALCON_SELF_AWARENESS_MQH
 //+------------------------------------------------------------------+
 
 //  ===== Engines/SymphonyEngine.mqh =====
@@ -6648,6 +6794,10 @@ bool SymphonyFactsConfirm(const int dir)
    //     context bucket that has lost persistently is vetoed by the adaptive layer.
    if(AD_Veto(AD_Bucket(dir))){ sym_factVeto="learned avoid"; return(false); }
 
+   // 8) SELF-AWARENESS — if the OS has stood itself down (broken health / loss
+   //     cluster / drawdown halt), it does not trust itself enough to trade.
+   if(SA_StandDown()){ sym_factVeto="self standdown"; return(false); }
+
    return(true);
 }
 
@@ -6697,6 +6847,7 @@ void Sym_PlaceEntry(const int dir,const string tag,const double riskCash,const d
    double lots;
    int    adBucket = AD_Bucket(dir);            // self-learning context
    double adMult   = AD_SizeMult(adBucket);     // size by learned edge
+   double saMult   = SA_Throttle();             // global self-awareness throttle
 
    if(g_cfg.useTradePlan)
    {
@@ -6704,12 +6855,12 @@ void Sym_PlaceEntry(const int dir,const string tag,const double riskCash,const d
       if(!pl.valid)          return;
       if(pl.rr < g_cfg.minRR) return;                 // subsystem-derived R:R gate
       sl     = pl.stop; target = pl.target; t2 = pl.target2; rr = pl.rr;
-      lots   = Sym_SizeLots(dir, riskCash*pl.convictionMult*adMult, entry, sl);  // conviction x learned edge
+      lots   = Sym_SizeLots(dir, riskCash*pl.convictionMult*adMult*saMult, entry, sl);  // conviction x learned edge x self-throttle
    }
    else
    {
       sl   = (dir==DIR_LONG ? sym_anchorLow - atrNow*0.25 : sym_anchorHigh + atrNow*0.25);
-      lots = Sym_SizeLots(dir, riskCash*adMult, entry, sl);
+      lots = Sym_SizeLots(dir, riskCash*adMult*saMult, entry, sl);
    }
 
    bool slOk = (dir==DIR_LONG ? (sl>0 && entry>sl) : (sl>0 && sl>entry));
@@ -6722,7 +6873,7 @@ void Sym_PlaceEntry(const int dir,const string tag,const double riskCash,const d
       if(dir==DIR_LONG){ sym_lastLongTradeTime=gTime[0]; sym_longCampaignOpen=true; }
       else             { sym_lastShortTradeTime=gTime[0]; sym_shortCampaignOpen=true; }
       TJ_RecordEntry(ee_lastTicket,dir,tag,entry,sl,lots);
-      AD_RecordEntry(ee_lastTicket, adBucket, lots*MathAbs(entry-sl)*g_cfg.contractValue);
+      AD_RecordEntry(ee_lastTicket, adBucket, lots*MathAbs(entry-sl)*g_cfg.contractValue, g_state.intel.executionProbability);
       g_state.exec.entry=entry; g_state.exec.stop=sl; g_state.exec.lots=lots; g_state.exec.riskCash=riskCash;
       g_state.exec.target=target; g_state.exec.target2=t2; g_state.exec.reward=rr;
    }
@@ -7224,6 +7375,9 @@ string VZ_Body(const int tab)
          s+="Opportunity : "+x.opportunityGrade+"  ("+DoubleToString(x.opportunity,0)+")\n";
          s+="Exec Prob   : "+DoubleToString(x.executionProbability*100.0,0)+"%   Resolution "+FalconResStr(x.resolutionState)+"\n";
          s+="Master Chief: "+(x.masterChiefConfirm?"CLEARED":"HOLD")+"  ("+DoubleToString(x.masterChiefScore,0)+")  "+x.masterChiefNote+"\n";
+         s+="SELF        : "+g_state.self.label+"  conf "+DoubleToString(g_state.self.selfConfidence,0)
+            +"  throttle x"+DoubleToString(g_state.self.throttle,2)+"  (calib "+DoubleToString(g_state.self.calibration,0)
+            +" form "+DoubleToString(g_state.self.form,0)+" streak "+IntegerToString(g_state.self.winStreak)+"/"+IntegerToString(g_state.self.lossStreak)+")\n";
          s+="Story       : "+x.story;
          break;
       case 1: // PHYSICS
@@ -7550,6 +7704,7 @@ void FalconPipeline()
    // (never decides, only executes)
    FalconModuleStart(MOD_EXEC,t0);
    ExecutionEngineRun();
+   SelfAwarenessRun();   // metacognition: refresh self-confidence + throttle before entries
    // PYRO campaign-thermodynamics risk: compute per-direction basket HEAT,
    // set stack admissions (OPEN/THROTTLED/FROZEN/DE-RISK), run the portfolio
    // thermostat, and manage baskets (breakeven-lock winners / catastrophe-
@@ -7605,6 +7760,7 @@ int OnInit()
    MoneyManagerInit();
    CurveLocatorInit();
    AdaptiveInit();
+   SelfAwarenessInit();
    if(g_cfg.useSymphony) SymphonyInit();
    TradeJournalInit();
 

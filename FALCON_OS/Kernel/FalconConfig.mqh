@@ -87,6 +87,10 @@ input double  InpAdaptVetoR       = -0.30; // Veto a context whose learned expec
 input double  InpAdaptSizeK       = 0.40; // Size sensitivity to learned edge (lots *= clamp(1 + K*expectancyR, .3, 1.6))
 input double  InpAdaptAlpha       = 0.10; // EWMA weight on the newest trade (higher = adapts faster, noisier)
 input bool    InpAdaptPersist     = true; // Persist the learning table to Common\Files (survives restarts)
+input string  __sep_self        = "════════ SELF-AWARENESS (metacognition) ════════"; // ──
+input bool    InpUseSelfAware     = true; // The OS watches its own form/calibration/health -> global risk throttle + stand-down
+input double  InpSelfMinThrottle  = 0.25; // Lowest size multiplier when self-confidence is low (1.0 = full)
+input int     InpSelfLossHalt     = 6;    // Consecutive losses that trigger a self stand-down (health=false)
 
 input string  __sep_execution   = "════════ EXECUTION / RISK ════════"; // ──
 input bool    InpEnableTrading  = true;  // Allow live order sending
@@ -180,6 +184,7 @@ struct FalconConfig
    bool   useCurveLocator;  double maxOwnerLegPos;
    bool   useAdaptive;  int adaptMinTrades;
    double adaptVetoR, adaptSizeK, adaptAlpha;  bool adaptPersist;
+   bool   useSelfAware;  double selfMinThrottle;  int selfLossHalt;
    // execution
    bool   enableTrading, blockIfBreach, sessionFilter;
    double riskPercent, contractValue;
@@ -274,6 +279,9 @@ void FalconConfigInit()
    g_cfg.adaptSizeK       = InpAdaptSizeK;
    g_cfg.adaptAlpha       = InpAdaptAlpha;
    g_cfg.adaptPersist     = InpAdaptPersist;
+   g_cfg.useSelfAware     = InpUseSelfAware;
+   g_cfg.selfMinThrottle  = InpSelfMinThrottle;
+   g_cfg.selfLossHalt     = InpSelfLossHalt;
 
    g_cfg.enableTrading    = InpEnableTrading;
    g_cfg.blockIfBreach    = InpBlockIfBreach;

@@ -639,6 +639,10 @@ bool SymphonyFactsConfirm(const int dir)
    //     context bucket that has lost persistently is vetoed by the adaptive layer.
    if(AD_Veto(AD_Bucket(dir))){ sym_factVeto="learned avoid"; return(false); }
 
+   // 8) SELF-AWARENESS — if the OS has stood itself down (broken health / loss
+   //     cluster / drawdown halt), it does not trust itself enough to trade.
+   if(SA_StandDown()){ sym_factVeto="self standdown"; return(false); }
+
    return(true);
 }
 
@@ -688,6 +692,7 @@ void Sym_PlaceEntry(const int dir,const string tag,const double riskCash,const d
    double lots;
    int    adBucket = AD_Bucket(dir);            // self-learning context
    double adMult   = AD_SizeMult(adBucket);     // size by learned edge
+   double saMult   = SA_Throttle();             // global self-awareness throttle
 
    if(g_cfg.useTradePlan)
    {
@@ -695,12 +700,12 @@ void Sym_PlaceEntry(const int dir,const string tag,const double riskCash,const d
       if(!pl.valid)          return;
       if(pl.rr < g_cfg.minRR) return;                 // subsystem-derived R:R gate
       sl     = pl.stop; target = pl.target; t2 = pl.target2; rr = pl.rr;
-      lots   = Sym_SizeLots(dir, riskCash*pl.convictionMult*adMult, entry, sl);  // conviction x learned edge
+      lots   = Sym_SizeLots(dir, riskCash*pl.convictionMult*adMult*saMult, entry, sl);  // conviction x learned edge x self-throttle
    }
    else
    {
       sl   = (dir==DIR_LONG ? sym_anchorLow - atrNow*0.25 : sym_anchorHigh + atrNow*0.25);
-      lots = Sym_SizeLots(dir, riskCash*adMult, entry, sl);
+      lots = Sym_SizeLots(dir, riskCash*adMult*saMult, entry, sl);
    }
 
    bool slOk = (dir==DIR_LONG ? (sl>0 && entry>sl) : (sl>0 && sl>entry));
@@ -713,7 +718,7 @@ void Sym_PlaceEntry(const int dir,const string tag,const double riskCash,const d
       if(dir==DIR_LONG){ sym_lastLongTradeTime=gTime[0]; sym_longCampaignOpen=true; }
       else             { sym_lastShortTradeTime=gTime[0]; sym_shortCampaignOpen=true; }
       TJ_RecordEntry(ee_lastTicket,dir,tag,entry,sl,lots);
-      AD_RecordEntry(ee_lastTicket, adBucket, lots*MathAbs(entry-sl)*g_cfg.contractValue);
+      AD_RecordEntry(ee_lastTicket, adBucket, lots*MathAbs(entry-sl)*g_cfg.contractValue, g_state.intel.executionProbability);
       g_state.exec.entry=entry; g_state.exec.stop=sl; g_state.exec.lots=lots; g_state.exec.riskCash=riskCash;
       g_state.exec.target=target; g_state.exec.target2=t2; g_state.exec.reward=rr;
    }

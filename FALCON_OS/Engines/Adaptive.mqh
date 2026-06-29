@@ -41,11 +41,18 @@ int    ad_n[AD_NBUCKETS];       // sample count
 int    ad_wins[AD_NBUCKETS];    // winning trades
 
 // open-trade attribution records
-struct ADRec { ulong ticket; bool open; int bucket; double risk; };
+struct ADRec { ulong ticket; bool open; int bucket; double risk; double predProb; };
 ADRec  ad_rec[512];
 int    ad_recCount = 0;
 int    ad_saveTick = 0;
 string ad_fileName = "";
+
+// self-awareness accumulators (fed on each close; read by SelfAwareness)
+int    ad_winStreak  = 0;
+int    ad_lossStreak = 0;
+double ad_calPredSum = 0.0;   // sum of entry executionProbability
+double ad_calWinSum  = 0.0;   // sum of realised wins (0/1)
+int    ad_calN       = 0;
 
 int AD_BandIdx(const double pos)
 {
@@ -127,12 +134,13 @@ bool AD_Veto(const int bucket)
 //------------------------------------------------------------------
 // Record an entry's context for later attribution.
 //------------------------------------------------------------------
-void AD_RecordEntry(const ulong ticket,const int bucket,const double riskMoney)
+void AD_RecordEntry(const ulong ticket,const int bucket,const double riskMoney,const double predProb=0.0)
 {
    if(!g_cfg.useAdaptive || ticket==0 || riskMoney<=0.0) return;
    if(ad_recCount>=512) return;
    ad_rec[ad_recCount].ticket=ticket; ad_rec[ad_recCount].open=true;
    ad_rec[ad_recCount].bucket=bucket; ad_rec[ad_recCount].risk=riskMoney;
+   ad_rec[ad_recCount].predProb=predProb;
    ad_recCount++;
 }
 
@@ -169,7 +177,11 @@ void AdaptiveOnBar()
       if(PositionSelectByTicket(ad_rec[i].ticket)) continue;   // still open
       double profit = AD_RealizedProfit(ad_rec[i].ticket);
       double R = (ad_rec[i].risk>0.0 ? profit/ad_rec[i].risk : 0.0);
+      bool   win = (profit>0.0);
       AD_Learn(ad_rec[i].bucket, R);
+      // feed self-awareness: form (streaks) + calibration (predicted vs realised)
+      if(win){ ad_winStreak++; ad_lossStreak=0; } else { ad_lossStreak++; ad_winStreak=0; }
+      ad_calPredSum += ad_rec[i].predProb; ad_calWinSum += (win?1.0:0.0); ad_calN++;
       ad_rec[i].open=false;
    }
    if(++ad_saveTick >= 25){ ad_saveTick=0; AD_Save(); }
