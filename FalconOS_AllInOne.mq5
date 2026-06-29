@@ -5,7 +5,7 @@
 //|   Risk: PYRO thermal + TALON curve-convergent structural grip.   |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "3.28"
+#property version   "3.29"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -4815,6 +4815,15 @@ double   talon_anchorShort = 0.0;   // ratcheting lower-high the short grip ride
 bool     talon_beLong  = false;     // long campaign breakeven earned
 bool     talon_beShort = false;     // short campaign breakeven earned
 
+// Re-entry lockout — once a campaign for the CURRENT impulse has been closed
+// (by trail-stop or composite exit), block re-entry in that direction until a
+// FRESH impulse forms. Stops the "exit then immediately re-enter the same leg"
+// churn. Reset to 0 whenever a new impulse is created (new anchor = new campaign).
+double   sym_exitedLongAnchor  = 0.0;   // nonzero => long re-entry locked for this impulse
+double   sym_exitedShortAnchor = 0.0;   // nonzero => short re-entry locked for this impulse
+bool     sym_longCampaignOpen  = false; // a long  campaign is currently open
+bool     sym_shortCampaignOpen = false; // a short campaign is currently open
+
 //==================================================================
 // INIT — reset all Symphony phase state
 //==================================================================
@@ -4842,6 +4851,8 @@ void SymphonyInit()
    sym_bridgePrevPhase   = PH_TRANSITION;
    talon_anchorLong = 0.0; talon_anchorShort = 0.0;
    talon_beLong = false;   talon_beShort = false;
+   sym_exitedLongAnchor = 0.0; sym_exitedShortAnchor = 0.0;
+   sym_longCampaignOpen = false; sym_shortCampaignOpen = false;
 }
 
 //==================================================================
@@ -5009,6 +5020,8 @@ void SymphonyUpdatePhases()
 
          sym_phaseShort      = 1;
          sym_phaseLong       = 0;
+         // fresh short impulse => new campaign allowed (clear short re-entry lock)
+         sym_exitedShortAnchor = 0.0; sym_shortCampaignOpen = false;
 
          sym_shortPreConvSeen = false;
          sym_longPreConvSeen  = false;
@@ -5061,6 +5074,8 @@ void SymphonyUpdatePhases()
 
          sym_phaseLong       = 1;
          sym_phaseShort      = 0;
+         // fresh long impulse => new campaign allowed (clear long re-entry lock)
+         sym_exitedLongAnchor = 0.0; sym_longCampaignOpen = false;
 
          sym_shortPreConvSeen = false;
          sym_longPreConvSeen  = false;
@@ -5140,10 +5155,12 @@ void SymphonyUpdatePhases()
       double dS    = gClose[shiftNow] - gClose[shiftNow+1];
 
       int phaseTmpS;
-      if(retrS > g_cfg.retrMax || retrS < 0.0)
-         phaseTmpS = 0;
-      else if(closeNow <= sym_anchorLow)
+      // BREAKOUT FIRST: a close at/below the impulse low is a new low (phase 4),
+      // NOT an invalidation. (Previously retrS<0 pre-empted this, so P4 never fired.)
+      if(closeNow <= sym_anchorLow)
          phaseTmpS = 4;
+      else if(retrS > g_cfg.retrMax)   // retraced too far back UP toward the high = failed short
+         phaseTmpS = 0;
       else if(retrS >= g_cfg.retrMin)
          phaseTmpS = (dS > 0.0 ? 2 : 3);
       else
@@ -5170,10 +5187,12 @@ void SymphonyUpdatePhases()
       double dL    = gClose[shiftNow] - gClose[shiftNow+1];
 
       int phaseTmpL;
-      if(retrL > g_cfg.retrMax || retrL < 0.0)
-         phaseTmpL = 0;
-      else if(closeNow >= sym_anchorHigh)
+      // BREAKOUT FIRST: a close at/above the impulse high is a new high (phase 4),
+      // NOT an invalidation. (Previously retrL<0 pre-empted this, so P4 never fired.)
+      if(closeNow >= sym_anchorHigh)
          phaseTmpL = 4;
+      else if(retrL > g_cfg.retrMax)   // retraced too far back DOWN toward the low = failed long
+         phaseTmpL = 0;
       else if(retrL >= g_cfg.retrMin)
          phaseTmpL = (dL < 0.0 ? 2 : 3);
       else
@@ -5256,10 +5275,15 @@ void SymphonyExecuteTrading()
    if(g_cfg.blockIfBreach && !ee_lastRiskOk) return;
    if(ee_riskCooldown>0) return;
 
-   bool L3 = (sym_mode==1  && sym_phaseLong ==3);
-   bool L4 = (sym_mode==1  && sym_phaseLong ==4);
-   bool S3 = (sym_mode==-1 && sym_phaseShort==3);
-   bool S4 = (sym_mode==-1 && sym_phaseShort==4);
+   // Re-entry lockout: a campaign for THIS impulse was already closed -> wait for
+   // a fresh impulse before re-engaging this direction (kills exit/re-enter churn).
+   bool longLocked  = (sym_exitedLongAnchor  != 0.0);
+   bool shortLocked = (sym_exitedShortAnchor != 0.0);
+
+   bool L3 = (sym_mode==1  && sym_phaseLong ==3 && !longLocked);
+   bool L4 = (sym_mode==1  && sym_phaseLong ==4 && !longLocked);
+   bool S3 = (sym_mode==-1 && sym_phaseShort==3 && !shortLocked);
+   bool S4 = (sym_mode==-1 && sym_phaseShort==4 && !shortLocked);
 
    double impL = sym_anchorHigh - sym_anchorLow;
    double impS = sym_anchorHigh - sym_anchorLow;
@@ -5274,7 +5298,7 @@ void SymphonyExecuteTrading()
       {
          if(EE_SendMarketOrder(+1,lots,sl,"SYM P3 Long"))
          {
-            sym_lastLongTradeTime=barTime;
+            sym_lastLongTradeTime=barTime; sym_longCampaignOpen=true;
             g_state.exec.entry=entry; g_state.exec.stop=sl; g_state.exec.lots=lots; g_state.exec.riskCash=riskCash;
          }
       }
@@ -5293,7 +5317,7 @@ void SymphonyExecuteTrading()
          {
             if(EE_SendMarketOrder(+1,lots,sl,"SYM P4 Long"))
             {
-               sym_lastLongTradeTime=barTime;
+               sym_lastLongTradeTime=barTime; sym_longCampaignOpen=true;
                g_state.exec.entry=entry; g_state.exec.stop=sl; g_state.exec.lots=lots; g_state.exec.riskCash=riskCash;
             }
          }
@@ -5310,7 +5334,7 @@ void SymphonyExecuteTrading()
       {
          if(EE_SendMarketOrder(-1,lots,sl,"SYM P3 Short"))
          {
-            sym_lastShortTradeTime=barTime;
+            sym_lastShortTradeTime=barTime; sym_shortCampaignOpen=true;
             g_state.exec.entry=entry; g_state.exec.stop=sl; g_state.exec.lots=lots; g_state.exec.riskCash=riskCash;
          }
       }
@@ -5329,7 +5353,7 @@ void SymphonyExecuteTrading()
          {
             if(EE_SendMarketOrder(-1,lots,sl,"SYM P4 Short"))
             {
-               sym_lastShortTradeTime=barTime;
+               sym_lastShortTradeTime=barTime; sym_shortCampaignOpen=true;
                g_state.exec.entry=entry; g_state.exec.stop=sl; g_state.exec.lots=lots; g_state.exec.riskCash=riskCash;
             }
          }
@@ -5418,6 +5442,10 @@ void SymphonyManageExits()
          if(EE_CloseFull(ticket)) FalconPublish(EVT_EXIT_FIRED,-1,"SYM ARC/INST exit");
       }
    }
+
+   // Lock re-entry for THIS impulse so we don't immediately re-open the same leg.
+   if(exitLong)  { sym_exitedLongAnchor  = (sym_anchorLow >0.0?sym_anchorLow :1.0); sym_longCampaignOpen=false;  }
+   if(exitShort) { sym_exitedShortAnchor = (sym_anchorHigh>0.0?sym_anchorHigh:1.0); sym_shortCampaignOpen=false; }
 }
 
 //==================================================================
@@ -5522,11 +5550,17 @@ void TalonManageSide(const int dir,const FalconThermalCampaign &c,
    double trailDist = atr*g_cfg.talonBaseATR*convFrac;
    double convSL    = (dir==DIR_LONG ? price-trailDist : price+trailDist);
 
-   // 5) COMPOSE — ride structure; in the terminal approach take the tighter of
-   //    structure vs convergence; floor at earned breakeven; ratchet only.
-   double cand = structuralSL;
+   // 5) COMPOSE — RIDE vs BANK.
+   //    Far from the destination: use the LOOSER of (structural ratchet, ATR
+   //    trail) so a healthy winner is given full room and is NOT noise-stopped
+   //    on a normal pullback to the prior swing. On the final approach / terminal:
+   //    use the TIGHTER of the two to bank before the reversal. Floor at earned
+   //    breakeven; ratchet only (handled by the apply step).
+   double cand;
    if(approaching || terminal)
-      cand = (dir==DIR_LONG ? MathMax(cand,convSL) : MathMin(cand,convSL));
+      cand = (dir==DIR_LONG ? MathMax(structuralSL,convSL) : MathMin(structuralSL,convSL)); // tighter => bank
+   else
+      cand = (dir==DIR_LONG ? MathMin(structuralSL,convSL) : MathMax(structuralSL,convSL)); // looser => ride
    if(beLocked)
       cand = (dir==DIR_LONG ? MathMax(cand,beFloor) : MathMin(cand,beFloor));
 
@@ -5621,13 +5655,38 @@ void SymphonyArcPartial()
 }
 
 //==================================================================
+// CAMPAIGN LOCKOUT DETECTOR — if a campaign was open and now has zero open
+// legs, it was closed by the trail-stop / SL (server-side) or the composite
+// exit. Engage the re-entry lock for the CURRENT impulse so we don't churn
+// straight back into the same leg. Cleared when a fresh impulse forms.
+//==================================================================
+void SymphonyUpdateCampaignLockout()
+{
+   int openL=0, openS=0;
+   int total=PositionsTotal();
+   for(int i=0;i<total;i++)
+   {
+      ulong ticket=PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
+      if(PositionGetInteger(POSITION_MAGIC)!=g_cfg.magic) continue;
+      if(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY) openL++; else openS++;
+   }
+   if(sym_longCampaignOpen && openL==0)
+   { sym_exitedLongAnchor  = (sym_anchorLow >0.0?sym_anchorLow :1.0); sym_longCampaignOpen=false;  }
+   if(sym_shortCampaignOpen && openS==0)
+   { sym_exitedShortAnchor = (sym_anchorHigh>0.0?sym_anchorHigh:1.0); sym_shortCampaignOpen=false; }
+}
+
+//==================================================================
 // MASTER — Symphony manage step (manage open trades, then exits, then entries)
 //   Called from the pipeline's execution stage when g_cfg.useSymphony.
 //==================================================================
 void SymphonyTradeManage()
 {
+   SymphonyUpdateCampaignLockout(); // detect closed campaigns -> lock the impulse (no churn)
    TalonGrip();             // TALON curve-convergent structural grip (breakeven + trail)
-   SymphonyArcPartial();    // bank 50% at the projected ARC destination
+   SymphonyArcPartial();    // bank a fraction at the projected ARC destination
    SymphonyManageExits();   // composite ARC + institutional + phase reversal exit
    SymphonyExecuteTrading();// Phase 3/4 entries
 }
