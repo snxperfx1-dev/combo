@@ -4,7 +4,7 @@
 //|   SINGLE-FILE BUILD (kernel + 6 engines + EA, auto-combined).     |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "1.03"
+#property version   "1.04"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -2735,7 +2735,7 @@ void IE_Forecast(FalconIntelligence &x)
    // probability is capped (a single broken pillar still kills the shot).
    double ownership   = g_state.htf.alignment/100.0;
    double maturity     = FalconClamp(cv.maturity/100.0,0,1);
-   double geometry     = FalconClamp(1.0 - cv.geometryCapacity/100.0,0,1); // less room left = closer to resolve
+   double geometry     = FalconClamp(cv.geometryCapacity/100.0,0,1); // ROOM TO TARGET — entries need room, not exhaustion
    double destination  = FalconClamp(x.attractorScore/100.0,0,1);
    double recursion    = FalconClamp(1.0 - x.failureSwingProb,0,1);
 
@@ -3565,6 +3565,14 @@ void EE_HandleExits()
          if(w.direction==DIR_SHORT) { exitShort=true; exitReason=XS_DEFEND; }
       }
    }
+
+   // CAMPAIGN INVALIDATION (direction-agnostic, per the multi-campaign rule):
+   // a confirmed structural flip kills the opposite campaign's thesis. A bullish
+   // CHoCH invalidates open SHORTS; a bearish CHoCH invalidates open LONGS. This
+   // closes a bleeding book the moment the move that justified it is broken,
+   // instead of orphaning it after the master direction flips.
+   if(g_state.structure.choch==DIR_LONG  && g_state.exec.openShortCount>0){ exitShort=true; exitReason=XS_DEFEND; }
+   if(g_state.structure.choch==DIR_SHORT && g_state.exec.openLongCount>0 ){ exitLong=true;  exitReason=XS_DEFEND; }
 
    if(!exitLong && !exitShort) return;
    g_state.exec.exitState=exitReason;

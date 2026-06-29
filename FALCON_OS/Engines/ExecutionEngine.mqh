@@ -493,6 +493,14 @@ void EE_HandleExits()
       }
    }
 
+   // CAMPAIGN INVALIDATION (direction-agnostic, per the multi-campaign rule):
+   // a confirmed structural flip kills the opposite campaign's thesis. A bullish
+   // CHoCH invalidates open SHORTS; a bearish CHoCH invalidates open LONGS. This
+   // closes a bleeding book the moment the move that justified it is broken,
+   // instead of orphaning it after the master direction flips.
+   if(g_state.structure.choch==DIR_LONG  && g_state.exec.openShortCount>0){ exitShort=true; exitReason=XS_DEFEND; }
+   if(g_state.structure.choch==DIR_SHORT && g_state.exec.openLongCount>0 ){ exitLong=true;  exitReason=XS_DEFEND; }
+
    if(!exitLong && !exitShort) return;
    g_state.exec.exitState=exitReason;
 

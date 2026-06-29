@@ -201,7 +201,7 @@ void IE_Forecast(FalconIntelligence &x)
    // probability is capped (a single broken pillar still kills the shot).
    double ownership   = g_state.htf.alignment/100.0;
    double maturity     = FalconClamp(cv.maturity/100.0,0,1);
-   double geometry     = FalconClamp(1.0 - cv.geometryCapacity/100.0,0,1); // less room left = closer to resolve
+   double geometry     = FalconClamp(cv.geometryCapacity/100.0,0,1); // ROOM TO TARGET — entries need room, not exhaustion
    double destination  = FalconClamp(x.attractorScore/100.0,0,1);
    double recursion    = FalconClamp(1.0 - x.failureSwingProb,0,1);
 
