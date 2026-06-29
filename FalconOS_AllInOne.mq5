@@ -5,7 +5,7 @@
 //|   Risk: PYRO thermal + TALON curve-convergent structural grip.   |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "4.50"
+#property version   "4.51"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -167,7 +167,7 @@ input double  InpArcPartialMinATR  = 1.5; // Min favorable excursion (ATR) befor
 input string  __sep_viz         = "════════ VISUALIZATION ════════"; // ──
 input bool    InpShowDashboard  = true;  // Show unified dashboard
 input bool    InpShowHUD        = true;  // Plot Flight HUD levels on chart
-input int     InpDashboardTab   = 0;     // 0=Overview 1=Physics 2=Structure 3=Network 4=Curve 5=Campaign 6=Wave 7=HTF 8=Risk 9=Execution 10=Performance 11=Diagnostics
+input int     InpDashboardTab   = 0;     // 0=Overview 1=Physics 2=Structure 3=Network 4=Curve 5=Campaign 6=Wave 7=HTF 8=Risk 9=Execution 10=Performance 11=Diagnostics 12=Learning
 input bool    InpVerboseLog     = false; // Verbose diagnostics logging
 input bool    InpJournal        = true;  // Write per-trade CSV journal (panel snapshot @ entry + result) to Common\Files
 
@@ -7504,8 +7504,18 @@ string VZ_TabName(const int t)
       case 8: return("RISK");
       case 9: return("EXECUTION");
       case 10:return("PERFORMANCE");
+      case 12:return("LEARNING");
       default:return("DIAGNOSTICS");
    }
+}
+
+string VZ_Band(const int b){ return(b==0?"Early":b==1?"Dev":b==2?"Mid":b==3?"Late":"Term"); }
+string VZ_Reason(const int c)
+{
+   switch(c){ case VR_NOZONE:return("no-zone"); case VR_NOROOM:return("no-room");
+              case VR_EXHAUST:return("exhausted"); case VR_LATE:return("late-curve");
+              case VR_NETWORK:return("net-counter"); case VR_PARTICIPANT:return("part-counter"); }
+   return("?");
 }
 
 //------------------------------------------------------------------
@@ -7683,6 +7693,40 @@ string VZ_Body(const int tab)
          s+="Margin free : "+DoubleToString(AccountInfoDouble(ACCOUNT_MARGIN_FREE),2)+"\n";
          s+="Pipeline    : "+IntegerToString((int)g_diag.pipelineRuns)+" runs  "+DoubleToString((double)g_diag.pipelineMicros,0)+"us last";
          break;
+      case 12: // LEARNING — what the OS is learning about itself
+      {
+         FalconSelfAwareness sf=g_state.self;
+         s+="SELF        : "+sf.label+"  conf "+DoubleToString(sf.selfConfidence,0)
+            +"  throttle x"+DoubleToString(sf.throttle,2)+"\n";
+         s+="            : calib "+DoubleToString(sf.calibration,0)+"  form "+DoubleToString(sf.form,0)
+            +"  regime "+DoubleToString(sf.regimeFit,0)+"  streak "+IntegerToString(sf.winStreak)+"W/"+IntegerToString(sf.lossStreak)+"L\n";
+         s+="── ADAPTIVE — which setups pay (size/veto) ──\n";
+         int shown=0;
+         for(int b=0;b<AD_NBUCKETS;b++)
+         {
+            if(ad_n[b]==0) continue;
+            double wr=100.0*ad_wins[b]/ad_n[b];
+            string tag=(b<5?"L":"S")+("-"+VZ_Band(b%5));
+            s+=StringFormat("  %-7s n%-3d wr%2.0f%%  R%+.2f  x%.2f%s\n",
+                 tag, ad_n[b], wr, ad_ewmaR[b], AD_SizeMult(b),
+                 (AD_Veto(b)?"  VETO":""));
+            shown++;
+         }
+         if(shown==0) s+="  (no closed trades yet)\n";
+         s+="── REGRET — misses it would've won (override) ──\n";
+         int codes[6]={VR_NOZONE,VR_NOROOM,VR_EXHAUST,VR_LATE,VR_NETWORK,VR_PARTICIPANT};
+         int rshown=0;
+         for(int i=0;i<6;i++)
+         {
+            int c=codes[i]; if(mt_n[c]==0) continue;
+            double wr=100.0*mt_win[c]/mt_n[c];
+            s+=StringFormat("  %-12s n%-3d wr%2.0f%%  R%+.2f%s\n",
+                 VZ_Reason(c), mt_n[c], wr, mt_R[c], (MT_Override(c)?"  TAKING":""));
+            rshown++;
+         }
+         if(rshown==0) s+="  (no resolved shadow trades yet)";
+         break;
+      }
       default: // DIAGNOSTICS
          for(int m=0;m<MOD_COUNT;m++)
             s+=StringFormat("%-14s %s  avg %.0fus  runs %d\n",
@@ -7780,8 +7824,8 @@ void FalconVizOnChartEvent(const int id,const long &lparam,const double &dparam,
 {
    if(id!=CHARTEVENT_KEYDOWN) return;
    int prev=g_cfg.dashboardTab;
-   if(lparam==84 || lparam==39)       g_cfg.dashboardTab = (g_cfg.dashboardTab+1)%12;  // 'T' / RIGHT
-   else if(lparam==37)                g_cfg.dashboardTab = (g_cfg.dashboardTab+11)%12;  // LEFT
+   if(lparam==84 || lparam==39)       g_cfg.dashboardTab = (g_cfg.dashboardTab+1)%13;  // 'T' / RIGHT
+   else if(lparam==37)                g_cfg.dashboardTab = (g_cfg.dashboardTab+12)%13;  // LEFT
    if(g_cfg.dashboardTab!=prev) VisualizationRun();
 }
 

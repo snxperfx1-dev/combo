@@ -153,7 +153,7 @@ input double  InpArcPartialMinATR  = 1.5; // Min favorable excursion (ATR) befor
 input string  __sep_viz         = "════════ VISUALIZATION ════════"; // ──
 input bool    InpShowDashboard  = true;  // Show unified dashboard
 input bool    InpShowHUD        = true;  // Plot Flight HUD levels on chart
-input int     InpDashboardTab   = 0;     // 0=Overview 1=Physics 2=Structure 3=Network 4=Curve 5=Campaign 6=Wave 7=HTF 8=Risk 9=Execution 10=Performance 11=Diagnostics
+input int     InpDashboardTab   = 0;     // 0=Overview 1=Physics 2=Structure 3=Network 4=Curve 5=Campaign 6=Wave 7=HTF 8=Risk 9=Execution 10=Performance 11=Diagnostics 12=Learning
 input bool    InpVerboseLog     = false; // Verbose diagnostics logging
 input bool    InpJournal        = true;  // Write per-trade CSV journal (panel snapshot @ entry + result) to Common\Files
 
