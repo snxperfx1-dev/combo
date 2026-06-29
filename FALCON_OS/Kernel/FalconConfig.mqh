@@ -111,6 +111,7 @@ input bool    InpShowDashboard  = true;  // Show unified dashboard
 input bool    InpShowHUD        = true;  // Plot Flight HUD levels on chart
 input int     InpDashboardTab   = 0;     // 0=Overview 1=Physics 2=Structure 3=Network 4=Curve 5=Campaign 6=Wave 7=HTF 8=Risk 9=Execution 10=Performance 11=Diagnostics
 input bool    InpVerboseLog     = false; // Verbose diagnostics logging
+input bool    InpJournal        = true;  // Write per-trade CSV journal (panel snapshot @ entry + result) to Common\Files
 
 //==================================================================
 // RESOLVED CONFIG STRUCT (snapshots inputs + profile overrides)
@@ -155,6 +156,7 @@ struct FalconConfig
    // viz
    bool   showDashboard, verboseLog;  int dashboardTab;
    bool   showHUD;
+   bool   journal;
 };
 
 FalconConfig g_cfg;
@@ -246,6 +248,7 @@ void FalconConfigInit()
    g_cfg.showHUD          = InpShowHUD;
    g_cfg.verboseLog       = InpVerboseLog;
    g_cfg.dashboardTab     = InpDashboardTab;
+   g_cfg.journal          = InpJournal;
 
    // Profile overrides
    if(g_cfg.profile == PROFILE_BACKTEST)

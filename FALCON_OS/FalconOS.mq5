@@ -38,6 +38,7 @@
 #include "Engines/DecisionEngine.mqh"      // Decision Layer
 #include "Engines/ExecutionEngine.mqh"     // Execution Layer
 #include "Engines/ThermalRiskEngine.mqh"   // Execution Layer — PYRO campaign-thermodynamics risk (after EE, before Symphony)
+#include "Engines/TradeJournal.mqh"        // Diagnostics — per-trade CSV journal (before Symphony so entries can record)
 #include "Engines/SymphonyEngine.mqh"      // Execution Layer — Symphony phase entries/exits (after EE helpers)
 #include "Engines/Visualization.mqh"       // Visualization Layer
 
@@ -124,6 +125,7 @@ void FalconPipeline()
    // never double-trade. Risk = lot sizing + drawdown protection only.
    if(g_cfg.useSymphony)
       SymphonyTradeManage();
+   TradeJournalOnBar();   // snapshot MFE/MAE + finalise closed trades to the CSV
    FalconModuleEnd(MOD_EXEC,t0);
 
    // ── PERSISTENCE ───────────────────────────────────────────────
@@ -161,6 +163,7 @@ int OnInit()
    FalconPersistenceInit();
    if(g_cfg.useThermalRisk) ThermalRiskInit();
    if(g_cfg.useSymphony) SymphonyInit();
+   TradeJournalInit();
 
    if(!FalconRefreshSeries())
    {
@@ -178,6 +181,7 @@ int OnInit()
 
 void OnDeinit(const int reason)
 {
+   TradeJournalDeinit();
    FalconPersistenceFlush();
    VisualizationDeinit();
    FalconReleaseHandles();

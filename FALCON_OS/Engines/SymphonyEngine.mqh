@@ -608,6 +608,7 @@ void SymphonyExecuteTrading()
          if(EE_SendMarketOrder(+1,lots,sl,"SYM P3 Long"))
          {
             sym_lastLongTradeTime=barTime; sym_longCampaignOpen=true;
+            TJ_RecordEntry(ee_lastTicket,DIR_LONG,"P3 Long",entry,sl,lots);
             g_state.exec.entry=entry; g_state.exec.stop=sl; g_state.exec.lots=lots; g_state.exec.riskCash=riskCash;
          }
       }
@@ -627,6 +628,7 @@ void SymphonyExecuteTrading()
             if(EE_SendMarketOrder(+1,lots,sl,"SYM P4 Long"))
             {
                sym_lastLongTradeTime=barTime; sym_longCampaignOpen=true;
+               TJ_RecordEntry(ee_lastTicket,DIR_LONG,"P4 Long",entry,sl,lots);
                g_state.exec.entry=entry; g_state.exec.stop=sl; g_state.exec.lots=lots; g_state.exec.riskCash=riskCash;
             }
          }
@@ -644,6 +646,7 @@ void SymphonyExecuteTrading()
          if(EE_SendMarketOrder(-1,lots,sl,"SYM P3 Short"))
          {
             sym_lastShortTradeTime=barTime; sym_shortCampaignOpen=true;
+            TJ_RecordEntry(ee_lastTicket,DIR_SHORT,"P3 Short",entry,sl,lots);
             g_state.exec.entry=entry; g_state.exec.stop=sl; g_state.exec.lots=lots; g_state.exec.riskCash=riskCash;
          }
       }
@@ -663,6 +666,7 @@ void SymphonyExecuteTrading()
             if(EE_SendMarketOrder(-1,lots,sl,"SYM P4 Short"))
             {
                sym_lastShortTradeTime=barTime; sym_shortCampaignOpen=true;
+               TJ_RecordEntry(ee_lastTicket,DIR_SHORT,"P4 Short",entry,sl,lots);
                g_state.exec.entry=entry; g_state.exec.stop=sl; g_state.exec.lots=lots; g_state.exec.riskCash=riskCash;
             }
          }

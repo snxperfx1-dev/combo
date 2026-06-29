@@ -145,6 +145,7 @@ void EE_BuildMarket(EE_Market &m)
 //==================================================================
 // ORDER HELPERS (raw MqlTradeRequest, IOC)
 //==================================================================
+ulong ee_lastTicket = 0;   // POSITION ticket of the most recent successful entry
 bool EE_SendMarketOrder(const int direction,const double lots,const double sl,const string comment)
 {
    if(lots<=0.0) return(false);
@@ -163,6 +164,11 @@ bool EE_SendMarketOrder(const int direction,const double lots,const double sl,co
       FalconError("ExecutionEngine",StringFormat("order failed dir=%d ret=%d",direction,res.retcode));
       return(false);
    }
+   // expose the resulting POSITION ticket (for the trade journal / diagnostics)
+   ee_lastTicket = 0;
+   if(res.deal>0 && HistoryDealSelect(res.deal))
+      ee_lastTicket = (ulong)HistoryDealGetInteger(res.deal, DEAL_POSITION_ID);
+   if(ee_lastTicket==0) ee_lastTicket = (ulong)res.order;
    FalconPublish(EVT_ORDER_SENT,direction,comment);
    return(true);
 }

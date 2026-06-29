@@ -5,7 +5,7 @@
 //|   Risk: PYRO thermal + TALON curve-convergent structural grip.   |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "3.31"
+#property version   "3.32"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -125,6 +125,7 @@ input bool    InpShowDashboard  = true;  // Show unified dashboard
 input bool    InpShowHUD        = true;  // Plot Flight HUD levels on chart
 input int     InpDashboardTab   = 0;     // 0=Overview 1=Physics 2=Structure 3=Network 4=Curve 5=Campaign 6=Wave 7=HTF 8=Risk 9=Execution 10=Performance 11=Diagnostics
 input bool    InpVerboseLog     = false; // Verbose diagnostics logging
+input bool    InpJournal        = true;  // Write per-trade CSV journal (panel snapshot @ entry + result) to Common\Files
 
 //==================================================================
 // RESOLVED CONFIG STRUCT (snapshots inputs + profile overrides)
@@ -169,6 +170,7 @@ struct FalconConfig
    // viz
    bool   showDashboard, verboseLog;  int dashboardTab;
    bool   showHUD;
+   bool   journal;
 };
 
 FalconConfig g_cfg;
@@ -260,6 +262,7 @@ void FalconConfigInit()
    g_cfg.showHUD          = InpShowHUD;
    g_cfg.verboseLog       = InpVerboseLog;
    g_cfg.dashboardTab     = InpDashboardTab;
+   g_cfg.journal          = InpJournal;
 
    // Profile overrides
    if(g_cfg.profile == PROFILE_BACKTEST)
@@ -3950,6 +3953,7 @@ void EE_BuildMarket(EE_Market &m)
 //==================================================================
 // ORDER HELPERS (raw MqlTradeRequest, IOC)
 //==================================================================
+ulong ee_lastTicket = 0;   // POSITION ticket of the most recent successful entry
 bool EE_SendMarketOrder(const int direction,const double lots,const double sl,const string comment)
 {
    if(lots<=0.0) return(false);
@@ -3968,6 +3972,11 @@ bool EE_SendMarketOrder(const int direction,const double lots,const double sl,co
       FalconError("ExecutionEngine",StringFormat("order failed dir=%d ret=%d",direction,res.retcode));
       return(false);
    }
+   // expose the resulting POSITION ticket (for the trade journal / diagnostics)
+   ee_lastTicket = 0;
+   if(res.deal>0 && HistoryDealSelect(res.deal))
+      ee_lastTicket = (ulong)HistoryDealGetInteger(res.deal, DEAL_POSITION_ID);
+   if(ee_lastTicket==0) ee_lastTicket = (ulong)res.order;
    FalconPublish(EVT_ORDER_SENT,direction,comment);
    return(true);
 }
@@ -4732,6 +4741,256 @@ double TR_AdmitLots(const int dir,const double proposedLots)
 #endif // FALCON_THERMAL_RISK_ENGINE_MQH
 //+------------------------------------------------------------------+
 
+//  ===== Engines/TradeJournal.mqh =====
+//+------------------------------------------------------------------+
+//|  FALCON OS — Diagnostics : TradeJournal.mqh                      |
+//|                                                                  |
+//|  PURPOSE: produce the data needed to answer "which panel settings |
+//|  give the best trades?". For EVERY trade it snapshots the full    |
+//|  Decision/Intelligence panel state AT ENTRY (confidence, exec     |
+//|  prob, threat, conflict, opportunity, master-chief, phase,        |
+//|  completion, geometry, ownership, HTF alignment, verdict) and, on |
+//|  close, the realised result (profit, R-multiple, MFE/MAE in R,    |
+//|  bars held). One CSV row per closed trade.                        |
+//|                                                                  |
+//|  Run ONE backtest with InpJournal=true, then open the CSV from    |
+//|  <DataFolder>/MQL5/Files/ (Common) and feed it to analyze_journal |
+//|  .py to see win-rate + expectancy bucketed by each setting, so a  |
+//|  threshold (e.g. confidence>=70 vs >=55) can be chosen on EVIDENCE.|
+//|                                                                  |
+//|  Read-only on state. Reuses FalconATR / shared series. Include    |
+//|  BEFORE SymphonyEngine so its entries can call TJ_RecordEntry.    |
+//+------------------------------------------------------------------+
+#ifndef FALCON_TRADE_JOURNAL_MQH
+#define FALCON_TRADE_JOURNAL_MQH
+
+
+//==================================================================
+// One open-trade record (snapshot at entry + running MFE/MAE)
+//==================================================================
+struct TJRec
+{
+   ulong    ticket;
+   bool     open;
+   datetime tOpen;
+   int      dir;          // +1 long / -1 short
+   string   tag;          // "P3 Long" etc.
+   double   entry, sl, lots, riskCash, riskDist;
+   // --- panel snapshot AT ENTRY ---
+   double   conf, execProb, threat, conflict, opp, mcScore;
+   bool     mcConfirm;
+   int      phase;
+   double   completion, geomCap, ownerCtrl, htfAlign, validation, oppNum;
+   int      action, owner;
+   string   oppGrade, intent, timing;
+   // --- running ---
+   double   mfe, mae;     // price-distance favourable / adverse
+};
+
+TJRec  tj[];
+int    tj_fileHandle = INVALID_HANDLE;
+string tj_fileName   = "";
+
+//==================================================================
+// INIT — open the CSV (Common Files) and write the header row.
+//==================================================================
+void TradeJournalInit()
+{
+   ArrayResize(tj,0);
+   tj_fileHandle = INVALID_HANDLE;
+   if(!g_cfg.journal) return;
+
+   tj_fileName = StringFormat("FALCON_Journal_%s_%d.csv", _Symbol, (int)Period());
+   tj_fileHandle = FileOpen(tj_fileName,
+                            FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_COMMON, ',');
+   if(tj_fileHandle==INVALID_HANDLE)
+   {
+      FalconLog("WARN","TradeJournal","could not open "+tj_fileName);
+      return;
+   }
+   FileWrite(tj_fileHandle,
+      "ticket","openTime","closeTime","barsHeld","dir","tag",
+      "entry","sl","lots","riskCash",
+      "conf","execProb","threat","conflict","opp","oppGrade",
+      "mcScore","mcConfirm","validation","action","owner",
+      "phase","completion","geomCap","ownerCtrl","htfAlign","intent","timing",
+      "profit","resultR","mfeR","maeR","win");
+   FileFlush(tj_fileHandle);
+   FalconLog("INFO","TradeJournal","-> "+tj_fileName+" (Common\\Files)");
+}
+
+//==================================================================
+// RECORD ENTRY — called by Symphony immediately after a successful send.
+//   Captures the live Decision/Intelligence panel into a new record.
+//==================================================================
+void TJ_RecordEntry(const ulong ticket,const int dir,const string tag,
+                    const double entry,const double sl,const double lots)
+{
+   if(!g_cfg.journal || tj_fileHandle==INVALID_HANDLE) return;
+
+   FalconIntelligence x = g_state.intel;
+   TJRec r;
+   r.ticket   = ticket;  r.open = true;  r.tOpen = gTime[0];
+   r.dir      = dir;     r.tag  = tag;
+   r.entry    = entry;   r.sl   = sl;    r.lots = lots;
+   r.riskCash = g_state.exec.riskCash;
+   r.riskDist = MathAbs(entry - sl);
+   r.conf       = x.confidence;
+   r.execProb   = x.executionProbability;
+   r.threat     = x.threat;
+   r.conflict   = x.conflict;
+   r.opp        = x.opportunity;
+   r.oppNum     = x.opportunity;
+   r.oppGrade   = x.opportunityGrade;
+   r.mcScore    = x.masterChiefScore;
+   r.mcConfirm  = x.masterChiefConfirm;
+   r.validation = x.validationScore;
+   r.intent     = x.intent;
+   r.timing     = x.timing;
+   r.action     = g_state.exec.action;
+   r.owner      = g_state.campaign.owner;
+   r.phase      = g_state.wave.phase;
+   r.completion = g_state.wave.completion;
+   r.geomCap    = g_state.convexity.geometryCapacity;
+   r.ownerCtrl  = g_state.campaign.controlScore;
+   r.htfAlign   = g_state.htf.alignment;
+   r.mfe = 0.0;  r.mae = 0.0;
+
+   int n = ArraySize(tj);
+   ArrayResize(tj, n+1);
+   tj[n] = r;
+}
+
+//------------------------------------------------------------------
+// Realised P/L for a closed position (profit + swap only; MT5 has
+// deprecated POSITION_COMMISSION). Also returns close price/time.
+//------------------------------------------------------------------
+double TJ_RealizedProfit(const ulong posId,double &closePrice,datetime &closeTime)
+{
+   double pl=0.0; closePrice=0.0; closeTime=0;
+   if(!HistorySelectByPosition(posId)) return(0.0);
+   int dts = HistoryDealsTotal();
+   for(int i=0;i<dts;i++)
+   {
+      ulong dt = HistoryDealGetTicket(i);
+      if(dt==0) continue;
+      pl += HistoryDealGetDouble(dt,DEAL_PROFIT) + HistoryDealGetDouble(dt,DEAL_SWAP);
+      long e = HistoryDealGetInteger(dt,DEAL_ENTRY);
+      if(e==DEAL_ENTRY_OUT || e==DEAL_ENTRY_OUT_BY || e==DEAL_ENTRY_INOUT)
+      {
+         closePrice = HistoryDealGetDouble(dt,DEAL_PRICE);
+         closeTime  = (datetime)HistoryDealGetInteger(dt,DEAL_TIME);
+      }
+   }
+   return(pl);
+}
+
+//------------------------------------------------------------------
+// Write one finalised row and mark the record closed.
+//------------------------------------------------------------------
+void TJ_Finalize(const int idx)
+{
+   double closePrice=0.0; datetime closeTime=0;
+   double profit = TJ_RealizedProfit(tj[idx].ticket, closePrice, closeTime);
+   if(closeTime==0) closeTime = gTime[0];
+
+   double rd   = (tj[idx].riskDist>0.0 ? tj[idx].riskDist : 1e-9);
+   double rcsh = (tj[idx].riskCash>0.0 ? tj[idx].riskCash : 1e-9);
+   double resultR = profit / rcsh;
+   double mfeR    = tj[idx].mfe / rd;
+   double maeR    = tj[idx].mae / rd;
+   int    bars    = (int)((closeTime - tj[idx].tOpen) / MathMax(1,PeriodSeconds()));
+   int    win     = (profit>0.0 ? 1 : 0);
+
+   if(tj_fileHandle!=INVALID_HANDLE)
+   {
+      FileWrite(tj_fileHandle,
+         (string)tj[idx].ticket,
+         TimeToString(tj[idx].tOpen,TIME_DATE|TIME_MINUTES),
+         TimeToString(closeTime,TIME_DATE|TIME_MINUTES),
+         (string)bars,
+         (tj[idx].dir>0?"LONG":"SHORT"),
+         tj[idx].tag,
+         DoubleToString(tj[idx].entry,_Digits),
+         DoubleToString(tj[idx].sl,_Digits),
+         DoubleToString(tj[idx].lots,2),
+         DoubleToString(tj[idx].riskCash,2),
+         DoubleToString(tj[idx].conf,1),
+         DoubleToString(tj[idx].execProb,3),
+         DoubleToString(tj[idx].threat,1),
+         DoubleToString(tj[idx].conflict,1),
+         DoubleToString(tj[idx].opp,1),
+         tj[idx].oppGrade,
+         DoubleToString(tj[idx].mcScore,1),
+         (tj[idx].mcConfirm?"1":"0"),
+         DoubleToString(tj[idx].validation,1),
+         (string)tj[idx].action,
+         (string)tj[idx].owner,
+         (string)tj[idx].phase,
+         DoubleToString(tj[idx].completion,1),
+         DoubleToString(tj[idx].geomCap,1),
+         DoubleToString(tj[idx].ownerCtrl,1),
+         DoubleToString(tj[idx].htfAlign,1),
+         tj[idx].intent,
+         tj[idx].timing,
+         DoubleToString(profit,2),
+         DoubleToString(resultR,3),
+         DoubleToString(mfeR,3),
+         DoubleToString(maeR,3),
+         (string)win);
+      FileFlush(tj_fileHandle);
+   }
+   tj[idx].open = false;
+}
+
+//==================================================================
+// ON BAR — update MFE/MAE for open records and finalise any that
+// have left the book (closed by trail-stop, exit, or SL).
+//==================================================================
+void TradeJournalOnBar()
+{
+   if(!g_cfg.journal || tj_fileHandle==INVALID_HANDLE) return;
+   int n = ArraySize(tj);
+   if(n<=0) return;
+
+   double hi = gHigh[1], lo = gLow[1];
+
+   for(int i=0;i<n;i++)
+   {
+      if(!tj[i].open) continue;
+
+      // update running MFE/MAE off the last closed bar's extremes
+      if(tj[i].dir>0)
+      {
+         tj[i].mfe = MathMax(tj[i].mfe, hi - tj[i].entry);
+         tj[i].mae = MathMax(tj[i].mae, tj[i].entry - lo);
+      }
+      else
+      {
+         tj[i].mfe = MathMax(tj[i].mfe, tj[i].entry - lo);
+         tj[i].mae = MathMax(tj[i].mae, hi - tj[i].entry);
+      }
+
+      // still open on the book?
+      if(!PositionSelectByTicket(tj[i].ticket))
+         TJ_Finalize(i);
+   }
+}
+
+//==================================================================
+// DEINIT — finalise any trades still open at end of run, close file.
+//==================================================================
+void TradeJournalDeinit()
+{
+   int n = ArraySize(tj);
+   for(int i=0;i<n;i++)
+      if(tj[i].open) TJ_Finalize(i);
+   if(tj_fileHandle!=INVALID_HANDLE){ FileClose(tj_fileHandle); tj_fileHandle=INVALID_HANDLE; }
+}
+
+#endif // FALCON_TRADE_JOURNAL_MQH
+//+------------------------------------------------------------------+
+
 //  ===== Engines/SymphonyEngine.mqh =====
 //+------------------------------------------------------------------+
 //|  FALCON OS — Execution Layer : SymphonyEngine.mqh               |
@@ -5338,6 +5597,7 @@ void SymphonyExecuteTrading()
          if(EE_SendMarketOrder(+1,lots,sl,"SYM P3 Long"))
          {
             sym_lastLongTradeTime=barTime; sym_longCampaignOpen=true;
+            TJ_RecordEntry(ee_lastTicket,DIR_LONG,"P3 Long",entry,sl,lots);
             g_state.exec.entry=entry; g_state.exec.stop=sl; g_state.exec.lots=lots; g_state.exec.riskCash=riskCash;
          }
       }
@@ -5357,6 +5617,7 @@ void SymphonyExecuteTrading()
             if(EE_SendMarketOrder(+1,lots,sl,"SYM P4 Long"))
             {
                sym_lastLongTradeTime=barTime; sym_longCampaignOpen=true;
+               TJ_RecordEntry(ee_lastTicket,DIR_LONG,"P4 Long",entry,sl,lots);
                g_state.exec.entry=entry; g_state.exec.stop=sl; g_state.exec.lots=lots; g_state.exec.riskCash=riskCash;
             }
          }
@@ -5374,6 +5635,7 @@ void SymphonyExecuteTrading()
          if(EE_SendMarketOrder(-1,lots,sl,"SYM P3 Short"))
          {
             sym_lastShortTradeTime=barTime; sym_shortCampaignOpen=true;
+            TJ_RecordEntry(ee_lastTicket,DIR_SHORT,"P3 Short",entry,sl,lots);
             g_state.exec.entry=entry; g_state.exec.stop=sl; g_state.exec.lots=lots; g_state.exec.riskCash=riskCash;
          }
       }
@@ -5393,6 +5655,7 @@ void SymphonyExecuteTrading()
             if(EE_SendMarketOrder(-1,lots,sl,"SYM P4 Short"))
             {
                sym_lastShortTradeTime=barTime; sym_shortCampaignOpen=true;
+               TJ_RecordEntry(ee_lastTicket,DIR_SHORT,"P4 Short",entry,sl,lots);
                g_state.exec.entry=entry; g_state.exec.stop=sl; g_state.exec.lots=lots; g_state.exec.riskCash=riskCash;
             }
          }
@@ -6152,6 +6415,7 @@ void FalconPipeline()
    // never double-trade. Risk = lot sizing + drawdown protection only.
    if(g_cfg.useSymphony)
       SymphonyTradeManage();
+   TradeJournalOnBar();   // snapshot MFE/MAE + finalise closed trades to the CSV
    FalconModuleEnd(MOD_EXEC,t0);
 
    // ── PERSISTENCE ───────────────────────────────────────────────
@@ -6189,6 +6453,7 @@ int OnInit()
    FalconPersistenceInit();
    if(g_cfg.useThermalRisk) ThermalRiskInit();
    if(g_cfg.useSymphony) SymphonyInit();
+   TradeJournalInit();
 
    if(!FalconRefreshSeries())
    {
@@ -6206,6 +6471,7 @@ int OnInit()
 
 void OnDeinit(const int reason)
 {
+   TradeJournalDeinit();
    FalconPersistenceFlush();
    VisualizationDeinit();
    FalconReleaseHandles();

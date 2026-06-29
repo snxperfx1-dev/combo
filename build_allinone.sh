@@ -20,6 +20,7 @@ ORDER=(
   "Engines/DecisionEngine.mqh"
   "Engines/ExecutionEngine.mqh"
   "Engines/ThermalRiskEngine.mqh"
+  "Engines/TradeJournal.mqh"
   "Engines/SymphonyEngine.mqh"
   "Engines/Visualization.mqh"
   "FalconOS.mq5"
