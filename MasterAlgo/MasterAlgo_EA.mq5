@@ -14,13 +14,14 @@
 //|   Part 7: Dashboard Panel (Comment-based HUD)                     |
 //|   Part 8: THIS FILE - OnInit/OnTick orchestrator                  |
 //+------------------------------------------------------------------+
-#property copyright "Master Algo v1.0"
+#property copyright "Master Algo v2.0"
 #property link      ""
-#property version   "1.00"
-#property description "Unified Engine: Symphony + Letra 37 + F16 Raptor"
+#property version   "2.00"
+#property description "Unified Engine: Symphony + Letra 37 + F16 Raptor (FULL)"
 #property description "Entry: P3/P4 curvature + Demand/Supply Return lifecycle"
 #property description "Exit: ARC convexity + Institutional sweep + Phase transition"
 #property description "Intelligence: 6-TF structure + ERF + Senseei + Curve Tree"
+#property description "  + FU Blocks + Network Nodes + Liq Wave + Campaign + Lineage"
 #property strict
 
 //==================================================================
@@ -33,6 +34,11 @@
 #include "Part5_EntryExitExecution.mqh"
 #include "Part6_SenseeiCurveNetwork.mqh"
 #include "Part7_DashboardPanel.mqh"
+#include "Part9_FUOrderBlockEngine.mqh"
+#include "Part10_NetworkNodeEngine.mqh"
+#include "Part11_LiquidationWaveRegistry.mqh"
+#include "Part12_CampaignCurveMapLineage.mqh"
+#include "Part13_VisualSystems.mqh"
 
 //==================================================================
 // OnInit - Initialization
@@ -70,14 +76,19 @@ int OnInit()
    }
    
    Print("============================================");
-   Print("  MASTER ALGO v1.0 - LOADED");
+   Print("  MASTER ALGO v2.0 - FULL INTEGRATION");
    Print("  Symphony + Letra 37 + F16 Raptor");
    Print("  Symbol: ", _Symbol, " | TF: ", EnumToString(_Period));
    Print("  Magic: ", InpMagic, " | Risk: ", InpRiskPercent, "%");
    Print("  Engines: 6-TF Structure + Physics + ERF");
-   Print("           + Beliefs + Senseei + Curve Tree");
+   Print("    + Beliefs + Senseei + Curve Tree");
+   Print("    + FU Order Blocks + Network Nodes (250)");
+   Print("    + Liquidation Wave + Energy Registry");
+   Print("    + Campaign + Participants + MTF Map");
+   Print("    + Narrative Lineage + Visual Systems");
    Print("  Entries: P3/P4 + Demand/Supply Return");
    Print("  Exits: ARC + Institutional + Phase Trans");
+   Print("  Visuals: Arcs/Zones/FEZ/Fibs/Budget/Web");
    Print("============================================");
    
    return(INIT_SUCCEEDED);
@@ -90,6 +101,7 @@ void OnDeinit(const int reason)
 {
    // Clean up chart objects
    CleanupChartObjects();
+   CleanupVisualObjects();
    Comment("");
    
    Print("MASTER ALGO: Deinit reason=", reason);
@@ -136,18 +148,39 @@ void OnTick()
    //             model confidence, direction probability, exec prob
    UpdateBeliefIntelligence();
    
-   //--- 5. SENSEEI + CURVE + NETWORK (strategic intelligence layer)
+   //--- 5. FU ORDER BLOCK ENGINE (zone detection + MTF pools + AFE)
+   //    Produces: g_fuBlocks[], g_fuWick, g_fuPool*, g_afe, g_convConfidence
+   UpdateFUEngine();
+   
+   //--- 6. NETWORK NODE ENGINE (250-node registry + FEZ corridor)
+   //    Produces: g_nodes[], g_netBias, g_netPressure, g_fezHigh/Low, paths
+   UpdateNetworkEngine();
+   
+   //--- 7. LIQUIDATION WAVE + ENERGY REGISTRY
+   //    Produces: g_liqWave (sub-phases, arrival), g_energyRegistry[]
+   //    Integration: suppress/boost reversal, spawn events on wave/cycle
+   UpdateLiqWaveAndRegistry();
+   
+   //--- 8. SENSEEI + CURVE + NETWORK (strategic intelligence layer)
    //    Produces: g_curve, curve tree/life, g_timeIntel, g_senseei,
    //             narrative (reads all prior engines)
    UpdateSenseeiCurveNetwork();
    
-   //--- 6. EXECUTION (entries + exits + trailing)
+   //--- 9. CAMPAIGN + MTF MAP + LINEAGE (strategic context layer)
+   //    Produces: g_campaign, g_participants, g_curveMap[], g_lineage,
+   //             g_curveBudgetTarget, g_ownerMerge
+   UpdateCampaignMapLineage();
+   
+   //--- 10. EXECUTION (entries + exits + trailing)
    //    Reads all engines; fires Symphony P3/P4 + Letra DR/SR entries;
    //    manages ARC/institutional/structural exits + trailing stops
    UpdateExecution();
    
-   //--- 7. DASHBOARD (render all intelligence to chart)
+   //--- 11. DASHBOARD (render all intelligence to chart comment)
    UpdateDashboard();
+   
+   //--- 12. VISUAL SYSTEMS (chart objects: arcs, zones, web, FEZ, fibs, etc.)
+   UpdateVisualSystems();
 }
 
 //+------------------------------------------------------------------+

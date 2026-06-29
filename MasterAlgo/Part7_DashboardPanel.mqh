@@ -232,6 +232,90 @@ void RenderDashboard()
    dash += "  H4:  " + PhaseToString(g_structure[TF_H4].phase) + "  [" + GaugeBar(g_structure[TF_H4].waveProgress, 6) + "]" + nl;
    dash += sep;
    
+   //=== SECTION 9B: LIQUIDATION WAVE ===
+   dash += "  LIQUIDATION WAVE" + nl;
+   if(g_liqWave.active)
+   {
+      dash += "  " + g_liqWave.title + nl;
+      dash += "  SubPhase: " + g_liqWave.subPhase;
+      dash += "  |  Dist: " + IntegerToString((int)g_liqWave.distPct) + "%" + nl;
+      dash += "  Arrival: " + LiqWaveArrivalStr();
+      dash += "  |  TrueCH: " + (g_liqWave.trueCHoCH ? "YES" : "No") + nl;
+   }
+   else
+      dash += "  Inactive" + nl;
+   dash += "  AbsorbGate: " + (g_absorbUnlocked ? "UNLOCKED" : "locked") + nl;
+   dash += sep;
+   
+   //=== SECTION 9C: FU ENGINE ===
+   dash += "  FU ORDER BLOCKS" + nl;
+   dash += "  Active Zones: " + IntegerToString(g_fuBlockCount);
+   dash += "  |  Bull: " + (HasActiveFUZone(1) ? "YES" : "no");
+   dash += "  Bear: " + (HasActiveFUZone(-1) ? "YES" : "no") + nl;
+   if(g_fuWick.validated)
+      dash += "  Wick Auth: " + (g_fuWick.direction==1?"BULL":"BEAR") + 
+              " str=" + IntegerToString((int)g_fuWick.strength) + 
+              " mag=" + DoubleToString(g_fuWick.leftPool, 2) + nl;
+   dash += "  MTF FU Align: " + IntegerToString((int)g_fuRecursiveAlign) + "%";
+   dash += "  Win: " + g_fuWinSource + nl;
+   if(g_convConfidence > 0)
+      dash += "  Route: " + g_convSeekTf + " conf=" + IntegerToString((int)g_convConfidence) + "%" + nl;
+   dash += "  AFE Step: " + IntegerToString(g_afe.step) + 
+           " Role: " + g_afe.upperFlipRole + nl;
+   dash += sep;
+   
+   //=== SECTION 9D: NETWORK NODES ===
+   dash += "  NETWORK NODES" + nl;
+   dash += "  Total: " + IntegerToString(g_nodeCount);
+   dash += "  Live: " + IntegerToString(g_netEligibleCount);
+   dash += "  Bias: " + DirArrow(g_netBias) + nl;
+   dash += "  Pressure: " + DoubleToString(g_netPressure, 1);
+   dash += "  |  Attractor: " + AttrNodeDesc() + nl;
+   if(g_fezHigh > 0 && g_fezLow > 0)
+      dash += "  FEZ: " + DoubleToString(g_fezLow, 2) + " - " + DoubleToString(g_fezHigh, 2) +
+              " " + (IsInsideFEZ() ? "INSIDE" : "outside") + nl;
+   dash += sep;
+   
+   //=== SECTION 9E: CAMPAIGN + PARTICIPANTS ===
+   dash += "  CAMPAIGN: " + g_campaign.campaign + " | " + g_campaign.location + nl;
+   dash += "  Compress: " + g_campaign.compRegime;
+   dash += "  |  Budget: " + IntegerToString((int)g_campaign.curveBudget) + "%" + nl;
+   dash += "  Participant: " + g_participants.zone + nl;
+   dash += "  Interference: " + g_participants.interference + nl;
+   dash += "  Ownership: " + g_ownerMerge.state + nl;
+   dash += sep;
+   
+   //=== SECTION 9F: MTF CURVE MAP ===
+   dash += "  MTF MAP [" + IntegerToString(g_mapAlignCount) + "/7 aligned]" + nl;
+   dash += "  Story: " + g_mapStory + nl;
+   dash += "  Owner TF: " + g_mapOwnerTF + nl;
+   dash += sep;
+   
+   //=== SECTION 9G: NARRATIVE LINEAGE ===
+   dash += "  NARRATIVE: " + g_lineage.state;
+   dash += " (" + IntegerToString((int)g_lineage.narrative) + ")";
+   dash += "  S" + IntegerToString(g_lineage.supportVotes) + 
+           "/D" + IntegerToString(g_lineage.degradeVotes) + nl;
+   dash += "  Last: " + g_lineage.lastVote;
+   dash += "  |  Conv: " + (g_lineage.converging ? "YES" : "no");
+   dash += "  |  Chain: " + IntegerToString((int)g_lineage.chainVitality) + nl;
+   dash += sep;
+   
+   //=== SECTION 9H: ENERGY REGISTRY ===
+   dash += "  ENERGY REGISTRY: " + RegistrySummary() + nl;
+   if(g_nearestUnresolvedPrice > 0)
+      dash += "  Nearest Unresolved: " + DoubleToString(g_nearestUnresolvedPrice, 2) +
+              " (" + DoubleToString(g_nearestUnresolvedDist, 1) + " pts)" + nl;
+   dash += "  Pulling: " + (UnresolvedEnergyPulling() ? "YES" : "no") + nl;
+   dash += sep;
+   
+   //=== SECTION 9I: CURVE BUDGET TARGET ===
+   dash += "  BUDGET TARGET: " + g_curveBudgetSource + nl;
+   if(g_curveBudgetTarget > 0)
+      dash += "  Price: " + DoubleToString(g_curveBudgetTarget, 2) +
+              "  (" + DoubleToString(g_curveBudgetATR, 1) + " ATR)" + nl;
+   dash += sep;
+   
    //=== SECTION 10: OPEN POSITIONS ===
    dash += "  POSITIONS" + nl;
    int posCount = CountOurPositions();
