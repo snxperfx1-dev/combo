@@ -149,6 +149,9 @@ void FalconPersistenceInit()
    FalconPerfInit();
    if(!InpEnablePersist) return;
    FP_LoadPerf();
+   // apply a learned execution-arm threshold (research/auto-tuning) to live config
+   if(g_perf.learnedExecArm>0.0 && g_perf.learnedExecArm<=1.0)
+      g_cfg.execProbArm = g_perf.learnedExecArm;
 }
 
 void FalconPersistenceTick()

@@ -21,16 +21,23 @@ double ie_bExp=0, ie_bConv=0, ie_bCreate=0, ie_bAbs=0, ie_bRetr=0, ie_bRet=0;
 int    ie_prevRes=RES_UNRESOLVED;
 // persistent validation-loop state
 double ie_prevPredPrice=0; int ie_prevPredDir=0; double ie_valScore=50.0;
+// multi-bar forward-test of predictions
+int    ie_predPendDir=0; double ie_predPendClose=0; int ie_predBarsLeft=0; bool ie_predActive=false;
 // F16 Engine 1A.7 — persistent liquidation-wave state
 bool   ie_liqActive=false; bool ie_liqIsRetr=false; int ie_liqDir=0;
 double ie_liqTarget=0; double ie_liqInitDist=0;
+
+// SUBSCRIBER: a fresh wave spawn invalidates the prior terminal liquidation.
+void IE_OnWaveSpawn(const FalconEvent &e){ ie_liqActive=false; ie_liqTarget=0; ie_liqInitDist=0; }
 
 void IntelligenceEngineInit()
 {
    ie_bExp=0; ie_bConv=0; ie_bCreate=0; ie_bAbs=0; ie_bRetr=0; ie_bRet=0;
    ie_prevRes=RES_UNRESOLVED;
    ie_prevPredPrice=0; ie_prevPredDir=0; ie_valScore=50.0;
+   ie_predPendDir=0; ie_predPendClose=0; ie_predBarsLeft=0; ie_predActive=false;
    ie_liqActive=false; ie_liqIsRetr=false; ie_liqDir=0; ie_liqTarget=0; ie_liqInitDist=0;
+   FalconSubscribe(EVT_WAVE_SPAWN, IE_OnWaveSpawn);   // event-driven reset
 }
 
 //------------------------------------------------------------------
@@ -302,21 +309,39 @@ void IE_Prediction(FalconIntelligence &x)
 void IE_Validation(FalconIntelligence &x)
 {
    double close1=gClose[1];
-   bool confirmed=false;
-   if(ie_prevPredPrice!=0 && ie_prevPredDir!=DIR_NONE)
-   {
-      // confirmed if price moved toward the predicted destination this bar
-      double prevClose=gClose[2];
-      double moved = close1-prevClose;
-      confirmed = (ie_prevPredDir==DIR_LONG ? moved>0 : moved<0);
-   }
-   ie_valScore = FalconEMA(ie_valScore, confirmed?100.0:0.0, 10);
-   x.validated       = confirmed;
-   x.validationScore = FalconClamp(ie_valScore,0,100);
+   double atr=MathMax(g_state.physics.atr,1e-10);
 
-   // store this bar's prediction for next-bar validation
-   ie_prevPredPrice = x.predictionPrice;
-   ie_prevPredDir   = (x.predictionPrice!=0 ? (x.predictionPrice>close1?DIR_LONG:DIR_SHORT) : DIR_NONE);
+   // MULTI-BAR FORWARD TEST: a prediction is confirmed if price travels a
+   // meaningful distance (>=0.5 ATR) in the predicted direction within a
+   // horizon; it is a miss if the horizon elapses without that move. This
+   // replaces the noisy single-bar check that pinned the score low in ranges.
+   if(ie_predActive)
+   {
+      double move = close1 - ie_predPendClose;
+      double favorable = (ie_predPendDir==DIR_LONG ? move : -move);
+      bool resolved=false, hit=false;
+      if(favorable >= atr*0.5){ resolved=true; hit=true; }
+      else
+      {
+         ie_predBarsLeft--;
+         if(ie_predBarsLeft<=0){ resolved=true; hit=(favorable>0.0); }
+      }
+      if(resolved)
+      {
+         ie_valScore = FalconEMA(ie_valScore, hit?100.0:0.0, 8);
+         x.validated = hit;
+         ie_predActive=false;
+      }
+   }
+   // open a new forward-test when none is pending and we have a prediction
+   if(!ie_predActive && x.predictionPrice!=0.0)
+   {
+      ie_predPendDir   = (x.predictionPrice>close1?DIR_LONG:DIR_SHORT);
+      ie_predPendClose = close1;
+      ie_predBarsLeft  = 6;          // horizon in bars
+      ie_predActive    = true;
+   }
+   x.validationScore = FalconClamp(ie_valScore,0,100);
 }
 
 //------------------------------------------------------------------

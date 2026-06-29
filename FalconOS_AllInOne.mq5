@@ -4,7 +4,7 @@
 //|   SINGLE-FILE BUILD (kernel + 6 engines + EA, auto-combined).     |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "2.01"
+#property version   "2.10"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -541,6 +541,12 @@ struct FalconNetwork
    int    edgeCount;
    double conversationWeight;   // aggregate dialogue intensity 0..100
    int    connections;          // total active connections
+   // conversation route (pathfinding): ordered authoritative nodes ahead of
+   // price in the network-bias direction — the path price is likely to travel.
+   int    pathIdx[32];
+   int    pathCount;
+   int    nextNodeIdx;          // nearest authoritative node ahead
+   double nextNodePrice;
 };
 
 //==================================================================
@@ -1134,10 +1140,27 @@ struct FalconEventBus
 
 FalconEventBus g_bus;
 
+//==================================================================
+// SUBSCRIBERS — real publish/subscribe. Modules register a handler
+// for an event type (or EVT_NONE = all). FalconPublish dispatches
+// synchronously so reactions are deterministic within the bar.
+//==================================================================
+typedef void (*FalconEventHandler)(const FalconEvent &e);
+#define FALCON_MAX_SUBS 32
+struct FalconSub { int type; FalconEventHandler handler; };
+FalconSub g_subs[FALCON_MAX_SUBS];
+int       g_subCount=0;
+
+void FalconSubscribe(const int type, FalconEventHandler h)
+{
+   if(g_subCount<FALCON_MAX_SUBS){ g_subs[g_subCount].type=type; g_subs[g_subCount].handler=h; g_subCount++; }
+}
+
 void FalconBusInit()
 {
    g_bus.head  = 0;
    g_bus.total = 0;
+   g_subCount  = 0;
    for(int i=0;i<32;i++) g_bus.counts[i]=0;
    for(int i=0;i<FALCON_EVT_RING;i++)
    {
@@ -1149,9 +1172,9 @@ void FalconBusInit()
 }
 
 //------------------------------------------------------------------
-// Publish an event. Stored in the ring and counted. Subscribers
-// poll the bus inside the pipeline (deterministic, no callbacks in
-// MQL5), keeping the OS single-threaded and reproducible.
+// Publish an event: store in the ring, count it, and DISPATCH to any
+// registered subscribers (pub/sub). Modules react to events instead
+// of polling; dispatch is synchronous to stay deterministic.
 //------------------------------------------------------------------
 void FalconPublish(const int type, const double value=0.0, const string note="")
 {
@@ -1165,6 +1188,10 @@ void FalconPublish(const int type, const double value=0.0, const string note="")
    g_bus.head = (g_bus.head + 1) % FALCON_EVT_RING;
    g_bus.total++;
    if(type>=0 && type<32) g_bus.counts[type]++;
+
+   for(int i=0;i<g_subCount;i++)
+      if(g_subs[i].type==type || g_subs[i].type==EVT_NONE)
+         g_subs[i].handler(e);
 }
 
 //------------------------------------------------------------------
@@ -1451,6 +1478,9 @@ void FalconPersistenceInit()
    FalconPerfInit();
    if(!InpEnablePersist) return;
    FP_LoadPerf();
+   // apply a learned execution-arm threshold (research/auto-tuning) to live config
+   if(g_perf.learnedExecArm>0.0 && g_perf.learnedExecArm<=1.0)
+      g_cfg.execProbArm = g_perf.learnedExecArm;
 }
 
 void FalconPersistenceTick()
@@ -1516,12 +1546,39 @@ double me_protSw=0, me_protSw2=0, me_indOrig=0, me_indExt=0;
 bool   me_indBrk=false;
 int    me_recBrk=0;  bool me_recArm=true;
 int    me_waveSpawnBar=0;
+// entry-cycle recursion tracking (ported from F16 spawn engine)
+int    me_entryCycle=0; int me_waveDepth=0; bool me_isRecursive=false;
+bool   me_recursiveComplete=false; int me_recursiveFiredBar=-1; int me_prevPstForCycle=0;
 
 // HTF rung labels (M1 M3 M5 M15 H1 H4 chart) and periods
 ENUM_TIMEFRAMES me_htfTF[7];
 int             me_htfDirState[7];
 double          me_htfOrigin[7];
 double          me_htfExtreme[7];
+
+//==================================================================
+// PER-TIMEFRAME CURVE FSM — a REAL wave engine run on each rung so the
+// HTF stack / curve tree reflect genuine nested curves (dir + phase +
+// completion + recursion per timeframe), not just a direction read.
+//==================================================================
+struct TFCurve
+{
+   bool   init;
+   double vel, velPrev, acc, accPrev, csm, csmPrev;
+   double curSH, curSL, prSH, prSL, lastP, prevP;
+   int    lastD, prevD;
+   int    dir;
+   double ft, fb, p4h, p4l, inv, tgt, cycH, cycL;
+   int    pst, lastDirSeen;
+   bool   bos1, bos2;
+   double protSw, protSw2;
+   int    recBrk; bool recArm;
+   int    spawnBar;
+   // outputs
+   int    oDir, oPhase, oRecBrk;
+   double oCompletion, oOrigin, oExtreme, oObjective, oDom;
+};
+TFCurve g_tfCurve[7];
 
 void MarketEngineInit()
 {
@@ -1536,6 +1593,8 @@ void MarketEngineInit()
    me_bos1=false; me_bos2=false; me_protSw=0; me_protSw2=0;
    me_indOrig=0; me_indExt=0; me_indBrk=false;
    me_recBrk=0; me_recArm=true;
+   me_entryCycle=0; me_waveDepth=0; me_isRecursive=false;
+   me_recursiveComplete=false; me_recursiveFiredBar=-1; me_prevPstForCycle=0;
 
    me_obCount=0;
 
@@ -1543,6 +1602,12 @@ void MarketEngineInit()
    me_htfTF[3]=PERIOD_M30; me_htfTF[4]=PERIOD_H1;  me_htfTF[5]=PERIOD_H4;
    me_htfTF[6]=_Period;
    for(int i=0;i<7;i++){ me_htfDirState[i]=0; me_htfOrigin[i]=0; me_htfExtreme[i]=0; }
+   for(int i=0;i<7;i++)
+   {
+      ZeroMemory(g_tfCurve[i]);
+      g_tfCurve[i].init=false; g_tfCurve[i].lastD=0; g_tfCurve[i].prevD=0;
+      g_tfCurve[i].dir=0; g_tfCurve[i].pst=0; g_tfCurve[i].lastDirSeen=0; g_tfCurve[i].recArm=true;
+   }
 }
 
 //==================================================================
@@ -1838,6 +1903,8 @@ void ME_UpdateWave()
       double rng = (me_prSH!=0 && me_prSL!=0) ? MathAbs(me_prSH-me_prSL) : atr*5.0;
       me_tgt = (nd==1 ? hi+rng : lo-rng);
       me_waveSpawnBar = g_barCounter;
+      me_entryCycle=0; me_waveDepth=0; me_isRecursive=false; me_recursiveComplete=false;
+      me_recursiveFiredBar=-1; me_prevPstForCycle=0;
       FalconPublish(EVT_WAVE_SPAWN, nd);
    }
    if(me_dir==1)  me_cycH = (me_cycH==0?gHigh[1]:MathMax(me_cycH,gHigh[1]));
@@ -1918,6 +1985,24 @@ void ME_UpdateWave()
    if(phase==5 && me_dir==-1) phase=6;
    if(phase==13 && me_dir==-1) phase=14;
 
+   // --- ENTRY-CYCLE / RECURSION DEPTH (F16 spawn-engine port) ---
+   // Each completed terminal recursion (the return confirming after an
+   // induction-liquidation sequence) is one Wyckoff "shift". Count them,
+   // capped at 4 (spring/test/LPS1/LPS2). A fresh return that holds advances
+   // the entry-cycle generation; compression decides how fast they stack.
+   bool enteredReturn = ((me_pst==13) && me_prevPstForCycle!=13);
+   bool freshFire = enteredReturn &&
+                    (me_recursiveFiredBar<0 || (g_barCounter-me_recursiveFiredBar) > g_cfg.structLen);
+   if(freshFire)
+   {
+      me_entryCycle = MathMin(me_entryCycle+1, 4);
+      me_waveDepth  = me_entryCycle;
+      me_isRecursive= (me_entryCycle>0);
+      me_recursiveComplete = true;
+      me_recursiveFiredBar = g_barCounter;
+   }
+   me_prevPstForCycle = me_pst;
+
    // wave progress mapping
    double wp = (me_pst==0?5.0:me_pst==1?15.0:me_pst==2?25.0:me_pst==3?33.0:me_pst==4?42.0:
                 me_pst==5?55.0:me_pst==7?65.0:me_pst==8?75.0:me_pst==9?85.0:me_pst==10?90.0:
@@ -1943,7 +2028,9 @@ void ME_UpdateWave()
    w.cycleLow         = me_cycL;
    w.recursionBreaks  = me_recBrk;
    w.dominanceTransfer= recDom;
-   w.recursiveComplete= (phase==PH_DEMAND_RETURN || phase==PH_SUPPLY_RETURN);
+   w.recursiveComplete= me_recursiveComplete;
+   w.entryCycle       = me_entryCycle;
+   w.waveDepth        = me_waveDepth;
 
    // discrete sub-state scores (spec MarketState.Wave members) — derived from
    // the physics/geometry, peaking in their respective lifecycle windows.
@@ -2145,36 +2232,132 @@ void ME_UpdateSupplyDemand()
 //==================================================================
 // 7. HTF STACK  (fixed M1·M5·M15·M30·H1·H4 + chart; fractal align)
 //==================================================================
-int ME_TfDir(const ENUM_TIMEFRAMES tf, const int idx)
+int ME_TFCurve(const ENUM_TIMEFRAMES tf, const int idx)
 {
-   int pv = g_cfg.pivotLen;
-   double h[],l[],c[];
-   ArraySetAsSeries(h,true); ArraySetAsSeries(l,true); ArraySetAsSeries(c,true);
-   int need = pv*2+50;
-   if(CopyHigh(_Symbol,tf,0,need,h)<need) return(me_htfDirState[idx]);
-   if(CopyLow (_Symbol,tf,0,need,l)<need) return(me_htfDirState[idx]);
-   if(CopyClose(_Symbol,tf,0,need,c)<need) return(me_htfDirState[idx]);
+   int pv = g_cfg.structLen;
+   int need = pv*2 + g_cfg.atrLen + 60;
+   double h[],l[],c[],o[];
+   ArraySetAsSeries(h,true); ArraySetAsSeries(l,true);
+   ArraySetAsSeries(c,true); ArraySetAsSeries(o,true);
+   if(CopyHigh(_Symbol,tf,0,need,h)<need) return(g_tfCurve[idx].oDir);
+   if(CopyLow (_Symbol,tf,0,need,l)<need) return(g_tfCurve[idx].oDir);
+   if(CopyClose(_Symbol,tf,0,need,c)<need) return(g_tfCurve[idx].oDir);
+   if(CopyOpen (_Symbol,tf,0,need,o)<need) return(g_tfCurve[idx].oDir);
 
-   // most recent confirmed pivot
-   double sh=0,sl=0;
-   for(int i=pv+1;i<need-pv;i++)
+   // ATR proxy on this TF (mean true range over atrLen)
+   double atr=0; for(int i=1;i<=g_cfg.atrLen;i++) atr+=(h[i]-l[i]); atr/=MathMax(g_cfg.atrLen,1); if(atr<=0) atr=1e-10;
+   double close1=c[1];
+
+   // physics EMA chain (advanced once per chart bar on this TF's last delta)
+   double d = c[1]-c[2];
+   if(!g_tfCurve[idx].init)
+   { g_tfCurve[idx].vel=d; g_tfCurve[idx].velPrev=d; g_tfCurve[idx].acc=0; g_tfCurve[idx].accPrev=0; g_tfCurve[idx].csm=0; g_tfCurve[idx].csmPrev=0; g_tfCurve[idx].init=true; }
+   else
    {
-      bool isH=true,isL=true;
-      for(int k=1;k<=pv;k++)
-      {
-         if(h[i]<=h[i+k]||h[i]<=h[i-k]) isH=false;
-         if(l[i]>=l[i+k]||l[i]>=l[i-k]) isL=false;
-      }
-      if(isH && sh==0) sh=h[i];
-      if(isL && sl==0) sl=l[i];
-      if(sh!=0 && sl!=0) break;
+      g_tfCurve[idx].velPrev=g_tfCurve[idx].vel;
+      g_tfCurve[idx].vel=FalconEMA(g_tfCurve[idx].vel,d,3);
+      g_tfCurve[idx].accPrev=g_tfCurve[idx].acc;
+      g_tfCurve[idx].acc=g_tfCurve[idx].vel-g_tfCurve[idx].velPrev;
+      double cv=g_tfCurve[idx].acc-g_tfCurve[idx].accPrev;
+      g_tfCurve[idx].csmPrev=g_tfCurve[idx].csm;
+      g_tfCurve[idx].csm=FalconEMA(g_tfCurve[idx].csm,cv,3);
    }
-   int dir = me_htfDirState[idx];
-   double origin = me_htfOrigin[idx];
-   if(sh!=0 && c[1]>sh && dir!=1){ dir=1; origin=(sl!=0?sl:l[1]); }
-   if(sl!=0 && c[1]<sl && dir!=-1){ dir=-1; origin=(sh!=0?sh:h[1]); }
-   me_htfDirState[idx]=dir; me_htfOrigin[idx]=origin;
-   return(origin!=0 ? (c[1]>origin?1:c[1]<origin?-1:dir) : dir);
+   // efficiency / displacement on this TF
+   int eff=g_cfg.effLen;
+   double mv=MathAbs(c[1]-c[1+eff]); double ps=0; for(int i=1;i<=eff;i++) ps+=MathAbs(c[i]-c[i+1]);
+   double efficiency=(ps>0?mv/ps:0.0);
+   double disp=(h[1]-l[1])/atr;
+   bool bullImp=(efficiency>g_cfg.effThresh && g_tfCurve[idx].vel>g_tfCurve[idx].velPrev && g_tfCurve[idx].acc>0 && c[1]>o[1] && disp>g_cfg.dispThresh);
+   bool bearImp=(efficiency>g_cfg.effThresh && g_tfCurve[idx].vel<g_tfCurve[idx].velPrev && g_tfCurve[idx].acc<0 && c[1]<o[1] && disp>g_cfg.dispThresh);
+   bool bullDec=(MathAbs(g_tfCurve[idx].acc)<MathAbs(g_tfCurve[idx].accPrev)*0.8 && g_tfCurve[idx].vel>0);
+   bool bearDec=(MathAbs(g_tfCurve[idx].acc)<MathAbs(g_tfCurve[idx].accPrev)*0.8 && g_tfCurve[idx].vel<0);
+
+   // pivots / structure at center
+   int center=pv+1; double eP=0; int eD=0;
+   bool isH=true,isL=true;
+   for(int k=1;k<=pv;k++){ if(h[center]<=h[center+k]||h[center]<=h[center-k]) isH=false; if(l[center]>=l[center+k]||l[center]>=l[center-k]) isL=false; }
+   if(isH){ eP=h[center]; eD=1; } else if(isL){ eP=l[center]; eD=-1; }
+   if(eD==1){ g_tfCurve[idx].prSH=(g_tfCurve[idx].curSH==0?h[center]:g_tfCurve[idx].curSH); g_tfCurve[idx].curSH=h[center]; }
+   else if(eD==-1){ g_tfCurve[idx].prSL=(g_tfCurve[idx].curSL==0?l[center]:g_tfCurve[idx].curSL); g_tfCurve[idx].curSL=l[center]; }
+   if(eD!=0){ g_tfCurve[idx].prevP=g_tfCurve[idx].lastP; g_tfCurve[idx].prevD=g_tfCurve[idx].lastD; g_tfCurve[idx].lastP=eP; g_tfCurve[idx].lastD=eD; }
+
+   bool bullCH=(g_tfCurve[idx].prSH!=0 && close1>g_tfCurve[idx].prSH+atr*g_cfg.chochBufferATR);
+   bool bearCH=(g_tfCurve[idx].prSL!=0 && close1<g_tfCurve[idx].prSL-atr*g_cfg.chochBufferATR);
+   bool eLong =(isH && g_tfCurve[idx].prevD==-1 && (g_tfCurve[idx].lastP-g_tfCurve[idx].prevP)>atr*g_cfg.impulseAtrMult);
+   bool eShort=(isL && g_tfCurve[idx].prevD== 1 && (g_tfCurve[idx].prevP-g_tfCurve[idx].lastP)>atr*g_cfg.impulseAtrMult);
+
+   bool hasCtx=(g_tfCurve[idx].dir!=0 && g_tfCurve[idx].ft!=0);
+   bool flipUp=(g_tfCurve[idx].dir==-1 && bullCH);
+   bool flipDn=(g_tfCurve[idx].dir==1  && bearCH);
+   bool isRev =(eLong&&g_tfCurve[idx].dir==-1)||(eShort&&g_tfCurve[idx].dir==1)||flipUp||flipDn;
+   bool spawn =(eLong||eShort||flipUp||flipDn)&&(!hasCtx||isRev);
+   if(spawn)
+   {
+      int nd=eLong?1:eShort?-1:flipUp?1:-1;
+      double hi=MathMax(g_tfCurve[idx].lastP,g_tfCurve[idx].prevP);
+      double lo=MathMin(g_tfCurve[idx].lastP,g_tfCurve[idx].prevP);
+      g_tfCurve[idx].dir=nd; g_tfCurve[idx].ft=hi; g_tfCurve[idx].fb=lo; g_tfCurve[idx].p4h=hi; g_tfCurve[idx].p4l=lo;
+      g_tfCurve[idx].cycH=h[1]; g_tfCurve[idx].cycL=l[1]; g_tfCurve[idx].inv=(nd==1?lo:hi);
+      double rng=(g_tfCurve[idx].prSH!=0&&g_tfCurve[idx].prSL!=0)?MathAbs(g_tfCurve[idx].prSH-g_tfCurve[idx].prSL):atr*5.0;
+      g_tfCurve[idx].tgt=(nd==1?hi+rng:lo-rng); g_tfCurve[idx].spawnBar=g_barCounter;
+   }
+   if(g_tfCurve[idx].dir==1)  g_tfCurve[idx].cycH=(g_tfCurve[idx].cycH==0?h[1]:MathMax(g_tfCurve[idx].cycH,h[1]));
+   if(g_tfCurve[idx].dir==-1) g_tfCurve[idx].cycL=(g_tfCurve[idx].cycL==0?l[1]:MathMin(g_tfCurve[idx].cycL,l[1]));
+
+   bool reset=(g_tfCurve[idx].dir!=g_tfCurve[idx].lastDirSeen); g_tfCurve[idx].lastDirSeen=g_tfCurve[idx].dir;
+   if(reset){ g_tfCurve[idx].bos1=false; g_tfCurve[idx].bos2=false; g_tfCurve[idx].protSw=0; g_tfCurve[idx].protSw2=0; }
+   if(g_tfCurve[idx].dir==1 && isL){ g_tfCurve[idx].protSw2=g_tfCurve[idx].protSw; g_tfCurve[idx].protSw=l[center]; }
+   if(g_tfCurve[idx].dir==-1&& isH){ g_tfCurve[idx].protSw2=g_tfCurve[idx].protSw; g_tfCurve[idx].protSw=h[center]; }
+   bool oppBOS=(g_tfCurve[idx].dir==1 && g_tfCurve[idx].protSw!=0 && close1<g_tfCurve[idx].protSw)||(g_tfCurve[idx].dir==-1 && g_tfCurve[idx].protSw!=0 && close1>g_tfCurve[idx].protSw);
+   if(!g_tfCurve[idx].bos1 && oppBOS) g_tfCurve[idx].bos1=true;
+
+   int wdir=(g_tfCurve[idx].inv!=0?(close1>g_tfCurve[idx].inv?1:close1<g_tfCurve[idx].inv?-1:g_tfCurve[idx].dir):g_tfCurve[idx].dir);
+   bool atFlip=(g_tfCurve[idx].ft!=0&&g_tfCurve[idx].fb!=0&&close1<=g_tfCurve[idx].ft&&close1>=g_tfCurve[idx].fb);
+   bool atExtreme=(wdir==1?h[1]>=(g_tfCurve[idx].cycH==0?h[1]:g_tfCurve[idx].cycH):wdir==-1?l[1]<=(g_tfCurve[idx].cycL==0?l[1]:g_tfCurve[idx].cycL):false);
+   double extr=(wdir==1?(g_tfCurve[idx].cycH==0?close1:g_tfCurve[idx].cycH):(g_tfCurve[idx].cycL==0?close1:g_tfCurve[idx].cycL));
+   bool extended=(g_tfCurve[idx].inv!=0 && MathAbs(extr-g_tfCurve[idx].inv)>atr*1.5);
+   bool expanding=eLong||eShort||(wdir==1?bullImp:bearImp);
+   bool momDecaying=(g_tfCurve[idx].dir==1?bullDec:bearDec);
+   bool momCounter =(g_tfCurve[idx].dir==1?bearImp:bullImp);
+   double convScore=MathMin(MathAbs(g_tfCurve[idx].csm)/MathMax(atr*g_cfg.convMult,1e-10)*50.0,100.0);
+   bool physConv=convScore>35.0, physTransfer=convScore>48.0;
+
+   bool phase2CH=(g_tfCurve[idx].dir==1&&bearCH)||(g_tfCurve[idx].dir==-1&&bullCH);
+   if(reset||(atExtreme&&extended)){ g_tfCurve[idx].recBrk=0; g_tfCurve[idx].recArm=true; }
+   if((g_tfCurve[idx].dir==1&&isH)||(g_tfCurve[idx].dir==-1&&isL)) g_tfCurve[idx].recArm=true;
+   if((phase2CH||oppBOS)&&g_tfCurve[idx].recArm&&!atExtreme){ g_tfCurve[idx].recBrk++; g_tfCurve[idx].recArm=false; }
+   double compIdx=FalconClamp((1.0-MathMin(disp/MathMax(g_cfg.dispThresh,1e-10),1.0))*60.0+(1.0-MathMin(efficiency/MathMax(g_cfg.effThresh,1e-10),1.0))*40.0,0,100);
+   double recDom=MathMin(MathMax(g_tfCurve[idx].recBrk*(30.0-compIdx*0.15),0.0),100.0);
+   bool transferDone=recDom>=50.0;
+
+   if(reset) g_tfCurve[idx].pst=0;
+   if(g_tfCurve[idx].dir!=0 && !reset)
+   {
+      int pst=g_tfCurve[idx].pst;
+      if(pst==0&&expanding) pst=1;
+      if(pst==1&&!atExtreme&&momDecaying&&physConv) pst=2;
+      if(pst==2&&!atExtreme&&momCounter&&physTransfer) pst=3;
+      if(pst==3&&!atExtreme&&g_tfCurve[idx].bos1&&physTransfer) pst=4;
+      if(pst>=1&&pst<=7&&atExtreme&&extended) pst=5;
+      if(pst==5&&!atExtreme&&g_tfCurve[idx].recBrk>=1) pst=7;
+      if(pst==7&&transferDone) pst=8;
+      if(pst==8&&atFlip) pst=9;
+      if(pst==9&&((g_tfCurve[idx].dir==1&&bullImp)||(g_tfCurve[idx].dir==-1&&bearImp))) pst=10;
+      if(pst==10&&oppBOS) pst=11;
+      if(pst==11&&((g_tfCurve[idx].dir==1&&l[1]<g_tfCurve[idx].fb)||(g_tfCurve[idx].dir==-1&&h[1]>g_tfCurve[idx].ft))) pst=12;
+      if(pst==12&&((g_tfCurve[idx].dir==1&&bullCH)||(g_tfCurve[idx].dir==-1&&bearCH))) pst=13;
+      g_tfCurve[idx].pst=pst;
+   }
+   int phase=g_tfCurve[idx].pst;
+   if(phase==5 && g_tfCurve[idx].dir==-1) phase=6;
+   if(phase==13&& g_tfCurve[idx].dir==-1) phase=14;
+   double wp=(g_tfCurve[idx].pst==0?5.0:g_tfCurve[idx].pst==1?15.0:g_tfCurve[idx].pst==2?25.0:g_tfCurve[idx].pst==3?33.0:g_tfCurve[idx].pst==4?42.0:g_tfCurve[idx].pst==5?55.0:g_tfCurve[idx].pst==7?65.0:g_tfCurve[idx].pst==8?75.0:g_tfCurve[idx].pst==9?85.0:g_tfCurve[idx].pst==10?90.0:g_tfCurve[idx].pst==11?94.0:g_tfCurve[idx].pst==12?97.0:100.0);
+
+   g_tfCurve[idx].oDir=wdir; g_tfCurve[idx].oPhase=phase; g_tfCurve[idx].oCompletion=wp;
+   g_tfCurve[idx].oOrigin=g_tfCurve[idx].inv; g_tfCurve[idx].oExtreme=extr; g_tfCurve[idx].oObjective=g_tfCurve[idx].tgt;
+   g_tfCurve[idx].oRecBrk=g_tfCurve[idx].recBrk; g_tfCurve[idx].oDom=recDom;
+   me_htfDirState[idx]=wdir; me_htfOrigin[idx]=g_tfCurve[idx].inv;
+   return(wdir);
 }
 
 void ME_UpdateHTF()
@@ -2183,17 +2366,17 @@ void ME_UpdateHTF()
    int bull=0, bear=0;
    for(int i=0;i<7;i++)
    {
-      int d = ME_TfDir(me_htfTF[i], i);
+      int d = ME_TFCurve(me_htfTF[i], i);   // REAL per-TF wave engine
       h.dir[i]=d;
-      h.beliefs[i]=d;     // per-rung HTF belief mirrors the rung's directional read
-      h.prog[i]=0.0;
+      h.beliefs[i]=d;
+      h.prog[i]=g_tfCurve[i].oCompletion;   // genuine per-TF wave completion
       if(d==1) bull++; else if(d==-1) bear++;
    }
    h.stackDir  = (bull>bear?DIR_LONG:bear>bull?DIR_SHORT:DIR_NONE);
    h.alignment = MathMax(bull,bear)/7.0*100.0;
    h.conflict  = 100.0 - h.alignment;
    h.fractalAgreement = (h.alignment>=66.0);
-   // dominance: highest timeframe agreeing with stack
+   // dominance / owner = highest timeframe whose own curve agrees with the stack
    h.dominance = 4; h.ownerTF=4;
    for(int i=6;i>=0;i--){ if(h.dir[i]==h.stackDir && h.stackDir!=0){ h.dominance=i; h.ownerTF=i; break; } }
 
@@ -2256,6 +2439,33 @@ void MemoryEngineInit()
 {
    mem_count=0;
    for(int i=0;i<7;i++) mem_lastTip[i]=0.0;
+
+   // ---- PERSISTENCE: reload remembered network nodes on boot ----
+   if(InpEnablePersist && FileIsExist(FP_NetworkFile()))
+   {
+      int h=FileOpen(FP_NetworkFile(),FILE_READ|FILE_CSV|FILE_ANSI,',');
+      if(h!=INVALID_HANDLE)
+      {
+         for(int k=0;k<8 && !FileIsEnding(h);k++) FileReadString(h);   // skip header row
+         while(!FileIsEnding(h) && mem_count<FALCON_MAX_NODES)
+         {
+            double px =StringToDouble(FileReadString(h));
+            double mid=StringToDouble(FileReadString(h));
+            int    dir=(int)StringToInteger(FileReadString(h));
+            double sc =StringToDouble(FileReadString(h));
+            int    wt =(int)StringToInteger(FileReadString(h));
+            int    st =(int)StringToInteger(FileReadString(h));
+            int    bb =(int)StringToInteger(FileReadString(h));
+            int    rv =(int)StringToInteger(FileReadString(h));
+            if(px==0.0 && mid==0.0) continue;
+            mem_px[mem_count]=px; mem_mid[mem_count]=mid; mem_dir[mem_count]=dir;
+            mem_score[mem_count]=sc; mem_weight[mem_count]=wt; mem_state[mem_count]=st;
+            mem_birth[mem_count]=bb; mem_rev[mem_count]=rv; mem_count++;
+         }
+         FileClose(h);
+         FalconInfo("MemoryEngine",StringFormat("restored %d network nodes",mem_count));
+      }
+   }
 }
 
 //------------------------------------------------------------------
@@ -2414,6 +2624,29 @@ void MEM_ComputeNetwork()
    n.connections=connections;
    n.conversationWeight=FalconClamp(convWeight/MathMax(1.0,(double)mem_count)*2.0,0,100);
 
+   // ---- CONVERSATION ROUTE (pathfinding, port of F16 f_pathNodes) ----
+   // Collect unbroken, authoritative nodes that lie AHEAD of price in the
+   // network-bias direction, then sort by distance ascending = the route price
+   // is likely to converse along. nextNode = the nearest one ahead.
+   int pathTmp[32]; int pc=0;
+   for(int i=0;i<mem_count && pc<32;i++)
+   {
+      if(mem_state[i]==2 || MEM_Auth(i)<g_cfg.authMin) continue;
+      bool ahead = (bias==DIR_LONG ? mem_px[i]>close1 : bias==DIR_SHORT ? mem_px[i]<close1 : false);
+      if(ahead) pathTmp[pc++]=i;
+   }
+   // insertion sort by distance to price (ascending)
+   for(int a=1;a<pc;a++)
+   {
+      int key=pathTmp[a]; double kd=MathAbs(close1-mem_px[key]); int b=a-1;
+      while(b>=0 && MathAbs(close1-mem_px[pathTmp[b]])>kd){ pathTmp[b+1]=pathTmp[b]; b--; }
+      pathTmp[b+1]=key;
+   }
+   n.pathCount=pc;
+   for(int i=0;i<pc;i++) n.pathIdx[i]=pathTmp[i];
+   n.nextNodeIdx   = (pc>0? pathTmp[0] : -1);
+   n.nextNodePrice = (pc>0? mem_px[pathTmp[0]] : 0.0);
+
    g_state.network=n;
 }
 
@@ -2437,16 +2670,23 @@ void MEM_ComputeCurve()
    c.life        = FalconClamp(100.0 - w.completion*0.6 - g_state.physics.compression*0.4,0,100);
    c.energy      = w.energy;
 
-   // ---- EXPLICIT CURVE TREE (root → parent → children) ----
-   // root = the owning HTF curve (highest agreeing timeframe); parent = chart
-   // wave; children = the recursive sub-waves spawned inside it.
+   // ---- EXPLICIT CURVE TREE (root -> parent -> children) from REAL per-TF curves ----
+   // root = the owning HTF curve; parent = the next lower agreeing TF; children
+   // = the recursive sub-waves inside. Built from the genuine per-TF wave engine.
    c.ownerTF       = h.ownerTF;
-   c.rootOrigin    = (h.ownerTF>=0 && h.ownerTF<7 ? me_htfOrigin[h.ownerTF] : w.origin);
-   c.rootExtreme   = w.extreme;
-   c.parentDir     = w.direction;
-   c.parentOrigin  = w.origin;
-   c.parentExtreme = w.extreme;
-   c.emergentNodes = w.recursionBreaks;   // each recursion break births an emergent node
+   int ot = (h.ownerTF>=0 && h.ownerTF<7)? h.ownerTF : 4;
+   c.rootOrigin    = g_tfCurve[ot].oOrigin;
+   c.rootExtreme   = g_tfCurve[ot].oExtreme;
+   c.rootDir       = g_tfCurve[ot].oDir;
+   int parentTF    = (ot>0? ot-1 : ot);
+   c.parentDir     = g_tfCurve[parentTF].oDir;
+   c.parentOrigin  = g_tfCurve[parentTF].oOrigin;
+   c.parentExtreme = g_tfCurve[parentTF].oExtreme;
+   // emergent nodes = recursive breaks accumulated across the lower (child) TFs
+   int emergent=0; for(int i=0;i<ot;i++) emergent+=g_tfCurve[i].oRecBrk;
+   c.emergentNodes = emergent;
+   c.emergentPhase = g_tfCurve[ot].oPhase;
+   c.evolution     = g_tfCurve[ot].oDom;
 
    g_state.curve=c;
 }
@@ -2465,10 +2705,8 @@ void MEM_ComputeWaveMatrix()
    for(int i=0;i<7;i++)
    {
       wm.dir[i]=h.dir[i];
-      // only the chart rung has a true phase from the FSM; others approximate
-      // their phase from direction + alignment (progress proxy).
-      wm.phase[i]=(i==6 ? g_state.wave.phase : (h.dir[i]==DIR_NONE?PH_P4_ORIGIN:PH_EXPANSION));
-      wm.progress[i]=h.prog[i];
+      wm.phase[i]=g_tfCurve[i].oPhase;     // genuine per-TF wave phase
+      wm.progress[i]=g_tfCurve[i].oCompletion;
       if(h.dir[i]==DIR_LONG) bull++; else if(h.dir[i]==DIR_SHORT) bear++;
       energy += (h.dir[i]!=DIR_NONE?1.0:0.0);
    }
@@ -2634,16 +2872,23 @@ double ie_bExp=0, ie_bConv=0, ie_bCreate=0, ie_bAbs=0, ie_bRetr=0, ie_bRet=0;
 int    ie_prevRes=RES_UNRESOLVED;
 // persistent validation-loop state
 double ie_prevPredPrice=0; int ie_prevPredDir=0; double ie_valScore=50.0;
+// multi-bar forward-test of predictions
+int    ie_predPendDir=0; double ie_predPendClose=0; int ie_predBarsLeft=0; bool ie_predActive=false;
 // F16 Engine 1A.7 — persistent liquidation-wave state
 bool   ie_liqActive=false; bool ie_liqIsRetr=false; int ie_liqDir=0;
 double ie_liqTarget=0; double ie_liqInitDist=0;
+
+// SUBSCRIBER: a fresh wave spawn invalidates the prior terminal liquidation.
+void IE_OnWaveSpawn(const FalconEvent &e){ ie_liqActive=false; ie_liqTarget=0; ie_liqInitDist=0; }
 
 void IntelligenceEngineInit()
 {
    ie_bExp=0; ie_bConv=0; ie_bCreate=0; ie_bAbs=0; ie_bRetr=0; ie_bRet=0;
    ie_prevRes=RES_UNRESOLVED;
    ie_prevPredPrice=0; ie_prevPredDir=0; ie_valScore=50.0;
+   ie_predPendDir=0; ie_predPendClose=0; ie_predBarsLeft=0; ie_predActive=false;
    ie_liqActive=false; ie_liqIsRetr=false; ie_liqDir=0; ie_liqTarget=0; ie_liqInitDist=0;
+   FalconSubscribe(EVT_WAVE_SPAWN, IE_OnWaveSpawn);   // event-driven reset
 }
 
 //------------------------------------------------------------------
@@ -2915,21 +3160,39 @@ void IE_Prediction(FalconIntelligence &x)
 void IE_Validation(FalconIntelligence &x)
 {
    double close1=gClose[1];
-   bool confirmed=false;
-   if(ie_prevPredPrice!=0 && ie_prevPredDir!=DIR_NONE)
-   {
-      // confirmed if price moved toward the predicted destination this bar
-      double prevClose=gClose[2];
-      double moved = close1-prevClose;
-      confirmed = (ie_prevPredDir==DIR_LONG ? moved>0 : moved<0);
-   }
-   ie_valScore = FalconEMA(ie_valScore, confirmed?100.0:0.0, 10);
-   x.validated       = confirmed;
-   x.validationScore = FalconClamp(ie_valScore,0,100);
+   double atr=MathMax(g_state.physics.atr,1e-10);
 
-   // store this bar's prediction for next-bar validation
-   ie_prevPredPrice = x.predictionPrice;
-   ie_prevPredDir   = (x.predictionPrice!=0 ? (x.predictionPrice>close1?DIR_LONG:DIR_SHORT) : DIR_NONE);
+   // MULTI-BAR FORWARD TEST: a prediction is confirmed if price travels a
+   // meaningful distance (>=0.5 ATR) in the predicted direction within a
+   // horizon; it is a miss if the horizon elapses without that move. This
+   // replaces the noisy single-bar check that pinned the score low in ranges.
+   if(ie_predActive)
+   {
+      double move = close1 - ie_predPendClose;
+      double favorable = (ie_predPendDir==DIR_LONG ? move : -move);
+      bool resolved=false, hit=false;
+      if(favorable >= atr*0.5){ resolved=true; hit=true; }
+      else
+      {
+         ie_predBarsLeft--;
+         if(ie_predBarsLeft<=0){ resolved=true; hit=(favorable>0.0); }
+      }
+      if(resolved)
+      {
+         ie_valScore = FalconEMA(ie_valScore, hit?100.0:0.0, 8);
+         x.validated = hit;
+         ie_predActive=false;
+      }
+   }
+   // open a new forward-test when none is pending and we have a prediction
+   if(!ie_predActive && x.predictionPrice!=0.0)
+   {
+      ie_predPendDir   = (x.predictionPrice>close1?DIR_LONG:DIR_SHORT);
+      ie_predPendClose = close1;
+      ie_predBarsLeft  = 6;          // horizon in bars
+      ie_predActive    = true;
+   }
+   x.validationScore = FalconClamp(ie_valScore,0,100);
 }
 
 //------------------------------------------------------------------
@@ -3354,6 +3617,20 @@ struct EE_VarResult { double var2; double var3; };
 
 double ee_liqLevels[32]; int ee_liqCount=0;
 double ee_w_rd=0.35, ee_w_dVar2=0.25, ee_w_gamma=0.20, ee_w_liq=0.10, ee_w_sag=0.10;
+// DRDWCT tuning (Symphony RE_Config defaults)
+double ee_partialCloseFrac=0.30, ee_minLotsForPartial=0.03;
+double ee_highLayerQuantile=0.75, ee_logisticK=8.0, ee_logisticPivot=0.26;
+double ee_coreLowerBand=0.45, ee_coreUpperBand=0.55;
+double ee_volSpikeMult=1.2, ee_volSpikeThresh=3.0;
+// persistent bottom-layer (core/sacrificial) state per direction [0]=long [1]=short
+double ee_botPCore[2]={0,0}; int ee_botStatus[2]={0,0}; bool ee_botInit[2]={false,false};
+// event-driven: cooldown bars after a risk breach (set by subscriber)
+int    ee_riskCooldown=0;
+// partial take-profit per-ticket stage tracking
+long   ee_tpTicket[256]; int ee_tpStage[256]; int ee_tpCount=0;
+
+// SUBSCRIBER: react to a risk breach by blocking new entries for a few bars.
+void EE_OnRiskBreach(const FalconEvent &e){ ee_riskCooldown=3; }
 datetime ee_lastBarTime=0, ee_lastLongTrade=0, ee_lastShortTrade=0;
 bool   ee_lastRiskOk=true;
 // Institutional Exit Engine state (Symphony outer-band sweep tracking)
@@ -3365,24 +3642,39 @@ void ExecutionEngineInit()
    ee_lastBarTime=0; ee_lastLongTrade=0; ee_lastShortTrade=0; ee_lastRiskOk=true;
    ee_liqCount=0;
    ee_longOuterBreach=false; ee_shortOuterBreach=false; ee_lastWaveOrigin=0; ee_lastWaveDir=0;
+   ee_riskCooldown=0; ee_tpCount=0;
+   FalconSubscribe(EVT_RISK_BREACH, EE_OnRiskBreach);   // event-driven cooldown
 }
 
 //==================================================================
-// LOT ENGINE (Symphony XAUUSD-style sizing, generalized)
+// LOT ENGINE — symbol-agnostic (uses broker tick value/size; falls
+// back to the configured contract value if the symbol lacks them).
 //==================================================================
+double EE_ValuePerPoint()
+{
+   double tickVal=SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_VALUE);
+   double tickSz =SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_SIZE);
+   if(tickVal>0.0 && tickSz>0.0) return(tickVal/tickSz);   // money per 1.0 lot per price unit
+   return(g_cfg.contractValue);                            // fallback (e.g. XAUUSD model)
+}
+
 double EE_ComputeLots(const double riskCash,const double entry,const double sl)
 {
    double dist=MathAbs(entry-sl);
    if(dist<=0.0) return(0.0);
-   double riskPerLot = dist*g_cfg.contractValue;   // value per price unit per lot
+   double riskPerLot = dist*EE_ValuePerPoint();   // money risked per 1.0 lot at this SL distance
    if(riskPerLot<=0.0) return(0.0);
    double lots=riskCash/riskPerLot;
    double minLot=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);
+   double maxLot=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MAX);
    double lotStep=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP);
    if(lotStep<=0) lotStep=0.01;
+   if(minLot<=0)  minLot=0.01;
    lots=MathFloor(lots/lotStep)*lotStep;
    if(lots<minLot) lots=minLot;
-   return(NormalizeDouble(lots,2));
+   if(maxLot>0 && lots>maxLot) lots=maxLot;
+   int volDigits=(lotStep>=1.0?0:lotStep>=0.1?1:2);
+   return(NormalizeDouble(lots,volDigits));
 }
 
 //==================================================================
@@ -3408,7 +3700,7 @@ bool EE_IsTradeTime()
 //==================================================================
 // DRDWCT MATH
 //==================================================================
-double EE_LotValue(const double lots){ return(lots*g_cfg.contractValue); }
+double EE_LotValue(const double lots){ return(lots*EE_ValuePerPoint()); }
 double EE_RD(const double lots,const double distSL){ return(distSL==0?1e10:lots/distSL); }
 double EE_SAG(const double lots,const double distSL){ return(distSL==0?1e10:(lots*lots)/(distSL*distSL)); }
 double EE_Gamma(const double entry,const double spot,const double lots){ double d=entry-spot; return(d*d*lots); }
@@ -3577,50 +3869,136 @@ bool EE_CloseFull(const ulong ticket)
 }
 
 //==================================================================
-// PER-CAMPAIGN RISK — evaluate one direction's GROSS book.
-//   Returns true if the book is safe; trims micro-bombs in place.
+// PER-CAMPAIGN RISK — full iterative DRDWCT engine for one direction's
+//   GROSS book: normalized multi-metric UDS, vol-spike scaling, the
+//   logistic core/sacrificial bottom-layer classification, and an
+//   ITERATIVE trim loop that removes the worst micro-bomb / highest-UDS
+//   position until VaR + bomb limits clear. Trims are simulated on a
+//   local book and only the final set is applied to the market.
 //==================================================================
+void EE_Normalize(double &src[],const int n,double &dst[])
+{
+   if(n<=0) return;
+   double mn=src[0],mx=src[0];
+   for(int i=1;i<n;i++){ if(src[i]<mn)mn=src[i]; if(src[i]>mx)mx=src[i]; }
+   if(MathAbs(mx-mn)<1e-9){ for(int i=0;i<n;i++) dst[i]=0.0; return; }
+   for(int i=0;i<n;i++) dst[i]=(src[i]-mn)/(mx-mn);
+}
+
+// Build normalized UDS for a local book; returns count and fills met[].
+int EE_BuildMetrics(EE_Position &pos[],const int n,const EE_Market &m,EE_Metrics &met[])
+{
+   if(n<=0) return(0);
+   double rd[64],sg[64],gv[64],lq[64];
+   for(int i=0;i<n;i++)
+   {
+      double sl=(pos[i].sl>0?pos[i].sl:(pos[i].direction<0?m.spot+10.0:m.spot-10.0));
+      double distSL=MathAbs(sl-pos[i].entry);
+      met[i].ticket=pos[i].ticket; met[i].lots=pos[i].lots; met[i].direction=pos[i].direction;
+      met[i].entry=pos[i].entry; met[i].sl=sl; met[i].distSL=distSL;
+      met[i].rd=EE_RD(pos[i].lots,distSL);
+      met[i].sag=EE_SAG(pos[i].lots,distSL);
+      met[i].gammaRaw=EE_Gamma(pos[i].entry,m.spot,pos[i].lots);
+      met[i].gammaVolScaled=EE_GammaVol(met[i].gammaRaw,m.atr15,m.atr30);
+      met[i].liqProx=EE_LiqProx(sl);
+      met[i].dVar2=0;
+      rd[i]=met[i].rd; sg[i]=met[i].sag; gv[i]=met[i].gammaVolScaled; lq[i]=met[i].liqProx;
+   }
+   double rdN[64],sgN[64],gvN[64],lqN[64];
+   EE_Normalize(rd,n,rdN); EE_Normalize(sg,n,sgN); EE_Normalize(gv,n,gvN); EE_Normalize(lq,n,lqN);
+   for(int i=0;i<n;i++)
+      met[i].uds = ee_w_rd*rdN[i] + ee_w_sag*sgN[i] + ee_w_gamma*gvN[i] + ee_w_liq*lqN[i];
+   // vol-spike scaling
+   if(m.atr30>0 && (m.atr15/m.atr30)>ee_volSpikeThresh)
+      for(int i=0;i<n;i++){ double v=met[i].uds*ee_volSpikeMult; met[i].uds=(v>1?1:v); }
+   return(n);
+}
+
+double EE_HighLayerFraction(EE_Metrics &met[],const int n)
+{
+   if(n<=0) return(0.0);
+   int idx[64]; for(int i=0;i<n;i++) idx[i]=i;
+   for(int i=0;i<n-1;i++) for(int j=i+1;j<n;j++) if(met[idx[j]].uds>met[idx[i]].uds){ int t=idx[i];idx[i]=idx[j];idx[j]=t; }
+   int hi=(int)MathMax(1,MathFloor(n*(1.0-ee_highLayerQuantile))); if(hi>n)hi=n;
+   double tot=0,high=0; for(int i=0;i<n;i++) tot+=met[i].uds; if(tot<=0) return(0.0);
+   for(int i=0;i<hi;i++) high+=met[idx[i]].uds;
+   return(high/tot);
+}
+
+void EE_BottomLayer(EE_Metrics &met[],const int n,const int slot)
+{
+   if(n<=0) return;
+   double frac=EE_HighLayerFraction(met,n);
+   double z=ee_logisticK*(frac-ee_logisticPivot);
+   double pCore=1.0/(1.0+MathExp(z));
+   int status;
+   if(ee_botInit[slot])
+   {
+      if(pCore>=ee_coreUpperBand) status=1;
+      else if(pCore<=ee_coreLowerBand) status=0;
+      else status=ee_botStatus[slot];
+   }
+   else status=(pCore>=0.5?1:0);
+   ee_botPCore[slot]=pCore; ee_botStatus[slot]=status; ee_botInit[slot]=true;
+}
+
 bool EE_RunCampaignRisk(const int dir,const EE_Market &m,double &grossLots,double &grossVaR,double &udsMax,bool &anyBomb)
 {
    grossLots=0; grossVaR=0; udsMax=0; anyBomb=false;
    EE_Position pos[64];
    int n=EE_CollectPositions(pos,dir);
    if(n<=0) return(true);
-
    for(int i=0;i<n;i++) grossLots+=pos[i].lots;
 
-   // metrics + micro-bomb detection
-   double rdLimit=g_cfg.rdLimit;
-   int worstIdx=-1; double worstUds=-1;
-   for(int i=0;i<n;i++)
-   {
-      double sl=(pos[i].sl>0?pos[i].sl:(dir<0?m.spot+10.0:m.spot-10.0));
-      double distSL=MathAbs(sl-pos[i].entry);
-      double rd=EE_RD(pos[i].lots,distSL);
-      double sag=EE_SAG(pos[i].lots,distSL);
-      double gam=EE_GammaVol(EE_Gamma(pos[i].entry,m.spot,pos[i].lots),m.atr15,m.atr30);
-      double liq=EE_LiqProx(sl);
-      double uds=ee_w_rd*rd + ee_w_sag*sag*1e-4 + ee_w_gamma*gam*1e-6 + ee_w_liq*liq + ee_w_dVar2*0.0;
-      if(uds>udsMax) udsMax=uds;
-      if(uds>worstUds){ worstUds=uds; worstIdx=i; }
-      if(rd>rdLimit) anyBomb=true;
-   }
-
-   EE_VarResult vr; EE_ComputeVaR(pos,n,m,vr);
-   grossVaR=vr.var3;   // worst-case gross VaR for THIS direction
-
+   int slot=(dir>0?0:1);
    double v2f,v3f; EE_DynamicVarLimits(m.equity,v2f,v3f);
-   double v3Lim=v3f*m.equity;
+   double v3Lim=v3f*m.equity, v2Lim=v2f*m.equity;
+   double minLot=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN); if(minLot<=0)minLot=0.01;
 
-   bool safe=(grossVaR<=v3Lim && !anyBomb);
-   if(!safe && worstIdx>=0)
+   // simulated trims accumulated then applied
+   long   trimTicket[64]; double trimLots[64]; int trimCount=0;
+   int    guard=0, maxIter=n*2+2;
+
+   bool safe=false;
+   while(guard++<maxIter)
    {
-      // trim the worst micro-bomb in this campaign (partial)
-      double closeLots=pos[worstIdx].lots*0.4;
-      if(closeLots<SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN)) closeLots=pos[worstIdx].lots;
-      if(EE_ClosePartial((ulong)pos[worstIdx].ticket,closeLots))
-         FalconPublish(EVT_TRIM,dir,"campaign micro-bomb trim");
+      if(n<=0){ safe=true; break; }
+      EE_Metrics met[64];
+      int mc=EE_BuildMetrics(pos,n,m,met);
+      EE_BottomLayer(met,mc,slot);
+
+      EE_VarResult vr; EE_ComputeVaR(pos,n,m,vr);
+      grossVaR=vr.var3;
+
+      udsMax=0; anyBomb=false; int worst=-1; double worstU=-1; int bombIdx=-1; double bombU=-1;
+      for(int i=0;i<mc;i++)
+      {
+         if(met[i].uds>udsMax) udsMax=met[i].uds;
+         if(met[i].uds>worstU){ worstU=met[i].uds; worst=i; }
+         bool bomb=(met[i].distSL<=0 || (met[i].lots/MathMax(met[i].distSL,1e-9))>g_cfg.rdLimit);
+         if(bomb){ anyBomb=true; if(met[i].uds>bombU){ bombU=met[i].uds; bombIdx=i; } }
+      }
+
+      bool var2Ok=(vr.var2<=v2Lim), var3Ok=(vr.var3<=v3Lim);
+      if(var2Ok && var3Ok && !anyBomb){ safe=true; break; }
+
+      int trim=(bombIdx>=0?bombIdx:worst);
+      if(trim<0){ safe=false; break; }
+
+      double closeLots=(pos[trim].lots>=ee_minLotsForPartial)? pos[trim].lots*ee_partialCloseFrac : pos[trim].lots;
+      if(closeLots<minLot) closeLots=pos[trim].lots;
+      // record + simulate
+      trimTicket[trimCount]=pos[trim].ticket; trimLots[trimCount]=closeLots; trimCount++;
+      double remain=pos[trim].lots-closeLots;
+      if(remain>1e-4){ pos[trim].lots=remain; }
+      else { for(int j=trim;j<n-1;j++) pos[j]=pos[j+1]; n--; }
    }
+
+   // apply the final trim set to the live book
+   for(int i=0;i<trimCount;i++)
+      if(trimLots[i]>0 && EE_ClosePartial((ulong)trimTicket[i],trimLots[i]))
+         FalconPublish(EVT_TRIM,dir,"DRDWCT iterative trim");
+
    return(safe);
 }
 
@@ -3655,6 +4033,58 @@ void EE_UpdateExposure(const EE_Market &m)
 //==================================================================
 // ENTRY — translate the decision action into a sized order.
 //==================================================================
+//==================================================================
+// TERMINAL-AWARE STOP & OWNER-DRIVEN TARGET (ODDE)
+//   Stop sits just beyond the swept terminal extreme (the supply/demand
+//   that price liquidated into), capped so risk stays sane. Target is
+//   inherited from the owner curve hierarchy (FRZ / wave objective),
+//   with secondary/extended targets for partial scale-out.
+//==================================================================
+double EE_TerminalStop(const int dir,const double entry,const double atr)
+{
+   int win=g_cfg.structLen*2+g_cfg.pivotLen;
+   double sl;
+   if(dir==DIR_LONG)
+   {
+      double sweptLow = FalconLowest(1,win);
+      double zoneLow  = (g_state.supplyDemand.demandBot!=0? g_state.supplyDemand.demandBot
+                        : g_state.wave.flipBot!=0? g_state.wave.flipBot : sweptLow);
+      sl = MathMin(sweptLow, zoneLow) - atr*0.5;
+      if(entry-sl > atr*6.0) sl = entry - atr*3.0;   // cap risk if extreme is far
+      if(sl>=entry) sl = entry - atr*1.5;
+   }
+   else
+   {
+      double sweptHigh= FalconHighest(1,win);
+      double zoneHigh = (g_state.supplyDemand.supplyTop!=0? g_state.supplyDemand.supplyTop
+                        : g_state.wave.flipTop!=0? g_state.wave.flipTop : sweptHigh);
+      sl = MathMax(sweptHigh, zoneHigh) + atr*0.5;
+      if(sl-entry > atr*6.0) sl = entry + atr*3.0;
+      if(sl<=entry) sl = entry + atr*1.5;
+   }
+   return(sl);
+}
+
+void EE_OwnerTargets(const int dir,const double entry,const double atr,double &t1,double &t2,double &t3)
+{
+   // T1 = wave objective (owner curve destination, ODDE). T2/T3 extend via the
+   // owner-return target and a further projection, in the trade direction.
+   double obj = g_state.wave.objective;
+   double frz = g_state.frz.targetPrice;
+   if(dir==DIR_LONG)
+   {
+      t1 = (obj>entry ? obj : entry + atr*3.0);
+      t2 = MathMax(t1, (frz>entry?frz:entry+atr*5.0));
+      t3 = MathMax(t2, entry + atr*8.0);
+   }
+   else
+   {
+      t1 = (obj<entry && obj>0 ? obj : entry - atr*3.0);
+      t2 = MathMin(t1, (frz<entry && frz>0 ? frz : entry-atr*5.0));
+      t3 = MathMin(t2, entry - atr*8.0);
+   }
+}
+
 void EE_HandleEntries(const EE_Market &m)
 {
    int action=g_state.exec.action;
@@ -3672,6 +4102,7 @@ void EE_HandleEntries(const EE_Market &m)
    if(!wantBuy && !wantSell) return;
    if(!EE_IsTradeTime()) return;
    if(g_cfg.blockIfBreach && !ee_lastRiskOk) return;
+   if(ee_riskCooldown>0) return;   // event-driven: cooling off after a risk breach
 
    // LATE / NO-ROOM GUARD (symmetric for both sides): never OPEN a fresh
    // campaign into exhaustion — no buying the top, no selling the bottom.
@@ -3693,29 +4124,31 @@ void EE_HandleEntries(const EE_Market &m)
    if(wantBuy && ee_lastLongTrade!=barTime)
    {
       double entry=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
-      double sl=(g_state.wave.origin!=0? g_state.wave.origin-atr*0.25 : close1-atr*1.5);
+      double sl=EE_TerminalStop(DIR_LONG,entry,atr);
+      double t1,t2,t3; EE_OwnerTargets(DIR_LONG,entry,atr,t1,t2,t3);
       double lots=EE_ComputeLots(riskCash,entry,sl);
       if(sl>0 && entry>sl && lots>0 && EE_SendMarketOrder(+1,lots,sl,"FALCON "+FalconActionStr(action)+" L"))
       {
          ee_lastLongTrade=barTime;
          g_state.exec.entry=entry; g_state.exec.stop=sl;
-         g_state.exec.target=g_state.wave.objective; g_state.exec.lots=lots; g_state.exec.riskCash=riskCash;
-         double rr=(MathAbs(entry-sl)>1e-10 && g_state.wave.objective!=0)?MathAbs(g_state.wave.objective-entry)/MathAbs(entry-sl):0.0;
-         g_state.exec.reward=rr;
+         g_state.exec.target=t1; g_state.exec.target2=t2; g_state.exec.target3=t3;
+         g_state.exec.lots=lots; g_state.exec.riskCash=riskCash;
+         g_state.exec.reward=(MathAbs(entry-sl)>1e-10)?MathAbs(t1-entry)/MathAbs(entry-sl):0.0;
       }
    }
    if(wantSell && ee_lastShortTrade!=barTime)
    {
       double entry=SymbolInfoDouble(_Symbol,SYMBOL_BID);
-      double sl=(g_state.wave.origin!=0? g_state.wave.origin+atr*0.25 : close1+atr*1.5);
+      double sl=EE_TerminalStop(DIR_SHORT,entry,atr);
+      double t1,t2,t3; EE_OwnerTargets(DIR_SHORT,entry,atr,t1,t2,t3);
       double lots=EE_ComputeLots(riskCash,entry,sl);
       if(sl>0 && sl>entry && lots>0 && EE_SendMarketOrder(-1,lots,sl,"FALCON "+FalconActionStr(action)+" S"))
       {
          ee_lastShortTrade=barTime;
          g_state.exec.entry=entry; g_state.exec.stop=sl;
-         g_state.exec.target=g_state.wave.objective; g_state.exec.lots=lots; g_state.exec.riskCash=riskCash;
-         double rr=(MathAbs(entry-sl)>1e-10 && g_state.wave.objective!=0)?MathAbs(g_state.wave.objective-entry)/MathAbs(entry-sl):0.0;
-         g_state.exec.reward=rr;
+         g_state.exec.target=t1; g_state.exec.target2=t2; g_state.exec.target3=t3;
+         g_state.exec.lots=lots; g_state.exec.riskCash=riskCash;
+         g_state.exec.reward=(MathAbs(entry-sl)>1e-10)?MathAbs(t1-entry)/MathAbs(entry-sl):0.0;
       }
    }
 }
@@ -3942,6 +4375,49 @@ bool EE_DrawdownProtection()
 }
 
 //==================================================================
+// PARTIAL TAKE-PROFIT / SCALE-OUT — bank a third at T1, a third at T2,
+// and the remainder at T3 (owner-driven targets). Per-ticket stage is
+// tracked so each level fires once.  (state declared with the globals above)
+//==================================================================
+int EE_TPSlot(const long ticket)
+{
+   for(int i=0;i<ee_tpCount;i++) if(ee_tpTicket[i]==ticket) return(i);
+   if(ee_tpCount<256){ ee_tpTicket[ee_tpCount]=ticket; ee_tpStage[ee_tpCount]=0; ee_tpCount++; return(ee_tpCount-1); }
+   return(0);
+}
+
+void EE_ManagePartialTP()
+{
+   double t1=g_state.exec.target, t2=g_state.exec.target2, t3=g_state.exec.target3;
+   double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID), ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
+   int total=PositionsTotal();
+   for(int i=0;i<total;i++)
+   {
+      ulong ticket=PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
+      if(PositionGetInteger(POSITION_MAGIC)!=g_cfg.magic) continue;
+      long type=PositionGetInteger(POSITION_TYPE);
+      double vol=PositionGetDouble(POSITION_VOLUME);
+      int slot=EE_TPSlot((long)ticket);
+      int stage=ee_tpStage[slot];
+
+      if(type==POSITION_TYPE_BUY)
+      {
+         if(stage<1 && t1>0 && bid>=t1){ if(EE_ClosePartial(ticket,vol*0.34)) ee_tpStage[slot]=1; }
+         else if(stage<2 && t2>0 && bid>=t2){ if(EE_ClosePartial(ticket,vol*0.50)) ee_tpStage[slot]=2; }
+         else if(stage<3 && t3>0 && bid>=t3){ if(EE_CloseFull(ticket)) ee_tpStage[slot]=3; }
+      }
+      else
+      {
+         if(stage<1 && t1>0 && ask<=t1){ if(EE_ClosePartial(ticket,vol*0.34)) ee_tpStage[slot]=1; }
+         else if(stage<2 && t2>0 && ask<=t2){ if(EE_ClosePartial(ticket,vol*0.50)) ee_tpStage[slot]=2; }
+         else if(stage<3 && t3>0 && ask<=t3){ if(EE_CloseFull(ticket)) ee_tpStage[slot]=3; }
+      }
+   }
+}
+
+//==================================================================
 // MASTER ENTRY — Execution Engine pipeline step
 //==================================================================
 void ExecutionEngineRun()
@@ -3949,6 +4425,7 @@ void ExecutionEngineRun()
    EE_Market m; EE_BuildMarket(m);
    EE_BuildLiquidity();
    EE_UpdateExposure(m);
+   if(ee_riskCooldown>0) ee_riskCooldown--;   // event-driven cooldown decay
 
    // ---- PER-CAMPAIGN RISK (multi-direction, gross, never netted) ----
    bool longOk=true, shortOk=true;
@@ -3979,8 +4456,9 @@ void ExecutionEngineRun()
    g_state.exec.sessionOpen=EE_IsTradeTime();
    if(!ee_lastRiskOk) FalconPublish(EVT_RISK_BREACH,combinedGrossVaR);
 
-   // ---- TRAILING (manage open winners) ----
+   // ---- TRAILING + PARTIAL TAKE-PROFIT (manage open winners) ----
    EE_Trailing();
+   EE_ManagePartialTP();
 
    // ---- INSTITUTIONAL band tracking, then EXITS, then ENTRIES ----
    EE_UpdateInstitutional();
@@ -4270,6 +4748,19 @@ void VisualizationDeinit()
    ObjectDelete(0,VIZ_OBJ+"_fbot");  ObjectDelete(0,VIZ_OBJ+"_induc");
 }
 
+//------------------------------------------------------------------
+// Tab switching. Press T (or RIGHT arrow) to advance tabs, SHIFT+T
+// (or LEFT arrow) to go back. Wired from the EA's OnChartEvent.
+//------------------------------------------------------------------
+void FalconVizOnChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)
+{
+   if(id!=CHARTEVENT_KEYDOWN) return;
+   int prev=g_cfg.dashboardTab;
+   if(lparam==84 || lparam==39)       g_cfg.dashboardTab = (g_cfg.dashboardTab+1)%12;  // 'T' / RIGHT
+   else if(lparam==37)                g_cfg.dashboardTab = (g_cfg.dashboardTab+11)%12;  // LEFT
+   if(g_cfg.dashboardTab!=prev) VisualizationRun();
+}
+
 #endif // FALCON_VIZ_MQH
 //+------------------------------------------------------------------+
 
@@ -4422,5 +4913,13 @@ void OnTick()
    if(FalconBars() < (2*g_cfg.structLen + 40)) return;
 
    FalconPipeline();
+}
+
+//==================================================================
+// CHART EVENTS — dashboard tab switching (T / arrow keys)
+//==================================================================
+void OnChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)
+{
+   FalconVizOnChartEvent(id,lparam,dparam,sparam);
 }
 //+------------------------------------------------------------------+

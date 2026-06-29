@@ -278,5 +278,18 @@ void VisualizationDeinit()
    ObjectDelete(0,VIZ_OBJ+"_fbot");  ObjectDelete(0,VIZ_OBJ+"_induc");
 }
 
+//------------------------------------------------------------------
+// Tab switching. Press T (or RIGHT arrow) to advance tabs, SHIFT+T
+// (or LEFT arrow) to go back. Wired from the EA's OnChartEvent.
+//------------------------------------------------------------------
+void FalconVizOnChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)
+{
+   if(id!=CHARTEVENT_KEYDOWN) return;
+   int prev=g_cfg.dashboardTab;
+   if(lparam==84 || lparam==39)       g_cfg.dashboardTab = (g_cfg.dashboardTab+1)%12;  // 'T' / RIGHT
+   else if(lparam==37)                g_cfg.dashboardTab = (g_cfg.dashboardTab+11)%12;  // LEFT
+   if(g_cfg.dashboardTab!=prev) VisualizationRun();
+}
+
 #endif // FALCON_VIZ_MQH
 //+------------------------------------------------------------------+

@@ -42,6 +42,20 @@ struct EE_VarResult { double var2; double var3; };
 
 double ee_liqLevels[32]; int ee_liqCount=0;
 double ee_w_rd=0.35, ee_w_dVar2=0.25, ee_w_gamma=0.20, ee_w_liq=0.10, ee_w_sag=0.10;
+// DRDWCT tuning (Symphony RE_Config defaults)
+double ee_partialCloseFrac=0.30, ee_minLotsForPartial=0.03;
+double ee_highLayerQuantile=0.75, ee_logisticK=8.0, ee_logisticPivot=0.26;
+double ee_coreLowerBand=0.45, ee_coreUpperBand=0.55;
+double ee_volSpikeMult=1.2, ee_volSpikeThresh=3.0;
+// persistent bottom-layer (core/sacrificial) state per direction [0]=long [1]=short
+double ee_botPCore[2]={0,0}; int ee_botStatus[2]={0,0}; bool ee_botInit[2]={false,false};
+// event-driven: cooldown bars after a risk breach (set by subscriber)
+int    ee_riskCooldown=0;
+// partial take-profit per-ticket stage tracking
+long   ee_tpTicket[256]; int ee_tpStage[256]; int ee_tpCount=0;
+
+// SUBSCRIBER: react to a risk breach by blocking new entries for a few bars.
+void EE_OnRiskBreach(const FalconEvent &e){ ee_riskCooldown=3; }
 datetime ee_lastBarTime=0, ee_lastLongTrade=0, ee_lastShortTrade=0;
 bool   ee_lastRiskOk=true;
 // Institutional Exit Engine state (Symphony outer-band sweep tracking)
@@ -53,24 +67,39 @@ void ExecutionEngineInit()
    ee_lastBarTime=0; ee_lastLongTrade=0; ee_lastShortTrade=0; ee_lastRiskOk=true;
    ee_liqCount=0;
    ee_longOuterBreach=false; ee_shortOuterBreach=false; ee_lastWaveOrigin=0; ee_lastWaveDir=0;
+   ee_riskCooldown=0; ee_tpCount=0;
+   FalconSubscribe(EVT_RISK_BREACH, EE_OnRiskBreach);   // event-driven cooldown
 }
 
 //==================================================================
-// LOT ENGINE (Symphony XAUUSD-style sizing, generalized)
+// LOT ENGINE — symbol-agnostic (uses broker tick value/size; falls
+// back to the configured contract value if the symbol lacks them).
 //==================================================================
+double EE_ValuePerPoint()
+{
+   double tickVal=SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_VALUE);
+   double tickSz =SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_SIZE);
+   if(tickVal>0.0 && tickSz>0.0) return(tickVal/tickSz);   // money per 1.0 lot per price unit
+   return(g_cfg.contractValue);                            // fallback (e.g. XAUUSD model)
+}
+
 double EE_ComputeLots(const double riskCash,const double entry,const double sl)
 {
    double dist=MathAbs(entry-sl);
    if(dist<=0.0) return(0.0);
-   double riskPerLot = dist*g_cfg.contractValue;   // value per price unit per lot
+   double riskPerLot = dist*EE_ValuePerPoint();   // money risked per 1.0 lot at this SL distance
    if(riskPerLot<=0.0) return(0.0);
    double lots=riskCash/riskPerLot;
    double minLot=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);
+   double maxLot=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MAX);
    double lotStep=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP);
    if(lotStep<=0) lotStep=0.01;
+   if(minLot<=0)  minLot=0.01;
    lots=MathFloor(lots/lotStep)*lotStep;
    if(lots<minLot) lots=minLot;
-   return(NormalizeDouble(lots,2));
+   if(maxLot>0 && lots>maxLot) lots=maxLot;
+   int volDigits=(lotStep>=1.0?0:lotStep>=0.1?1:2);
+   return(NormalizeDouble(lots,volDigits));
 }
 
 //==================================================================
@@ -96,7 +125,7 @@ bool EE_IsTradeTime()
 //==================================================================
 // DRDWCT MATH
 //==================================================================
-double EE_LotValue(const double lots){ return(lots*g_cfg.contractValue); }
+double EE_LotValue(const double lots){ return(lots*EE_ValuePerPoint()); }
 double EE_RD(const double lots,const double distSL){ return(distSL==0?1e10:lots/distSL); }
 double EE_SAG(const double lots,const double distSL){ return(distSL==0?1e10:(lots*lots)/(distSL*distSL)); }
 double EE_Gamma(const double entry,const double spot,const double lots){ double d=entry-spot; return(d*d*lots); }
@@ -265,50 +294,136 @@ bool EE_CloseFull(const ulong ticket)
 }
 
 //==================================================================
-// PER-CAMPAIGN RISK — evaluate one direction's GROSS book.
-//   Returns true if the book is safe; trims micro-bombs in place.
+// PER-CAMPAIGN RISK — full iterative DRDWCT engine for one direction's
+//   GROSS book: normalized multi-metric UDS, vol-spike scaling, the
+//   logistic core/sacrificial bottom-layer classification, and an
+//   ITERATIVE trim loop that removes the worst micro-bomb / highest-UDS
+//   position until VaR + bomb limits clear. Trims are simulated on a
+//   local book and only the final set is applied to the market.
 //==================================================================
+void EE_Normalize(double &src[],const int n,double &dst[])
+{
+   if(n<=0) return;
+   double mn=src[0],mx=src[0];
+   for(int i=1;i<n;i++){ if(src[i]<mn)mn=src[i]; if(src[i]>mx)mx=src[i]; }
+   if(MathAbs(mx-mn)<1e-9){ for(int i=0;i<n;i++) dst[i]=0.0; return; }
+   for(int i=0;i<n;i++) dst[i]=(src[i]-mn)/(mx-mn);
+}
+
+// Build normalized UDS for a local book; returns count and fills met[].
+int EE_BuildMetrics(EE_Position &pos[],const int n,const EE_Market &m,EE_Metrics &met[])
+{
+   if(n<=0) return(0);
+   double rd[64],sg[64],gv[64],lq[64];
+   for(int i=0;i<n;i++)
+   {
+      double sl=(pos[i].sl>0?pos[i].sl:(pos[i].direction<0?m.spot+10.0:m.spot-10.0));
+      double distSL=MathAbs(sl-pos[i].entry);
+      met[i].ticket=pos[i].ticket; met[i].lots=pos[i].lots; met[i].direction=pos[i].direction;
+      met[i].entry=pos[i].entry; met[i].sl=sl; met[i].distSL=distSL;
+      met[i].rd=EE_RD(pos[i].lots,distSL);
+      met[i].sag=EE_SAG(pos[i].lots,distSL);
+      met[i].gammaRaw=EE_Gamma(pos[i].entry,m.spot,pos[i].lots);
+      met[i].gammaVolScaled=EE_GammaVol(met[i].gammaRaw,m.atr15,m.atr30);
+      met[i].liqProx=EE_LiqProx(sl);
+      met[i].dVar2=0;
+      rd[i]=met[i].rd; sg[i]=met[i].sag; gv[i]=met[i].gammaVolScaled; lq[i]=met[i].liqProx;
+   }
+   double rdN[64],sgN[64],gvN[64],lqN[64];
+   EE_Normalize(rd,n,rdN); EE_Normalize(sg,n,sgN); EE_Normalize(gv,n,gvN); EE_Normalize(lq,n,lqN);
+   for(int i=0;i<n;i++)
+      met[i].uds = ee_w_rd*rdN[i] + ee_w_sag*sgN[i] + ee_w_gamma*gvN[i] + ee_w_liq*lqN[i];
+   // vol-spike scaling
+   if(m.atr30>0 && (m.atr15/m.atr30)>ee_volSpikeThresh)
+      for(int i=0;i<n;i++){ double v=met[i].uds*ee_volSpikeMult; met[i].uds=(v>1?1:v); }
+   return(n);
+}
+
+double EE_HighLayerFraction(EE_Metrics &met[],const int n)
+{
+   if(n<=0) return(0.0);
+   int idx[64]; for(int i=0;i<n;i++) idx[i]=i;
+   for(int i=0;i<n-1;i++) for(int j=i+1;j<n;j++) if(met[idx[j]].uds>met[idx[i]].uds){ int t=idx[i];idx[i]=idx[j];idx[j]=t; }
+   int hi=(int)MathMax(1,MathFloor(n*(1.0-ee_highLayerQuantile))); if(hi>n)hi=n;
+   double tot=0,high=0; for(int i=0;i<n;i++) tot+=met[i].uds; if(tot<=0) return(0.0);
+   for(int i=0;i<hi;i++) high+=met[idx[i]].uds;
+   return(high/tot);
+}
+
+void EE_BottomLayer(EE_Metrics &met[],const int n,const int slot)
+{
+   if(n<=0) return;
+   double frac=EE_HighLayerFraction(met,n);
+   double z=ee_logisticK*(frac-ee_logisticPivot);
+   double pCore=1.0/(1.0+MathExp(z));
+   int status;
+   if(ee_botInit[slot])
+   {
+      if(pCore>=ee_coreUpperBand) status=1;
+      else if(pCore<=ee_coreLowerBand) status=0;
+      else status=ee_botStatus[slot];
+   }
+   else status=(pCore>=0.5?1:0);
+   ee_botPCore[slot]=pCore; ee_botStatus[slot]=status; ee_botInit[slot]=true;
+}
+
 bool EE_RunCampaignRisk(const int dir,const EE_Market &m,double &grossLots,double &grossVaR,double &udsMax,bool &anyBomb)
 {
    grossLots=0; grossVaR=0; udsMax=0; anyBomb=false;
    EE_Position pos[64];
    int n=EE_CollectPositions(pos,dir);
    if(n<=0) return(true);
-
    for(int i=0;i<n;i++) grossLots+=pos[i].lots;
 
-   // metrics + micro-bomb detection
-   double rdLimit=g_cfg.rdLimit;
-   int worstIdx=-1; double worstUds=-1;
-   for(int i=0;i<n;i++)
-   {
-      double sl=(pos[i].sl>0?pos[i].sl:(dir<0?m.spot+10.0:m.spot-10.0));
-      double distSL=MathAbs(sl-pos[i].entry);
-      double rd=EE_RD(pos[i].lots,distSL);
-      double sag=EE_SAG(pos[i].lots,distSL);
-      double gam=EE_GammaVol(EE_Gamma(pos[i].entry,m.spot,pos[i].lots),m.atr15,m.atr30);
-      double liq=EE_LiqProx(sl);
-      double uds=ee_w_rd*rd + ee_w_sag*sag*1e-4 + ee_w_gamma*gam*1e-6 + ee_w_liq*liq + ee_w_dVar2*0.0;
-      if(uds>udsMax) udsMax=uds;
-      if(uds>worstUds){ worstUds=uds; worstIdx=i; }
-      if(rd>rdLimit) anyBomb=true;
-   }
-
-   EE_VarResult vr; EE_ComputeVaR(pos,n,m,vr);
-   grossVaR=vr.var3;   // worst-case gross VaR for THIS direction
-
+   int slot=(dir>0?0:1);
    double v2f,v3f; EE_DynamicVarLimits(m.equity,v2f,v3f);
-   double v3Lim=v3f*m.equity;
+   double v3Lim=v3f*m.equity, v2Lim=v2f*m.equity;
+   double minLot=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN); if(minLot<=0)minLot=0.01;
 
-   bool safe=(grossVaR<=v3Lim && !anyBomb);
-   if(!safe && worstIdx>=0)
+   // simulated trims accumulated then applied
+   long   trimTicket[64]; double trimLots[64]; int trimCount=0;
+   int    guard=0, maxIter=n*2+2;
+
+   bool safe=false;
+   while(guard++<maxIter)
    {
-      // trim the worst micro-bomb in this campaign (partial)
-      double closeLots=pos[worstIdx].lots*0.4;
-      if(closeLots<SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN)) closeLots=pos[worstIdx].lots;
-      if(EE_ClosePartial((ulong)pos[worstIdx].ticket,closeLots))
-         FalconPublish(EVT_TRIM,dir,"campaign micro-bomb trim");
+      if(n<=0){ safe=true; break; }
+      EE_Metrics met[64];
+      int mc=EE_BuildMetrics(pos,n,m,met);
+      EE_BottomLayer(met,mc,slot);
+
+      EE_VarResult vr; EE_ComputeVaR(pos,n,m,vr);
+      grossVaR=vr.var3;
+
+      udsMax=0; anyBomb=false; int worst=-1; double worstU=-1; int bombIdx=-1; double bombU=-1;
+      for(int i=0;i<mc;i++)
+      {
+         if(met[i].uds>udsMax) udsMax=met[i].uds;
+         if(met[i].uds>worstU){ worstU=met[i].uds; worst=i; }
+         bool bomb=(met[i].distSL<=0 || (met[i].lots/MathMax(met[i].distSL,1e-9))>g_cfg.rdLimit);
+         if(bomb){ anyBomb=true; if(met[i].uds>bombU){ bombU=met[i].uds; bombIdx=i; } }
+      }
+
+      bool var2Ok=(vr.var2<=v2Lim), var3Ok=(vr.var3<=v3Lim);
+      if(var2Ok && var3Ok && !anyBomb){ safe=true; break; }
+
+      int trim=(bombIdx>=0?bombIdx:worst);
+      if(trim<0){ safe=false; break; }
+
+      double closeLots=(pos[trim].lots>=ee_minLotsForPartial)? pos[trim].lots*ee_partialCloseFrac : pos[trim].lots;
+      if(closeLots<minLot) closeLots=pos[trim].lots;
+      // record + simulate
+      trimTicket[trimCount]=pos[trim].ticket; trimLots[trimCount]=closeLots; trimCount++;
+      double remain=pos[trim].lots-closeLots;
+      if(remain>1e-4){ pos[trim].lots=remain; }
+      else { for(int j=trim;j<n-1;j++) pos[j]=pos[j+1]; n--; }
    }
+
+   // apply the final trim set to the live book
+   for(int i=0;i<trimCount;i++)
+      if(trimLots[i]>0 && EE_ClosePartial((ulong)trimTicket[i],trimLots[i]))
+         FalconPublish(EVT_TRIM,dir,"DRDWCT iterative trim");
+
    return(safe);
 }
 
@@ -343,6 +458,58 @@ void EE_UpdateExposure(const EE_Market &m)
 //==================================================================
 // ENTRY — translate the decision action into a sized order.
 //==================================================================
+//==================================================================
+// TERMINAL-AWARE STOP & OWNER-DRIVEN TARGET (ODDE)
+//   Stop sits just beyond the swept terminal extreme (the supply/demand
+//   that price liquidated into), capped so risk stays sane. Target is
+//   inherited from the owner curve hierarchy (FRZ / wave objective),
+//   with secondary/extended targets for partial scale-out.
+//==================================================================
+double EE_TerminalStop(const int dir,const double entry,const double atr)
+{
+   int win=g_cfg.structLen*2+g_cfg.pivotLen;
+   double sl;
+   if(dir==DIR_LONG)
+   {
+      double sweptLow = FalconLowest(1,win);
+      double zoneLow  = (g_state.supplyDemand.demandBot!=0? g_state.supplyDemand.demandBot
+                        : g_state.wave.flipBot!=0? g_state.wave.flipBot : sweptLow);
+      sl = MathMin(sweptLow, zoneLow) - atr*0.5;
+      if(entry-sl > atr*6.0) sl = entry - atr*3.0;   // cap risk if extreme is far
+      if(sl>=entry) sl = entry - atr*1.5;
+   }
+   else
+   {
+      double sweptHigh= FalconHighest(1,win);
+      double zoneHigh = (g_state.supplyDemand.supplyTop!=0? g_state.supplyDemand.supplyTop
+                        : g_state.wave.flipTop!=0? g_state.wave.flipTop : sweptHigh);
+      sl = MathMax(sweptHigh, zoneHigh) + atr*0.5;
+      if(sl-entry > atr*6.0) sl = entry + atr*3.0;
+      if(sl<=entry) sl = entry + atr*1.5;
+   }
+   return(sl);
+}
+
+void EE_OwnerTargets(const int dir,const double entry,const double atr,double &t1,double &t2,double &t3)
+{
+   // T1 = wave objective (owner curve destination, ODDE). T2/T3 extend via the
+   // owner-return target and a further projection, in the trade direction.
+   double obj = g_state.wave.objective;
+   double frz = g_state.frz.targetPrice;
+   if(dir==DIR_LONG)
+   {
+      t1 = (obj>entry ? obj : entry + atr*3.0);
+      t2 = MathMax(t1, (frz>entry?frz:entry+atr*5.0));
+      t3 = MathMax(t2, entry + atr*8.0);
+   }
+   else
+   {
+      t1 = (obj<entry && obj>0 ? obj : entry - atr*3.0);
+      t2 = MathMin(t1, (frz<entry && frz>0 ? frz : entry-atr*5.0));
+      t3 = MathMin(t2, entry - atr*8.0);
+   }
+}
+
 void EE_HandleEntries(const EE_Market &m)
 {
    int action=g_state.exec.action;
@@ -360,6 +527,7 @@ void EE_HandleEntries(const EE_Market &m)
    if(!wantBuy && !wantSell) return;
    if(!EE_IsTradeTime()) return;
    if(g_cfg.blockIfBreach && !ee_lastRiskOk) return;
+   if(ee_riskCooldown>0) return;   // event-driven: cooling off after a risk breach
 
    // LATE / NO-ROOM GUARD (symmetric for both sides): never OPEN a fresh
    // campaign into exhaustion — no buying the top, no selling the bottom.
@@ -381,29 +549,31 @@ void EE_HandleEntries(const EE_Market &m)
    if(wantBuy && ee_lastLongTrade!=barTime)
    {
       double entry=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
-      double sl=(g_state.wave.origin!=0? g_state.wave.origin-atr*0.25 : close1-atr*1.5);
+      double sl=EE_TerminalStop(DIR_LONG,entry,atr);
+      double t1,t2,t3; EE_OwnerTargets(DIR_LONG,entry,atr,t1,t2,t3);
       double lots=EE_ComputeLots(riskCash,entry,sl);
       if(sl>0 && entry>sl && lots>0 && EE_SendMarketOrder(+1,lots,sl,"FALCON "+FalconActionStr(action)+" L"))
       {
          ee_lastLongTrade=barTime;
          g_state.exec.entry=entry; g_state.exec.stop=sl;
-         g_state.exec.target=g_state.wave.objective; g_state.exec.lots=lots; g_state.exec.riskCash=riskCash;
-         double rr=(MathAbs(entry-sl)>1e-10 && g_state.wave.objective!=0)?MathAbs(g_state.wave.objective-entry)/MathAbs(entry-sl):0.0;
-         g_state.exec.reward=rr;
+         g_state.exec.target=t1; g_state.exec.target2=t2; g_state.exec.target3=t3;
+         g_state.exec.lots=lots; g_state.exec.riskCash=riskCash;
+         g_state.exec.reward=(MathAbs(entry-sl)>1e-10)?MathAbs(t1-entry)/MathAbs(entry-sl):0.0;
       }
    }
    if(wantSell && ee_lastShortTrade!=barTime)
    {
       double entry=SymbolInfoDouble(_Symbol,SYMBOL_BID);
-      double sl=(g_state.wave.origin!=0? g_state.wave.origin+atr*0.25 : close1+atr*1.5);
+      double sl=EE_TerminalStop(DIR_SHORT,entry,atr);
+      double t1,t2,t3; EE_OwnerTargets(DIR_SHORT,entry,atr,t1,t2,t3);
       double lots=EE_ComputeLots(riskCash,entry,sl);
       if(sl>0 && sl>entry && lots>0 && EE_SendMarketOrder(-1,lots,sl,"FALCON "+FalconActionStr(action)+" S"))
       {
          ee_lastShortTrade=barTime;
          g_state.exec.entry=entry; g_state.exec.stop=sl;
-         g_state.exec.target=g_state.wave.objective; g_state.exec.lots=lots; g_state.exec.riskCash=riskCash;
-         double rr=(MathAbs(entry-sl)>1e-10 && g_state.wave.objective!=0)?MathAbs(g_state.wave.objective-entry)/MathAbs(entry-sl):0.0;
-         g_state.exec.reward=rr;
+         g_state.exec.target=t1; g_state.exec.target2=t2; g_state.exec.target3=t3;
+         g_state.exec.lots=lots; g_state.exec.riskCash=riskCash;
+         g_state.exec.reward=(MathAbs(entry-sl)>1e-10)?MathAbs(t1-entry)/MathAbs(entry-sl):0.0;
       }
    }
 }
@@ -630,6 +800,49 @@ bool EE_DrawdownProtection()
 }
 
 //==================================================================
+// PARTIAL TAKE-PROFIT / SCALE-OUT — bank a third at T1, a third at T2,
+// and the remainder at T3 (owner-driven targets). Per-ticket stage is
+// tracked so each level fires once.  (state declared with the globals above)
+//==================================================================
+int EE_TPSlot(const long ticket)
+{
+   for(int i=0;i<ee_tpCount;i++) if(ee_tpTicket[i]==ticket) return(i);
+   if(ee_tpCount<256){ ee_tpTicket[ee_tpCount]=ticket; ee_tpStage[ee_tpCount]=0; ee_tpCount++; return(ee_tpCount-1); }
+   return(0);
+}
+
+void EE_ManagePartialTP()
+{
+   double t1=g_state.exec.target, t2=g_state.exec.target2, t3=g_state.exec.target3;
+   double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID), ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
+   int total=PositionsTotal();
+   for(int i=0;i<total;i++)
+   {
+      ulong ticket=PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
+      if(PositionGetInteger(POSITION_MAGIC)!=g_cfg.magic) continue;
+      long type=PositionGetInteger(POSITION_TYPE);
+      double vol=PositionGetDouble(POSITION_VOLUME);
+      int slot=EE_TPSlot((long)ticket);
+      int stage=ee_tpStage[slot];
+
+      if(type==POSITION_TYPE_BUY)
+      {
+         if(stage<1 && t1>0 && bid>=t1){ if(EE_ClosePartial(ticket,vol*0.34)) ee_tpStage[slot]=1; }
+         else if(stage<2 && t2>0 && bid>=t2){ if(EE_ClosePartial(ticket,vol*0.50)) ee_tpStage[slot]=2; }
+         else if(stage<3 && t3>0 && bid>=t3){ if(EE_CloseFull(ticket)) ee_tpStage[slot]=3; }
+      }
+      else
+      {
+         if(stage<1 && t1>0 && ask<=t1){ if(EE_ClosePartial(ticket,vol*0.34)) ee_tpStage[slot]=1; }
+         else if(stage<2 && t2>0 && ask<=t2){ if(EE_ClosePartial(ticket,vol*0.50)) ee_tpStage[slot]=2; }
+         else if(stage<3 && t3>0 && ask<=t3){ if(EE_CloseFull(ticket)) ee_tpStage[slot]=3; }
+      }
+   }
+}
+
+//==================================================================
 // MASTER ENTRY — Execution Engine pipeline step
 //==================================================================
 void ExecutionEngineRun()
@@ -637,6 +850,7 @@ void ExecutionEngineRun()
    EE_Market m; EE_BuildMarket(m);
    EE_BuildLiquidity();
    EE_UpdateExposure(m);
+   if(ee_riskCooldown>0) ee_riskCooldown--;   // event-driven cooldown decay
 
    // ---- PER-CAMPAIGN RISK (multi-direction, gross, never netted) ----
    bool longOk=true, shortOk=true;
@@ -667,8 +881,9 @@ void ExecutionEngineRun()
    g_state.exec.sessionOpen=EE_IsTradeTime();
    if(!ee_lastRiskOk) FalconPublish(EVT_RISK_BREACH,combinedGrossVaR);
 
-   // ---- TRAILING (manage open winners) ----
+   // ---- TRAILING + PARTIAL TAKE-PROFIT (manage open winners) ----
    EE_Trailing();
+   EE_ManagePartialTP();
 
    // ---- INSTITUTIONAL band tracking, then EXITS, then ENTRIES ----
    EE_UpdateInstitutional();

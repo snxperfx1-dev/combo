@@ -60,10 +60,27 @@ struct FalconEventBus
 
 FalconEventBus g_bus;
 
+//==================================================================
+// SUBSCRIBERS — real publish/subscribe. Modules register a handler
+// for an event type (or EVT_NONE = all). FalconPublish dispatches
+// synchronously so reactions are deterministic within the bar.
+//==================================================================
+typedef void (*FalconEventHandler)(const FalconEvent &e);
+#define FALCON_MAX_SUBS 32
+struct FalconSub { int type; FalconEventHandler handler; };
+FalconSub g_subs[FALCON_MAX_SUBS];
+int       g_subCount=0;
+
+void FalconSubscribe(const int type, FalconEventHandler h)
+{
+   if(g_subCount<FALCON_MAX_SUBS){ g_subs[g_subCount].type=type; g_subs[g_subCount].handler=h; g_subCount++; }
+}
+
 void FalconBusInit()
 {
    g_bus.head  = 0;
    g_bus.total = 0;
+   g_subCount  = 0;
    for(int i=0;i<32;i++) g_bus.counts[i]=0;
    for(int i=0;i<FALCON_EVT_RING;i++)
    {
@@ -75,9 +92,9 @@ void FalconBusInit()
 }
 
 //------------------------------------------------------------------
-// Publish an event. Stored in the ring and counted. Subscribers
-// poll the bus inside the pipeline (deterministic, no callbacks in
-// MQL5), keeping the OS single-threaded and reproducible.
+// Publish an event: store in the ring, count it, and DISPATCH to any
+// registered subscribers (pub/sub). Modules react to events instead
+// of polling; dispatch is synchronous to stay deterministic.
 //------------------------------------------------------------------
 void FalconPublish(const int type, const double value=0.0, const string note="")
 {
@@ -91,6 +108,10 @@ void FalconPublish(const int type, const double value=0.0, const string note="")
    g_bus.head = (g_bus.head + 1) % FALCON_EVT_RING;
    g_bus.total++;
    if(type>=0 && type<32) g_bus.counts[type]++;
+
+   for(int i=0;i<g_subCount;i++)
+      if(g_subs[i].type==type || g_subs[i].type==EVT_NONE)
+         g_subs[i].handler(e);
 }
 
 //------------------------------------------------------------------

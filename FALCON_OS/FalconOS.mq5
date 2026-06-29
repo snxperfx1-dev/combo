@@ -162,4 +162,12 @@ void OnTick()
 
    FalconPipeline();
 }
+
+//==================================================================
+// CHART EVENTS — dashboard tab switching (T / arrow keys)
+//==================================================================
+void OnChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)
+{
+   FalconVizOnChartEvent(id,lparam,dparam,sparam);
+}
 //+------------------------------------------------------------------+

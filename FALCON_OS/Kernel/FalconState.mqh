@@ -326,6 +326,12 @@ struct FalconNetwork
    int    edgeCount;
    double conversationWeight;   // aggregate dialogue intensity 0..100
    int    connections;          // total active connections
+   // conversation route (pathfinding): ordered authoritative nodes ahead of
+   // price in the network-bias direction — the path price is likely to travel.
+   int    pathIdx[32];
+   int    pathCount;
+   int    nextNodeIdx;          // nearest authoritative node ahead
+   double nextNodePrice;
 };
 
 //==================================================================

@@ -15,6 +15,8 @@
 #include "../Kernel/FalconConfig.mqh"
 #include "../Kernel/FalconSeries.mqh"
 #include "../Kernel/FalconEventBus.mqh"
+#include "../Kernel/FalconLog.mqh"
+#include "../Kernel/FalconPersistence.mqh"
 
 //==================================================================
 // PERSISTENT NODE REGISTRY (mirrors F16 nPx/nMid/nDir/... arrays)
@@ -36,6 +38,33 @@ void MemoryEngineInit()
 {
    mem_count=0;
    for(int i=0;i<7;i++) mem_lastTip[i]=0.0;
+
+   // ---- PERSISTENCE: reload remembered network nodes on boot ----
+   if(InpEnablePersist && FileIsExist(FP_NetworkFile()))
+   {
+      int h=FileOpen(FP_NetworkFile(),FILE_READ|FILE_CSV|FILE_ANSI,',');
+      if(h!=INVALID_HANDLE)
+      {
+         for(int k=0;k<8 && !FileIsEnding(h);k++) FileReadString(h);   // skip header row
+         while(!FileIsEnding(h) && mem_count<FALCON_MAX_NODES)
+         {
+            double px =StringToDouble(FileReadString(h));
+            double mid=StringToDouble(FileReadString(h));
+            int    dir=(int)StringToInteger(FileReadString(h));
+            double sc =StringToDouble(FileReadString(h));
+            int    wt =(int)StringToInteger(FileReadString(h));
+            int    st =(int)StringToInteger(FileReadString(h));
+            int    bb =(int)StringToInteger(FileReadString(h));
+            int    rv =(int)StringToInteger(FileReadString(h));
+            if(px==0.0 && mid==0.0) continue;
+            mem_px[mem_count]=px; mem_mid[mem_count]=mid; mem_dir[mem_count]=dir;
+            mem_score[mem_count]=sc; mem_weight[mem_count]=wt; mem_state[mem_count]=st;
+            mem_birth[mem_count]=bb; mem_rev[mem_count]=rv; mem_count++;
+         }
+         FileClose(h);
+         FalconInfo("MemoryEngine",StringFormat("restored %d network nodes",mem_count));
+      }
+   }
 }
 
 //------------------------------------------------------------------
@@ -194,6 +223,29 @@ void MEM_ComputeNetwork()
    n.connections=connections;
    n.conversationWeight=FalconClamp(convWeight/MathMax(1.0,(double)mem_count)*2.0,0,100);
 
+   // ---- CONVERSATION ROUTE (pathfinding, port of F16 f_pathNodes) ----
+   // Collect unbroken, authoritative nodes that lie AHEAD of price in the
+   // network-bias direction, then sort by distance ascending = the route price
+   // is likely to converse along. nextNode = the nearest one ahead.
+   int pathTmp[32]; int pc=0;
+   for(int i=0;i<mem_count && pc<32;i++)
+   {
+      if(mem_state[i]==2 || MEM_Auth(i)<g_cfg.authMin) continue;
+      bool ahead = (bias==DIR_LONG ? mem_px[i]>close1 : bias==DIR_SHORT ? mem_px[i]<close1 : false);
+      if(ahead) pathTmp[pc++]=i;
+   }
+   // insertion sort by distance to price (ascending)
+   for(int a=1;a<pc;a++)
+   {
+      int key=pathTmp[a]; double kd=MathAbs(close1-mem_px[key]); int b=a-1;
+      while(b>=0 && MathAbs(close1-mem_px[pathTmp[b]])>kd){ pathTmp[b+1]=pathTmp[b]; b--; }
+      pathTmp[b+1]=key;
+   }
+   n.pathCount=pc;
+   for(int i=0;i<pc;i++) n.pathIdx[i]=pathTmp[i];
+   n.nextNodeIdx   = (pc>0? pathTmp[0] : -1);
+   n.nextNodePrice = (pc>0? mem_px[pathTmp[0]] : 0.0);
+
    g_state.network=n;
 }
 
@@ -217,16 +269,23 @@ void MEM_ComputeCurve()
    c.life        = FalconClamp(100.0 - w.completion*0.6 - g_state.physics.compression*0.4,0,100);
    c.energy      = w.energy;
 
-   // ---- EXPLICIT CURVE TREE (root → parent → children) ----
-   // root = the owning HTF curve (highest agreeing timeframe); parent = chart
-   // wave; children = the recursive sub-waves spawned inside it.
+   // ---- EXPLICIT CURVE TREE (root -> parent -> children) from REAL per-TF curves ----
+   // root = the owning HTF curve; parent = the next lower agreeing TF; children
+   // = the recursive sub-waves inside. Built from the genuine per-TF wave engine.
    c.ownerTF       = h.ownerTF;
-   c.rootOrigin    = (h.ownerTF>=0 && h.ownerTF<7 ? me_htfOrigin[h.ownerTF] : w.origin);
-   c.rootExtreme   = w.extreme;
-   c.parentDir     = w.direction;
-   c.parentOrigin  = w.origin;
-   c.parentExtreme = w.extreme;
-   c.emergentNodes = w.recursionBreaks;   // each recursion break births an emergent node
+   int ot = (h.ownerTF>=0 && h.ownerTF<7)? h.ownerTF : 4;
+   c.rootOrigin    = g_tfCurve[ot].oOrigin;
+   c.rootExtreme   = g_tfCurve[ot].oExtreme;
+   c.rootDir       = g_tfCurve[ot].oDir;
+   int parentTF    = (ot>0? ot-1 : ot);
+   c.parentDir     = g_tfCurve[parentTF].oDir;
+   c.parentOrigin  = g_tfCurve[parentTF].oOrigin;
+   c.parentExtreme = g_tfCurve[parentTF].oExtreme;
+   // emergent nodes = recursive breaks accumulated across the lower (child) TFs
+   int emergent=0; for(int i=0;i<ot;i++) emergent+=g_tfCurve[i].oRecBrk;
+   c.emergentNodes = emergent;
+   c.emergentPhase = g_tfCurve[ot].oPhase;
+   c.evolution     = g_tfCurve[ot].oDom;
 
    g_state.curve=c;
 }
@@ -245,10 +304,8 @@ void MEM_ComputeWaveMatrix()
    for(int i=0;i<7;i++)
    {
       wm.dir[i]=h.dir[i];
-      // only the chart rung has a true phase from the FSM; others approximate
-      // their phase from direction + alignment (progress proxy).
-      wm.phase[i]=(i==6 ? g_state.wave.phase : (h.dir[i]==DIR_NONE?PH_P4_ORIGIN:PH_EXPANSION));
-      wm.progress[i]=h.prog[i];
+      wm.phase[i]=g_tfCurve[i].oPhase;     // genuine per-TF wave phase
+      wm.progress[i]=g_tfCurve[i].oCompletion;
       if(h.dir[i]==DIR_LONG) bull++; else if(h.dir[i]==DIR_SHORT) bear++;
       energy += (h.dir[i]!=DIR_NONE?1.0:0.0);
    }
