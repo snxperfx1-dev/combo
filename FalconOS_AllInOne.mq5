@@ -2,10 +2,10 @@
 //|                                            FalconOS_AllInOne.mq5 |
 //|   FALCON OS — Unified Trading Intelligence Platform               |
 //|   SINGLE-FILE BUILD (all kernel + engines concatenated)          |
-//|   PYRO campaign-thermodynamics risk engine for stacked entries.  |
+//|   Risk = PYRO Thermal engine only (DRDWCT fully removed).        |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "3.25"
+#property version   "3.26"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -84,10 +84,8 @@ input string  __sep_execution   = "════════ EXECUTION / RISK ═
 input bool    InpEnableTrading  = true;  // Allow live order sending
 input double  InpRiskPercent    = 0.5;   // Risk % per trade
 input double  InpMaxLots        = 1.0;   // Hard cap on lots per entry (safety)
-input bool    InpEnableRiskEng  = true;  // Enable DRDWCT risk engine
-input bool    InpBlockIfBreach  = true;  // Block new entries if VaR breached
+input bool    InpBlockIfBreach  = true;  // Block new entries after a risk breach (cooldown)
 input bool    InpSessionFilter  = false; // Restrict to London/US windows (off for full backtests)
-input double  InpRdLimit        = 0.0095;// Micro-bomb RD limit
 input double  InpContractValue  = 100.0; // Value per lot per price unit
 input bool    InpTrailEnable    = true;  // Enable trailing stop engine
 input double  InpTrailStartATR  = 1.0;   // Start trailing after profit (ATR)
@@ -140,8 +138,8 @@ struct FalconConfig
    // decision
    int    minConf;  double maxThreat, maxConflict, execProbArm;
    // execution
-   bool   enableTrading, enableRiskEng, blockIfBreach, sessionFilter;
-   double riskPercent, rdLimit, contractValue;
+   bool   enableTrading, blockIfBreach, sessionFilter;
+   double riskPercent, contractValue;
    double maxLots;
    bool   trailEnable, ddProtect;
    double trailStartATR, trailDistATR, maxDrawdownPct, ddFlattenPct;
@@ -206,12 +204,10 @@ void FalconConfigInit()
    g_cfg.execProbArm      = InpExecProbArm;
 
    g_cfg.enableTrading    = InpEnableTrading;
-   g_cfg.enableRiskEng    = InpEnableRiskEng;
    g_cfg.blockIfBreach    = InpBlockIfBreach;
    g_cfg.sessionFilter    = InpSessionFilter;
    g_cfg.riskPercent      = InpRiskPercent;
    g_cfg.maxLots          = InpMaxLots;
-   g_cfg.rdLimit          = InpRdLimit;
    g_cfg.contractValue    = InpContractValue;
    g_cfg.trailEnable      = InpTrailEnable;
    g_cfg.trailStartATR    = InpTrailStartATR;
@@ -771,19 +767,10 @@ struct FalconExecution
    double reward;         // reward:risk ratio of the working setup
    int    tradeState;     // FALCON_TRADE_STATE
    int    exitState;      // FALCON_EXIT_STATE (reason of last exit)
-   // risk engine snapshot
-   double var2;
-   double var3;
-   double var2Limit;
-   double var3Limit;
-   double udsMax;
-   bool   anyBomb;
    bool   riskOk;
    // per-campaign (multi-direction) gross exposure
    double longGrossLots;
    double shortGrossLots;
-   double longGrossVaR;
-   double shortGrossVaR;
    int    openLongCount;
    int    openShortCount;
    double openPnL;
@@ -3776,44 +3763,28 @@ void DecisionEngineRun()
 //|                                                                  |
 //|  The OS EXECUTES — it never decides. It reads g_state.exec.action |
 //|  (from the Decision Engine) and translates it into orders, sized  |
-//|  by the lot engine, gated by the session filter, protected by the |
-//|  DRDWCT risk engine (VaR / UDS / gamma / micro-bomb trimming) and |
-//|  the ARC + institutional + phase-composite exit logic.            |
+//|  by the lot engine, gated by the session filter, protected by     |
+//|  drawdown protection and the ARC + institutional + phase-composite |
+//|  exit logic. (Campaign risk is owned by the PYRO Thermal Risk      |
+//|  Engine; the old DRDWCT VaR/UDS trimmer has been fully removed.)   |
 //|                                                                  |
 //|  MULTI-CAMPAIGN: this account is HEDGING. Long and short          |
-//|  campaigns coexist. Risk is evaluated PER DIRECTION on GROSS      |
-//|  exposure (never netted), with a portfolio backstop on combined   |
-//|  gross VaR. Opposite legs never mask each other's bleed.          |
+//|  campaigns coexist. Exposure is tracked PER DIRECTION on GROSS    |
+//|  lots (never netted) so opposite legs never mask each other.      |
 //+------------------------------------------------------------------+
 #ifndef FALCON_EXEC_ENGINE_MQH
 #define FALCON_EXEC_ENGINE_MQH
 
 
 //==================================================================
-// DRDWCT STRUCTS (ported from Symphony, trimmed to essentials)
+// POSITION / MARKET STRUCTS
 //==================================================================
 struct EE_Position
 {
    long   ticket; double lots; double entry; double sl; int direction; double pnl;
 };
 struct EE_Market { double spot; double atr15; double atr30; double equity; };
-struct EE_Metrics
-{
-   long ticket; double lots; int direction; double entry; double sl;
-   double distSL; double rd; double sag; double gammaRaw; double gammaVolScaled;
-   double liqProx; double dVar2; double uds;
-};
-struct EE_VarResult { double var2; double var3; };
 
-double ee_liqLevels[32]; int ee_liqCount=0;
-double ee_w_rd=0.35, ee_w_dVar2=0.25, ee_w_gamma=0.20, ee_w_liq=0.10, ee_w_sag=0.10;
-// DRDWCT tuning (Symphony RE_Config defaults)
-double ee_partialCloseFrac=0.30, ee_minLotsForPartial=0.03;
-double ee_highLayerQuantile=0.75, ee_logisticK=8.0, ee_logisticPivot=0.26;
-double ee_coreLowerBand=0.45, ee_coreUpperBand=0.55;
-double ee_volSpikeMult=1.2, ee_volSpikeThresh=3.0;
-// persistent bottom-layer (core/sacrificial) state per direction [0]=long [1]=short
-double ee_botPCore[2]={0,0}; int ee_botStatus[2]={0,0}; bool ee_botInit[2]={false,false};
 // event-driven: cooldown bars after a risk breach (set by subscriber)
 int    ee_riskCooldown=0;
 // partial take-profit per-ticket stage tracking
@@ -3830,7 +3801,6 @@ double ee_lastWaveOrigin=0; int ee_lastWaveDir=0;
 void ExecutionEngineInit()
 {
    ee_lastBarTime=0; ee_lastLongTrade=0; ee_lastShortTrade=0; ee_lastRiskOk=true;
-   ee_liqCount=0;
    ee_longOuterBreach=false; ee_shortOuterBreach=false; ee_lastWaveOrigin=0; ee_lastWaveDir=0;
    ee_riskCooldown=0; ee_tpCount=0;
    FalconSubscribe(EVT_RISK_BREACH, EE_OnRiskBreach);   // event-driven cooldown
@@ -3887,13 +3857,6 @@ bool EE_IsTradeTime()
    bool k4=(cur>=1005&&cur<=1035);  // 17:00 +-15
    return(w1||w2||w3||w4||k1||k2||k3||k4);
 }
-
-//==================================================================
-// DRDWCT MATH
-//==================================================================
-// [DRDWCT math + VaR scenario engine REMOVED — RD/SAG/gamma/UDS/VaR helpers
-//  deleted with the risk engine.]
-
 
 //==================================================================
 // POSITION COLLECTION (grouped by direction = campaign)
@@ -3981,17 +3944,6 @@ bool EE_CloseFull(const ulong ticket)
    if(!PositionSelectByTicket(ticket)) return(false);
    return(EE_ClosePartial(ticket,PositionGetDouble(POSITION_VOLUME)));
 }
-
-//==================================================================
-// PER-CAMPAIGN RISK — full iterative DRDWCT engine for one direction's
-//   GROSS book: normalized multi-metric UDS, vol-spike scaling, the
-//   logistic core/sacrificial bottom-layer classification, and an
-//   ITERATIVE trim loop that removes the worst micro-bomb / highest-UDS
-//   position until VaR + bomb limits clear. Trims are simulated on a
-//   local book and only the final set is applied to the market.
-//==================================================================
-// [DRDWCT metrics + iterative trim engine REMOVED — the per-campaign VaR/UDS
-//  trimmer that closed open positions has been deleted.]
 
 //==================================================================
 // EXPOSURE SNAPSHOT into shared state (used by Decision DEFEND/SCALE)
@@ -4429,15 +4381,11 @@ void ExecutionEngineRun()
    EE_UpdateExposure(m);
    if(ee_riskCooldown>0) ee_riskCooldown--;
 
-   // ---- DRDWCT RISK ENGINE REMOVED ----
-   // The VaR/UDS per-campaign trimmer was closing every position ("FALCON TRIM").
-   // Risk is now controlled ONLY by: per-trade stop sizing (lot engine),
-   // drawdown protection (equity kill-switch), and decision-layer DEFEND/EXIT.
-   // No automatic VaR/bomb trimming of open positions.
-   g_state.exec.longGrossVaR=0; g_state.exec.shortGrossVaR=0;
-   g_state.exec.udsMax=0; g_state.exec.anyBomb=false;
-   g_state.exec.var2Limit=0; g_state.exec.var3Limit=0; g_state.exec.var3=0;
-
+   // ---- DRDWCT RISK ENGINE FULLY REMOVED ----
+   // The old VaR/UDS per-campaign trimmer (which closed open winners) is gone.
+   // Campaign risk is now owned by the PYRO Thermal Risk Engine. This layer
+   // only handles: per-trade stop sizing (lot engine), drawdown protection
+   // (equity kill-switch), and decision-layer DEFEND/EXIT.
    bool ddOk = EE_DrawdownProtection();   // equity kill-switch only (no trimming)
    ee_lastRiskOk = ddOk;
    g_state.exec.riskOk = ee_lastRiskOk;
@@ -5920,8 +5868,9 @@ void FalconPipeline()
    FalconModuleEnd(MOD_DECISION,t0);
 
    // ── EXECUTION LAYER ───────────────────────────────────────────
-   // Risk (per-campaign VaR/UDS/gamma) → Drawdown Protection →
-   // Trailing → Exits → Entries   (never decides, only executes)
+   // Exposure snapshot → Drawdown Protection → PYRO Thermal Risk
+   // (heat / admissions / basket management) → Symphony entries+exits
+   // (never decides, only executes)
    FalconModuleStart(MOD_EXEC,t0);
    ExecutionEngineRun();
    // PYRO campaign-thermodynamics risk: compute per-direction basket HEAT,
@@ -5983,9 +5932,9 @@ int OnInit()
    }
 
    FalconLog("INFO","Kernel",
-      StringFormat("FALCON OS booted — profile=%d magic=%d trading=%s riskEng=%s",
+      StringFormat("FALCON OS booted — profile=%d magic=%d trading=%s thermalRisk=%s",
         g_cfg.profile, (int)g_cfg.magic,
-        g_cfg.enableTrading?"on":"off", g_cfg.enableRiskEng?"on":"off"));
+        g_cfg.enableTrading?"on":"off", g_cfg.useThermalRisk?"PYRO":"off"));
    PrintFormat("[FALCON] Unified Trading Intelligence Platform online. 6 engines · 1 shared state · deterministic pipeline.");
    return(INIT_SUCCEEDED);
 }

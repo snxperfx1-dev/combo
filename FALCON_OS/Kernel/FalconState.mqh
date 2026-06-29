@@ -514,19 +514,10 @@ struct FalconExecution
    double reward;         // reward:risk ratio of the working setup
    int    tradeState;     // FALCON_TRADE_STATE
    int    exitState;      // FALCON_EXIT_STATE (reason of last exit)
-   // risk engine snapshot
-   double var2;
-   double var3;
-   double var2Limit;
-   double var3Limit;
-   double udsMax;
-   bool   anyBomb;
    bool   riskOk;
    // per-campaign (multi-direction) gross exposure
    double longGrossLots;
    double shortGrossLots;
-   double longGrossVaR;
-   double shortGrossVaR;
    int    openLongCount;
    int    openShortCount;
    double openPnL;

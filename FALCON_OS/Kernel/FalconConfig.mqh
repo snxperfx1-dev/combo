@@ -70,10 +70,8 @@ input string  __sep_execution   = "════════ EXECUTION / RISK ═
 input bool    InpEnableTrading  = true;  // Allow live order sending
 input double  InpRiskPercent    = 0.5;   // Risk % per trade
 input double  InpMaxLots        = 1.0;   // Hard cap on lots per entry (safety)
-input bool    InpEnableRiskEng  = true;  // Enable DRDWCT risk engine
-input bool    InpBlockIfBreach  = true;  // Block new entries if VaR breached
+input bool    InpBlockIfBreach  = true;  // Block new entries after a risk breach (cooldown)
 input bool    InpSessionFilter  = false; // Restrict to London/US windows (off for full backtests)
-input double  InpRdLimit        = 0.0095;// Micro-bomb RD limit
 input double  InpContractValue  = 100.0; // Value per lot per price unit
 input bool    InpTrailEnable    = true;  // Enable trailing stop engine
 input double  InpTrailStartATR  = 1.0;   // Start trailing after profit (ATR)
@@ -126,8 +124,8 @@ struct FalconConfig
    // decision
    int    minConf;  double maxThreat, maxConflict, execProbArm;
    // execution
-   bool   enableTrading, enableRiskEng, blockIfBreach, sessionFilter;
-   double riskPercent, rdLimit, contractValue;
+   bool   enableTrading, blockIfBreach, sessionFilter;
+   double riskPercent, contractValue;
    double maxLots;
    bool   trailEnable, ddProtect;
    double trailStartATR, trailDistATR, maxDrawdownPct, ddFlattenPct;
@@ -192,12 +190,10 @@ void FalconConfigInit()
    g_cfg.execProbArm      = InpExecProbArm;
 
    g_cfg.enableTrading    = InpEnableTrading;
-   g_cfg.enableRiskEng    = InpEnableRiskEng;
    g_cfg.blockIfBreach    = InpBlockIfBreach;
    g_cfg.sessionFilter    = InpSessionFilter;
    g_cfg.riskPercent      = InpRiskPercent;
    g_cfg.maxLots          = InpMaxLots;
-   g_cfg.rdLimit          = InpRdLimit;
    g_cfg.contractValue    = InpContractValue;
    g_cfg.trailEnable      = InpTrailEnable;
    g_cfg.trailStartATR    = InpTrailStartATR;

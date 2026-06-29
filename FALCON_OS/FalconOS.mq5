@@ -105,8 +105,9 @@ void FalconPipeline()
    FalconModuleEnd(MOD_DECISION,t0);
 
    // ── EXECUTION LAYER ───────────────────────────────────────────
-   // Risk (per-campaign VaR/UDS/gamma) → Drawdown Protection →
-   // Trailing → Exits → Entries   (never decides, only executes)
+   // Exposure snapshot → Drawdown Protection → PYRO Thermal Risk
+   // (heat / admissions / basket management) → Symphony entries+exits
+   // (never decides, only executes)
    FalconModuleStart(MOD_EXEC,t0);
    ExecutionEngineRun();
    // PYRO campaign-thermodynamics risk: compute per-direction basket HEAT,
@@ -168,9 +169,9 @@ int OnInit()
    }
 
    FalconLog("INFO","Kernel",
-      StringFormat("FALCON OS booted — profile=%d magic=%d trading=%s riskEng=%s",
+      StringFormat("FALCON OS booted — profile=%d magic=%d trading=%s thermalRisk=%s",
         g_cfg.profile, (int)g_cfg.magic,
-        g_cfg.enableTrading?"on":"off", g_cfg.enableRiskEng?"on":"off"));
+        g_cfg.enableTrading?"on":"off", g_cfg.useThermalRisk?"PYRO":"off"));
    PrintFormat("[FALCON] Unified Trading Intelligence Platform online. 6 engines · 1 shared state · deterministic pipeline.");
    return(INIT_SUCCEEDED);
 }
