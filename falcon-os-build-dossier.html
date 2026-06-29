@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FALCON OS — Implementation Dossier</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  @page { size: A4; margin: 0; }
+  :root{
+    --ink:#070a0f;
+    --ink2:#0b0f16;
+    --panel:#10151f;
+    --panel2:#141b27;
+    --line:#232a36;
+    --hair:rgba(201,161,74,0.22);
+    --hair2:rgba(255,255,255,0.07);
+    --gold:#c9a14a;
+    --gold-bright:#e3c378;
+    --blue:#5b8fb0;
+    --blue-bright:#7fb4d4;
+    --txt:#e8e9ec;
+    --txt-dim:#a7adb8;
+    --txt-faint:#6b7280;
+    --green:#6fae7a;
+    --red:#c06a5e;
+  }
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  html,body{ background:var(--ink); color:var(--txt);
+    font-family:"Inter","Helvetica Neue",Arial,sans-serif; font-size:14px; line-height:1.6;
+    -webkit-font-smoothing:antialiased; }
+  .serif{ font-family:"DM Serif Display","Playfair Display",Georgia,"Times New Roman",serif; }
+  .mono{ font-family:"JetBrains Mono","SF Mono",Menlo,Consolas,monospace; }
+
+  /* ---------- PAGE SYSTEM ---------- */
+  .page{
+    position:relative; width:210mm; min-height:297mm; margin:0 auto;
+    padding:26mm 22mm 22mm 22mm; overflow:hidden;
+    background:
+      radial-gradient(120% 80% at 85% -10%, rgba(201,161,74,0.10), transparent 55%),
+      radial-gradient(90% 60% at -10% 110%, rgba(91,143,176,0.08), transparent 55%),
+      linear-gradient(180deg,#080b11 0%, #070a0f 60%, #060810 100%);
+    border-bottom:1px solid #000;
+  }
+  .page::before{
+    content:""; position:absolute; inset:14mm 12mm; pointer-events:none;
+    border:1px solid var(--hair); border-radius:2px;
+    -webkit-mask:linear-gradient(180deg,#000,#000); opacity:.5;
+  }
+  .page-inner{ position:relative; z-index:2; }
+  @media print{ .page{ page-break-after:always; } .page:last-child{ page-break-after:auto; } }
+
+  /* running header / footer */
+  .rh{ position:absolute; top:12mm; left:22mm; right:22mm; z-index:3;
+    display:flex; justify-content:space-between; align-items:center;
+    font-size:8.5px; letter-spacing:.28em; text-transform:uppercase; color:var(--txt-faint); }
+  .rh .mark{ color:var(--gold); letter-spacing:.34em; }
+  .rf{ position:absolute; bottom:11mm; left:22mm; right:22mm; z-index:3;
+    display:flex; justify-content:space-between; align-items:center;
+    font-size:8.5px; letter-spacing:.26em; text-transform:uppercase; color:var(--txt-faint);
+    border-top:1px solid var(--hair2); padding-top:5px; }
+
+  /* ---------- TYPE ---------- */
+  .eyebrow{ font-size:9.5px; letter-spacing:.42em; text-transform:uppercase; color:var(--gold);
+    display:flex; align-items:center; gap:10px; margin-bottom:16px; }
+  .eyebrow::before{ content:""; width:26px; height:1px; background:var(--gold); display:inline-block; }
+  h1.title{ font-size:50px; line-height:1.04; font-weight:400; letter-spacing:-.5px; margin:0 0 0; }
+  h2.section{ font-size:33px; line-height:1.08; font-weight:400; letter-spacing:-.3px; margin:0 0 14px; }
+  h3{ font-size:16px; font-weight:600; letter-spacing:.01em; }
+  .lead{ font-size:13.5px; color:var(--txt-dim); max-width:62ch; }
+  .grad{ background:linear-gradient(100deg,var(--gold-bright),var(--gold) 55%,#9c7a33);
+    -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; }
+  .blue{ color:var(--blue-bright); }
+  .gold{ color:var(--gold); }
+  .dim{ color:var(--txt-dim); }
+  .faint{ color:var(--txt-faint); }
+  p{ margin:10px 0; }
+  .rule{ height:1px; background:linear-gradient(90deg,var(--hair),transparent); margin:18px 0; }
+
+  /* ---------- COVER ---------- */
+  .cover{ display:flex; flex-direction:column; height:245mm; }
+  .cover .topbar{ display:flex; justify-content:space-between; align-items:center;
+    font-size:9px; letter-spacing:.34em; text-transform:uppercase; color:var(--txt-faint); }
+  .cover .center{ margin-top:auto; margin-bottom:auto; }
+  .cover h1{ font-size:64px; line-height:1.0; }
+  .seal{ width:54px; height:54px; border:1px solid var(--gold); border-radius:50%;
+    display:flex; align-items:center; justify-content:center; color:var(--gold);
+    font-size:20px; letter-spacing:.1em; }
+  .cover .meta{ display:flex; gap:34px; margin-top:30px; }
+  .cover .meta div{ border-left:1px solid var(--hair); padding-left:12px; }
+  .cover .meta .k{ font-size:8.5px; letter-spacing:.3em; text-transform:uppercase; color:var(--txt-faint); }
+  .cover .meta .v{ font-size:13px; color:var(--txt); margin-top:3px; }
+  .confbar{ display:flex; justify-content:space-between; font-size:9px; letter-spacing:.3em;
+    text-transform:uppercase; color:var(--txt-faint); border-top:1px solid var(--hair2); padding-top:12px; }
+
+  /* ---------- STAT GRID ---------- */
+  .stats{ display:grid; grid-template-columns:repeat(4,1fr); gap:0; border:1px solid var(--hair2);
+    border-radius:3px; overflow:hidden; margin:22px 0; }
+  .stats > div{ padding:18px 16px; border-right:1px solid var(--hair2);
+    background:linear-gradient(180deg,rgba(255,255,255,0.015),transparent); }
+  .stats > div:last-child{ border-right:none; }
+  .stats .n{ font-size:38px; line-height:1; color:var(--gold-bright); font-weight:400; }
+  .stats .l{ font-size:10px; color:var(--txt-dim); margin-top:8px; line-height:1.4; }
+
+  /* ---------- LAYER STACK ---------- */
+  .layer{ border:1px solid var(--hair2); border-radius:3px; padding:10px 16px; margin-bottom:5px;
+    background:linear-gradient(90deg,rgba(201,161,74,0.05),rgba(255,255,255,0.012) 40%,transparent);
+    position:relative; }
+  .layer::before{ content:""; position:absolute; left:0; top:0; bottom:0; width:2px; background:var(--gold); opacity:.55; }
+  .layer .lh{ display:flex; align-items:baseline; gap:12px; }
+  .layer .num{ font-size:10px; letter-spacing:.2em; color:var(--gold); }
+  .layer .name{ font-size:16px; font-weight:600; }
+  .layer .role{ font-size:9px; letter-spacing:.24em; text-transform:uppercase; color:var(--blue-bright); margin-left:auto; }
+  .layer .src{ font-size:9.5px; color:var(--txt-faint); }
+  .pills{ display:flex; flex-wrap:wrap; gap:5px; margin-top:6px; }
+  .pill{ font-size:9.5px; padding:3px 9px; border:1px solid var(--hair2); border-radius:20px;
+    color:var(--txt-dim); background:rgba(255,255,255,0.02); white-space:nowrap; }
+  .pill.g{ border-color:var(--hair); color:var(--gold-bright); }
+  .pill.b{ border-color:rgba(91,143,176,0.3); color:var(--blue-bright); }
+  .pill.new{ border-color:rgba(111,174,122,0.35); color:var(--green); }
+
+  /* ---------- CARDS ---------- */
+  .grid2{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .grid3{ display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
+  .card{ border:1px solid var(--hair2); border-radius:3px; padding:15px 16px;
+    background:linear-gradient(180deg,rgba(255,255,255,0.018),transparent); }
+  .card .ct{ font-size:9px; letter-spacing:.26em; text-transform:uppercase; color:var(--gold); }
+  .card h3{ margin:6px 0 7px; font-size:15px; }
+  .card p{ font-size:11.5px; color:var(--txt-dim); margin:6px 0 0; }
+  .card .quote{ font-size:11.5px; color:var(--gold-bright); font-style:italic; margin-top:8px; }
+
+  /* ---------- PIPELINE ---------- */
+  .pipe{ position:relative; padding-left:26px; }
+  .pipe::before{ content:""; position:absolute; left:7px; top:6px; bottom:6px; width:1px;
+    background:linear-gradient(180deg,var(--gold),var(--blue) 60%,transparent); }
+  .pstep{ position:relative; margin-bottom:11px; }
+  .pstep::before{ content:""; position:absolute; left:-22px; top:5px; width:9px; height:9px;
+    border-radius:50%; background:var(--ink); border:1.5px solid var(--gold); }
+  .pstep.mem::before{ border-color:var(--blue); }
+  .pstep .pk{ font-size:8.5px; letter-spacing:.22em; text-transform:uppercase; color:var(--txt-faint); }
+  .pstep .pn{ font-size:13px; font-weight:600; color:var(--txt); }
+  .pstep .pd{ font-size:10.5px; color:var(--txt-dim); }
+
+  /* ---------- STATE GRID ---------- */
+  .sgrid{ display:grid; grid-template-columns:repeat(3,1fr); gap:9px; }
+  .sdom{ border:1px solid var(--hair2); border-radius:3px; padding:11px 12px;
+    background:linear-gradient(180deg,rgba(91,143,176,0.04),transparent); }
+  .sdom .sh{ font-size:11px; font-weight:700; color:var(--gold-bright); letter-spacing:.04em;
+    border-bottom:1px solid var(--hair2); padding-bottom:5px; margin-bottom:6px; }
+  .sdom ul{ list-style:none; }
+  .sdom li{ font-size:9.5px; color:var(--txt-dim); padding:1px 0; }
+
+  /* ---------- TABLE ---------- */
+  table{ width:100%; border-collapse:collapse; margin:14px 0; font-size:11px; }
+  th{ text-align:left; font-size:8.5px; letter-spacing:.2em; text-transform:uppercase; color:var(--gold);
+    padding:8px 10px; border-bottom:1px solid var(--hair); }
+  td{ padding:9px 10px; border-bottom:1px solid var(--hair2); color:var(--txt-dim); vertical-align:top; }
+  td.dim-col{ color:var(--red); }
+  td.bright-col{ color:var(--green); }
+  tr td:first-child{ color:var(--txt); font-weight:500; }
+
+  /* ---------- CODE / FORMULA ---------- */
+  .code{ border:1px solid var(--hair2); border-left:2px solid var(--gold); border-radius:3px;
+    background:#0a0e15; padding:13px 15px; font-family:"JetBrains Mono",monospace; font-size:10.5px;
+    color:#cdd3dc; line-height:1.7; white-space:pre-wrap; margin:12px 0; }
+  .code .c{ color:var(--txt-faint); }
+  .code .k{ color:var(--gold-bright); }
+  .code .b{ color:var(--blue-bright); }
+  .formula{ text-align:center; font-family:"JetBrains Mono",monospace; font-size:14px; color:var(--gold-bright);
+    border:1px solid var(--hair); border-radius:3px; padding:16px; margin:14px 0;
+    background:radial-gradient(80% 100% at 50% 0%,rgba(201,161,74,0.08),transparent); }
+
+  /* ---------- CALLOUT ---------- */
+  .callout{ border:1px solid var(--hair); border-radius:3px; padding:16px 18px; margin:16px 0;
+    background:linear-gradient(110deg,rgba(201,161,74,0.07),transparent 70%); }
+  .callout .ct{ font-size:9px; letter-spacing:.28em; text-transform:uppercase; color:var(--gold); margin-bottom:6px; }
+  .callout p{ font-size:12px; color:var(--txt); margin:0; }
+
+  .stage-row{ display:flex; gap:6px; margin:12px 0; }
+  .stage{ flex:1; border:1px solid var(--hair2); border-radius:3px; padding:9px 8px; text-align:center;
+    background:linear-gradient(180deg,rgba(255,255,255,0.02),transparent); }
+  .stage .sn{ font-size:9px; letter-spacing:.16em; text-transform:uppercase; color:var(--gold); }
+  .stage .sx{ font-size:9px; color:var(--txt-faint); margin-top:3px; }
+  .arrowflow{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:14px 0; font-size:11px; }
+  .arrowflow .node{ border:1px solid var(--hair2); border-radius:3px; padding:7px 12px; color:var(--txt); }
+  .arrowflow .ar{ color:var(--gold); }
+
+  ul.clean{ list-style:none; margin:8px 0; }
+  ul.clean li{ font-size:11.5px; color:var(--txt-dim); padding:3px 0 3px 16px; position:relative; }
+  ul.clean li::before{ content:"—"; position:absolute; left:0; color:var(--gold); }
+  .kgrid{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .ksvc{ border:1px solid var(--hair2); border-radius:3px; padding:12px 14px; background:rgba(255,255,255,0.012); }
+  .ksvc .kt{ font-size:12px; font-weight:600; color:var(--gold-bright); }
+  .ksvc p{ font-size:10.5px; color:var(--txt-dim); margin:5px 0 0; }
+  .sp{ height:10px; } .sp2{ height:20px; }
+</style>
+</head>
+<body>
+
+<!-- ============ COVER ============ -->
+<section class="page">
+ <div class="page-inner cover">
+   <div class="topbar">
+     <span>FALCON OS</span>
+     <span>Implementation Dossier · 2026</span>
+   </div>
+   <div class="center">
+     <div class="eyebrow">Engineering Build Report · Confidential</div>
+     <h1 class="title serif">The Unified<br><span class="grad">Trading Intelligence</span><br>Operating System</h1>
+     <p class="lead" style="margin-top:22px;">What was actually built. Three overlapping platforms — LETRA 37, F16 Raptor / Senseei, and Symphony — collapsed into one modular MQL5 operating system: a kernel, six engines, one shared market state, and a single deterministic per-bar pipeline. Plus three execution subsystems engineered specifically for this strategy: the <span class="gold">Symphony</span> phase authority, the <span class="gold">PYRO</span> thermal risk engine, and the <span class="gold">TALON</span> grip.</p>
+     <div class="meta">
+       <div><div class="k">Repository</div><div class="v">snxperfx1-dev / combo</div></div>
+       <div><div class="k">Branch</div><div class="v">falcon-os-platform</div></div>
+       <div><div class="k">Build</div><div class="v">v3.27 · single-file</div></div>
+       <div><div class="k">Target</div><div class="v">XAUUSD · M15</div></div>
+     </div>
+   </div>
+   <div class="confbar">
+     <span>Confidential · Not for distribution</span>
+     <span>Architecture &amp; Implementation · v1.0</span>
+   </div>
+ </div>
+</section>
+
+<!-- ============ EXECUTIVE SUMMARY ============ -->
+<section class="page">
+ <div class="rh"><span class="mark">FALCON OS</span><span>Executive Summary</span></div>
+ <div class="page-inner">
+   <div class="eyebrow">01 · Executive Summary</div>
+   <h2 class="section serif">Three platforms.<br>One operating system. <span class="grad">Shipped.</span></h2>
+   <p class="lead">FALCON OS is not a merge of three scripts. It is a complete redesign where every subsystem shares one market state and one event pipeline. Every calculation exists exactly once. The original tri-system duplication — physics, ATR, waves, liquidity, structure — is gone.</p>
+
+   <div class="stats">
+     <div><div class="n">6</div><div class="l">Engines on one shared state &amp; deterministic pipeline</div></div>
+     <div><div class="n">3</div><div class="l">Purpose-built execution subsystems (Symphony · PYRO · TALON)</div></div>
+     <div><div class="n">1×</div><div class="l">Each calculation runs exactly once per candle</div></div>
+     <div><div class="n">0</div><div class="l">DRDWCT trimmer remnants — fully removed</div></div>
+   </div>
+
+   <div class="grid2">
+     <div class="card">
+       <div class="ct">What was unified</div>
+       <h3>The six-layer OS</h3>
+       <p>Market · Memory · Intelligence · Decision · Execution · Visualization — each owning one domain, communicating through a kernel (shared state + event bus + scheduler + config + logging + persistence). LETRA's physics, F16's Invisible Network &amp; Senseei, and Symphony's execution all live in one codebase, computed once.</p>
+     </div>
+     <div class="card">
+       <div class="ct">What was engineered new</div>
+       <h3>The execution trinity</h3>
+       <p><span class="gold">Symphony</span> became the single phase/direction authority for precision Phase 3/4 entries. <span class="gold">PYRO</span> models each stacked campaign as a body with heat. <span class="gold">TALON</span> replaced basic trailing with a curve-convergent structural grip. Together they handle a stacking, curve-driven strategy that generic risk tools cannot.</p>
+     </div>
+   </div>
+
+   <div class="callout">
+     <div class="ct">The governing law</div>
+     <p>Phases are <span class="gold">outputs</span>, never inputs. Direction <span class="gold">emerges</span> from ownership — it is never voted. Risk is evaluated <span class="gold">per campaign</span> and never netted across opposite directions. Every subsystem owns exactly one question; nothing calculates twice.</p>
+   </div>
+
+   <div class="rule"></div>
+   <p class="faint" style="font-size:10.5px;">This dossier documents the implemented system as of build v3.27. Source is a modular tree under <span class="mono">FALCON_OS/</span> plus a generated single-file build, <span class="mono">FalconOS_AllInOne.mq5</span>, intended for compilation in MetaEditor 5.</p>
+ </div>
+ <div class="rf"><span>Confidential</span><span>01</span></div>
+</section>
+
+<!-- ============ ARCHITECTURE ============ -->
+<section class="page">
+ <div class="rh"><span class="mark">FALCON OS</span><span>Architecture</span></div>
+ <div class="page-inner">
+   <div class="eyebrow">02 · System Architecture</div>
+   <h2 class="section serif">Six layers.<br>One direction of flow.</h2>
+   <p class="lead">Data flows down through the layers; nothing crosses a boundary except through the shared <span class="mono">g_state</span> object. Below, each layer as implemented, with its real subsystems.</p>
+   <div class="sp"></div>
+
+   <div class="layer">
+     <div class="lh"><span class="num">01</span><span class="name">Market Engine</span><span class="role">Observes</span></div>
+     <div class="src">MarketEngine.mqh · source: LETRA 37</div>
+     <div class="pills">
+       <span class="pill g">Physics</span><span class="pill">Structure</span><span class="pill">Liquidity</span><span class="pill">Inducement</span><span class="pill">Convexity / ARC</span><span class="pill">Wave</span><span class="pill">FU Candle</span><span class="pill">Order Blocks</span><span class="pill">Supply / Demand</span><span class="pill">HTF Stack</span>
+     </div>
+   </div>
+
+   <div class="layer">
+     <div class="lh"><span class="num">02</span><span class="name">Memory Engine</span><span class="role">Remembers</span></div>
+     <div class="src">MemoryEngine.mqh · source: F16 Raptor</div>
+     <div class="pills">
+       <span class="pill b">Invisible Network</span><span class="pill">Node Registry</span><span class="pill">Conversation Web</span><span class="pill">Authority</span><span class="pill">Curve Tree</span><span class="pill">Wave Matrix</span><span class="pill">FEZ</span><span class="pill">FRZ</span><span class="pill">Campaign Ownership</span><span class="pill">Participants</span>
+     </div>
+   </div>
+
+   <div class="layer">
+     <div class="lh"><span class="num">03</span><span class="name">Intelligence Engine</span><span class="role">Reasons</span></div>
+     <div class="src">IntelligenceEngine.mqh · source: LETRA + F16</div>
+     <div class="pills">
+       <span class="pill">Energy Resolution</span><span class="pill">Belief</span><span class="pill">Forecast (RFE/FGE)</span><span class="pill">Hypothesis</span><span class="pill">Prediction</span><span class="pill">Validation</span><span class="pill">Liquidation Wave</span><span class="pill g">Entry Cycle</span><span class="pill">Threat / Opportunity</span><span class="pill">Story</span>
+     </div>
+   </div>
+
+   <div class="layer">
+     <div class="lh"><span class="num">04</span><span class="name">Decision Engine</span><span class="role">Decides</span></div>
+     <div class="src">DecisionEngine.mqh · source: Senseei / Chief Strategist</div>
+     <div class="pills">
+       <span class="pill">Senseei</span><span class="pill">Chief Strategist</span><span class="pill">Campaign AI</span><span class="pill">Master Chief</span>
+       <span class="pill g">BUY</span><span class="pill g">SELL</span><span class="pill">WAIT</span><span class="pill">ATTACK</span><span class="pill">DEFEND</span><span class="pill">EXIT</span><span class="pill">SCALE</span><span class="pill">NO TRADE</span>
+     </div>
+   </div>
+
+   <div class="layer">
+     <div class="lh"><span class="num">05</span><span class="name">Execution Engine</span><span class="role">Executes only</span></div>
+     <div class="src">ExecutionEngine.mqh + SymphonyEngine.mqh + ThermalRiskEngine.mqh · source: Symphony</div>
+     <div class="pills">
+       <span class="pill g">Symphony Phase Entries</span><span class="pill new">PYRO Thermal Risk</span><span class="pill new">TALON Grip</span><span class="pill">Lot Engine</span><span class="pill">ARC / Institutional Exit</span><span class="pill">Session Filter</span><span class="pill">Drawdown Protection</span><span class="pill">Partial Close</span>
+     </div>
+   </div>
+
+   <div class="layer">
+     <div class="lh"><span class="num">06</span><span class="name">Visualization Engine</span><span class="role">Displays</span></div>
+     <div class="src">Visualization.mqh · replaces all prior dashboards</div>
+     <div class="pills">
+       <span class="pill">Overview</span><span class="pill">Physics</span><span class="pill">Structure</span><span class="pill">Network</span><span class="pill">Curve</span><span class="pill">Campaign</span><span class="pill">Wave</span><span class="pill">HTF</span><span class="pill g">Risk (PYRO/TALON)</span><span class="pill">Execution</span><span class="pill">Performance</span><span class="pill">Diagnostics</span>
+     </div>
+   </div>
+ </div>
+ <div class="rf"><span>Confidential</span><span>02</span></div>
+</section>
+
+<!-- ============ KERNEL ============ -->
+<section class="page">
+ <div class="rh"><span class="mark">FALCON OS</span><span>Kernel</span></div>
+ <div class="page-inner">
+   <div class="eyebrow">03 · The Kernel</div>
+   <h2 class="section serif">The infrastructure<br>beneath everything.</h2>
+   <p class="lead">A lightweight kernel ties every module together — not by coupling them, but by giving them shared services they never rebuild. Implemented across the <span class="mono">Kernel/</span> directory.</p>
+   <div class="sp"></div>
+   <div class="kgrid">
+     <div class="ksvc"><div class="kt">Shared State Manager</div><p><span class="mono">FalconState.mqh</span> — the single <span class="mono">g_state</span> contract. No module owns state belonging to another. One ATR, one wave, one campaign owner, system-wide.</p></div>
+     <div class="ksvc"><div class="kt">Event Bus</div><p><span class="mono">FalconEventBus.mqh</span> — publish/subscribe. Modules react to events (bar, spawn, phase change, risk breach) rather than polling. New engines plug in without touching the pipeline.</p></div>
+     <div class="ksvc"><div class="kt">Scheduler</div><p><span class="mono">FalconOS.mq5</span> pipeline — the same deterministic sequence every bar. Same inputs → same outputs. No race conditions.</p></div>
+     <div class="ksvc"><div class="kt">Configuration Service</div><p><span class="mono">FalconConfig.mqh</span> — every tunable declared exactly once in <span class="mono">g_cfg</span>, with LIVE / BACKTEST / RESEARCH profiles.</p></div>
+     <div class="ksvc"><div class="kt">Logging &amp; Diagnostics</div><p><span class="mono">FalconLog.mqh</span> — structured logs, per-module timing, health checks surfaced in the Diagnostics tab.</p></div>
+     <div class="ksvc"><div class="kt">Persistence Layer</div><p><span class="mono">FalconPersistence.mqh</span> — equity/drawdown tracking, network &amp; campaign memory, performance metrics across sessions.</p></div>
+   </div>
+
+   <div class="callout">
+     <div class="ct">Series &amp; math — single implementation</div>
+     <p><span class="mono">FalconSeries.mqh</span> holds the one ATR (<span class="mono">FalconATR</span>), one pivot test (<span class="mono">FalconIsPivotHigh/Low</span>), and shared price series (<span class="mono">gOpen/gHigh/gLow/gClose</span>). Every engine reads these — there is no second ATR anywhere in the system.</p>
+   </div>
+ </div>
+ <div class="rf"><span>Confidential</span><span>03</span></div>
+</section>
+
+<!-- ============ PIPELINE ============ -->
+<section class="page">
+ <div class="rh"><span class="mark">FALCON OS</span><span>Master Pipeline</span></div>
+ <div class="page-inner">
+   <div class="eyebrow">04 · Master Pipeline</div>
+   <h2 class="section serif">Every bar.<br>Same sequence. Always.</h2>
+   <p class="lead">One fixed pipeline runs on every confirmed candle. The Symphony phase bridge, PYRO, and TALON are woven into the deterministic order so nothing recalculates and nothing fires out of sequence.</p>
+   <div class="sp"></div>
+   <div class="pipe">
+     <div class="pstep"><div class="pk">Trigger</div><div class="pn">New Candle</div><div class="pd">Bar context written to g_state; pipeline locks for this cycle.</div></div>
+     <div class="pstep"><div class="pk">Market Layer</div><div class="pn">Market Engine — physics → structure → liquidity → convexity → wave → FU → OB → S/D → HTF</div><div class="pd">All raw market geometry observed and written once.</div></div>
+     <div class="pstep"><div class="pk">Phase Authority</div><div class="pn">Symphony Update + Bridge</div><div class="pd">Impulse + Phase 1–4 + ARC computed, then bridged onto canonical g_state.wave (phase/direction/flip/origin/objective). The single phase truth.</div></div>
+     <div class="pstep mem"><div class="pk">Memory Layer</div><div class="pn">Memory Engine — Network → Curve → Wave Matrix → FEZ → FRZ → Campaign → Participants</div><div class="pd">Ownership flips with Symphony's phase; nothing votes.</div></div>
+     <div class="pstep"><div class="pk">Intelligence Layer</div><div class="pn">Energy → Belief → Forecast → Hypothesis → Prediction → Validation → Entry Cycle → Story</div><div class="pd">Continuous probabilities, not binary states.</div></div>
+     <div class="pstep"><div class="pk">Decision Layer</div><div class="pn">Senseei → Chief Strategist → Campaign AI → Master Chief</div><div class="pd">One unambiguous verdict per bar.</div></div>
+     <div class="pstep"><div class="pk">Execution Layer · A</div><div class="pn">Execution Engine — exposure snapshot + drawdown kill-switch</div><div class="pd">Translates directives to orders; never decides.</div></div>
+     <div class="pstep"><div class="pk">Execution Layer · B</div><div class="pn">PYRO Thermal Risk — heat · admissions · thermostat · catastrophe flatten</div><div class="pd">Per-campaign basket risk computed before any new stack.</div></div>
+     <div class="pstep"><div class="pk">Execution Layer · C</div><div class="pn">Symphony Manage — TALON grip → ARC partial → composite exit → Phase 3/4 entries</div><div class="pd">Entries gated by PYRO admission; stops owned by TALON.</div></div>
+     <div class="pstep"><div class="pk">Persistence + Output</div><div class="pn">Persistence tick → Visualization Engine</div><div class="pd">12 tabs read finalized state. Zero recalculation.</div></div>
+   </div>
+ </div>
+ <div class="rf"><span>Confidential</span><span>04</span></div>
+</section>
+
+<!-- ============ SHARED STATE ============ -->
+<section class="page">
+ <div class="rh"><span class="mark">FALCON OS</span><span>Shared State</span></div>
+ <div class="page-inner">
+   <div class="eyebrow">05 · Master Shared State</div>
+   <h2 class="section serif">One object.<br>Every module reads from it.</h2>
+   <p class="lead">The <span class="mono">g_state</span> object is the single source of truth. The implemented domains, with the new risk sub-state added for PYRO &amp; TALON.</p>
+   <div class="sp"></div>
+   <div class="sgrid">
+     <div class="sdom"><div class="sh">Physics</div><ul><li>ATR · Velocity · Accel</li><li>Convexity (+ smoothed)</li><li>Efficiency · Displacement</li><li>Energy · Compression · Expansion</li></ul></div>
+     <div class="sdom"><div class="sh">Structure</div><ul><li>Trend · HH/HL/LH/LL</li><li>Swing High / Low</li><li>BOS · CHoCH</li><li>Break strength</li></ul></div>
+     <div class="sdom"><div class="sh">Liquidity</div><ul><li>Pools · Sweeps</li><li>Sweep probability · pressure</li><li>Inducement · false CHoCH</li><li>Acceptance · score</li></ul></div>
+     <div class="sdom"><div class="sh">Wave</div><ul><li>Phase · prevPhase · direction</li><li>Completion · energy · age</li><li>Flip top/bot · origin · objective</li><li>Symphony mode + phases</li></ul></div>
+     <div class="sdom"><div class="sh">HTF / FU</div><ul><li>Per-TF direction · alignment</li><li>Stack dir · owner TF</li><li>FU candle · zone · confidence</li><li>Fractal agreement</li></ul></div>
+     <div class="sdom"><div class="sh">Network</div><ul><li>Nodes · authority</li><li>Conversation graph</li><li>Pressure · bias · next node</li><li>Dormancy · revisits</li></ul></div>
+     <div class="sdom"><div class="sh">Curve / Campaign</div><ul><li>Curve tree · owner dir/TF</li><li>Campaign owner · institution</li><li>Control · remaining energy</li><li>Participants</li></ul></div>
+     <div class="sdom"><div class="sh">Intelligence</div><ul><li>Belief · hypothesis</li><li>Prediction · validation</li><li>Exec probability · threat</li><li>Resolution · entry cycle</li></ul></div>
+     <div class="sdom"><div class="sh">Execution + Risk</div><ul><li>Entry · stop · target · lots</li><li>Trade / exit state</li><li>PYRO campaign heat ×2</li><li>TALON grip + stage ×2</li></ul></div>
+   </div>
+   <div class="callout">
+     <div class="ct">Single source of truth — enforced</div>
+     <p>No scenario exists where two modules hold a different ATR, wave state, or campaign direction. The Symphony bridge writes the canonical phase; the Market Engine supplies geometry descriptors; everyone reads the same object.</p>
+   </div>
+ </div>
+ <div class="rf"><span>Confidential</span><span>05</span></div>
+</section>
+
+<!-- ============ SYMPHONY ============ -->
+<section class="page">
+ <div class="rh"><span class="mark">FALCON OS</span><span>Symphony · Phase Authority</span></div>
+ <div class="page-inner">
+   <div class="eyebrow">06 · Precision Entries</div>
+   <h2 class="section serif">Symphony — the single<br><span class="grad">phase &amp; direction authority.</span></h2>
+   <p class="lead">Symphony's proven curvature/retracement phase engine was ported verbatim onto FALCON's shared series, then made the primary order logic — and the single phase truth the entire OS reasons on.</p>
+
+   <div class="grid2">
+     <div class="card">
+       <div class="ct">The engine</div>
+       <h3>Impulse + Phases 1–4</h3>
+       <p>A confirmed impulse anchors a campaign (high→low for shorts, low→high for longs). Retracement fraction then classifies Phase 1 (impulse) → 2 (retrace) → 3 (return into zone) → 4 (breakout). Entries fire on <span class="gold">Phase 3 &amp; Phase 4</span> only, with Symphony's exact stop placement: anchor ± ATR × 0.25.</p>
+     </div>
+     <div class="card">
+       <div class="ct">The bridge</div>
+       <h3>One phase truth, system-wide</h3>
+       <p>The bridge maps Symphony's mode + Phase 1–4 onto canonical <span class="mono">g_state.wave</span> (phase, direction, flip zone, origin, objective, completion, dominance). Memory ownership, Intelligence, Decision, Execution and Visualization all read this — no second phase engine survives downstream.</p>
+     </div>
+   </div>
+
+   <div class="code"><span class="c">// Phase map (direction-aware) → canonical PH_*</span>
+ phase 1  impulse        <span class="k">→</span> PH_EXPANSION
+ phase 2  retracing      <span class="k">→</span> PH_RETRACEMENT
+ phase 3  return-to-zone <span class="k">→</span> PH_DEMAND_RETURN  (long) / PH_SUPPLY_RETURN (short)
+ phase 4  breakout       <span class="k">→</span> PH_NEW_HIGH       (long) / PH_NEW_LOW       (short)
+ <span class="c">// dominanceTransfer keyed to phase ≥ 3 → campaign ownership flips with Symphony</span></div>
+
+   <div class="callout">
+     <div class="ct">Why this matters</div>
+     <p>Before the bridge, two phase engines ran in parallel (Market Engine + Symphony) producing competing direction. Now the Market Engine observes geometry; Symphony owns the phase. Direction emerges from the flip-driven campaign owner — never a vote.</p>
+   </div>
+   <div class="sp"></div>
+   <p class="faint" style="font-size:10.5px;">Lot sizing uses Symphony's contract-value model — <span class="mono">riskCash / (dist × contractValue)</span> — capped by <span class="mono">InpMaxLots</span>. The legacy tick-value path that mis-sized orders was removed.</p>
+ </div>
+ <div class="rf"><span>Confidential</span><span>06</span></div>
+</section>
+
+<!-- ============ PYRO ============ -->
+<section class="page">
+ <div class="rh"><span class="mark">FALCON OS</span><span>PYRO · Thermal Risk</span></div>
+ <div class="page-inner">
+   <div class="eyebrow">07 · The Risk Engine</div>
+   <h2 class="section serif">PYRO — Campaign<br><span class="grad">Thermodynamics.</span></h2>
+   <p class="lead">A risk model built for how this algo actually trades: precision entries that <span class="gold">stack into a directional campaign</span>. Each campaign is treated as a physical body that carries heat.</p>
+
+   <div class="formula">heat = adverseExcursion(blended basket, ATR) × fragility(stackCount, totalLots)</div>
+
+   <p class="dim" style="font-size:12px;">A winning basket runs near-zero heat no matter how large — it is house money, never trimmed. An underwater, heavily-stacked basket overheats fast. Heat is the single scalar that governs admission of every new stack:</p>
+
+   <div class="stage-row">
+     <div class="stage"><div class="sn gold">OPEN</div><div class="sx">cool — full stacks</div></div>
+     <div class="stage"><div class="sn" style="color:var(--blue-bright)">THROTTLED</div><div class="sx">warming — shrink size</div></div>
+     <div class="stage"><div class="sn" style="color:var(--gold-bright)">FROZEN</div><div class="sx">hot / maxed — no stacks</div></div>
+     <div class="stage"><div class="sn" style="color:var(--red)">DE-RISK</div><div class="sx">critical — flatten</div></div>
+   </div>
+
+   <div class="grid2">
+     <div class="card"><div class="ct">Novel for stacking</div><h3>Anti-martingale governor</h3><p>What kills stacking systems is averaging down into a reversal. PYRO forbids adding beyond <span class="mono">MaxAvgDownStacks</span> while underwater, and shrinks each admitted stack inversely to heat.</p></div>
+     <div class="card"><div class="ct">Never nets</div><h3>Dual-campaign thermostat</h3><p>Long-heat and short-heat tracked separately. If both overheat at once (whipsaw trap), all admissions freeze. Account heat derives from equity drawdown vs peak.</p></div>
+   </div>
+
+   <div class="callout">
+     <div class="ct">The contrast with the old DRDWCT engine</div>
+     <p>DRDWCT trimmed everything — including winners — via VaR/UDS. PYRO never trims a winner: heat is ~0 in profit, so the only forced close is a true runaway (deeply underwater + large) at critical heat, exactly when a stacking book must be cut. The admission gate <span class="mono">TR_AdmitLots()</span> sizes every Symphony entry.</p>
+   </div>
+ </div>
+ <div class="rf"><span>Confidential</span><span>07</span></div>
+</section>
+
+<!-- ============ TALON ============ -->
+<section class="page">
+ <div class="rh"><span class="mark">FALCON OS</span><span>TALON · The Grip</span></div>
+ <div class="page-inner">
+   <div class="eyebrow">08 · Breakeven &amp; Trailing</div>
+   <h2 class="section serif">TALON — the curve-convergent<br><span class="grad">structural grip.</span></h2>
+   <p class="lead">Basic ATR trailing is the wrong tool for a curve-driven, stacking strategy — it chokes the trade on a healthy retrace or gives back half the move at the turn. TALON drives the stop with the same intelligence that drives entries.</p>
+
+   <div class="stage-row">
+     <div class="stage"><div class="sn">FORMING</div><div class="sx">on structural stop</div></div>
+     <div class="stage"><div class="sn">BREAKEVEN</div><div class="sx">earned by structure</div></div>
+     <div class="stage"><div class="sn">RIDING</div><div class="sx">behind swing pivots</div></div>
+     <div class="stage"><div class="sn">CONVERGING</div><div class="sx">tightening to target</div></div>
+     <div class="stage"><div class="sn">TERMINAL</div><div class="sx">tightest — profit rolls over</div></div>
+   </div>
+
+   <ul class="clean">
+     <li><span class="gold">Earned breakeven</span> — locks only when structure confirms (a BOS in the campaign direction) or the fleet reaches <span class="mono">TalonBeATR</span> in favor. No more getting tagged on a phase-2 retrace the engine considers healthy.</li>
+     <li><span class="gold">Structural ratchet</span> — the stop rides behind confirmed swing pivots (higher-lows for longs / lower-highs for shorts), never a fixed distance behind raw price.</li>
+     <li><span class="gold">Curve convergence</span> — the trail distance contracts as price nears the ARC target / wave objective and as geometry capacity drains. Far = wide (let it run); near = tight (bank before reversal).</li>
+     <li><span class="gold">Phase / thermal coupling</span> — hard-tightens at terminal phase (NEW_HIGH / NEW_LOW) or when the campaign's profit velocity rolls over.</li>
+     <li><span class="gold">Basket-level</span> — one grip for the whole fleet, off blended cost. Resolves the per-leg vs basket duplication entirely.</li>
+   </ul>
+
+   <div class="callout">
+     <div class="ct">Clean responsibility split — no duplicate decisions</div>
+     <p><b class="gold">Symphony</b> owns entries · ARC partial · composite reversal exit. <b class="gold">TALON</b> owns all protective stops (breakeven + trailing). <b class="gold">PYRO</b> owns admission/sizing · thermostat · catastrophe flatten. The duplicate basket-breakeven that previously lived in PYRO was removed — one owner per decision.</p>
+   </div>
+ </div>
+ <div class="rf"><span>Confidential</span><span>08</span></div>
+</section>
+
+<!-- ============ RESPONSIBILITY + REMOVED ============ -->
+<section class="page">
+ <div class="rh"><span class="mark">FALCON OS</span><span>Responsibility Map</span></div>
+ <div class="page-inner">
+   <div class="eyebrow">09 · Authority &amp; Removal</div>
+   <h2 class="section serif">One owner per decision.<br>Nothing duplicated.</h2>
+   <p class="lead">Every decision in the execution layer has exactly one authority. The table below is the contract.</p>
+
+   <table>
+     <thead><tr><th>Decision</th><th>Authority</th><th>Must never</th></tr></thead>
+     <tbody>
+       <tr><td>Phase &amp; direction</td><td>Symphony (bridged to g_state.wave)</td><td class="dim-col">be recomputed by Market Engine</td></tr>
+       <tr><td>Entry timing</td><td>Symphony Phase 3 / 4</td><td class="dim-col">fire without PYRO admission</td></tr>
+       <tr><td>Stack size / admission</td><td>PYRO TR_AdmitLots</td><td class="dim-col">average down past the limit</td></tr>
+       <tr><td>Protective stop (BE + trail)</td><td>TALON grip</td><td class="dim-col">be touched by PYRO or Symphony</td></tr>
+       <tr><td>Profit banking</td><td>Symphony ARC partial</td><td class="dim-col">conflict with the TALON ratchet</td></tr>
+       <tr><td>Reversal exit</td><td>Symphony composite (ARC + inst + phase)</td><td class="dim-col">close a healthy campaign</td></tr>
+       <tr><td>Catastrophe close</td><td>PYRO (critical heat) + drawdown kill-switch</td><td class="dim-col">trim a winning basket</td></tr>
+     </tbody>
+   </table>
+
+   <div class="sp"></div>
+   <div class="eyebrow" style="color:var(--red)">Removed in full</div>
+   <h3 style="font-size:20px;font-weight:400;" class="serif">The DRDWCT risk engine</h3>
+   <p class="dim" style="font-size:12px;">The original Symphony DRDWCT VaR/UDS/gamma trimmer closed open winners and was removed completely — first the logic, then all dead scaffolding:</p>
+   <div class="pills" style="margin-top:10px;">
+     <span class="pill">VaR scenario engine</span><span class="pill">UDS metrics</span><span class="pill">gamma / RD / SAG</span><span class="pill">micro-bomb trim loop</span><span class="pill">EE_Metrics / EE_VarResult structs</span><span class="pill">logistic bottom-layer state</span><span class="pill">var2/var3/udsMax/anyBomb fields</span><span class="pill">InpEnableRiskEng · InpRdLimit</span>
+   </div>
+   <div class="callout" style="margin-top:16px;">
+     <div class="ct">Verification</div>
+     <p>A full source sweep for the removed symbols returns zero live references. The only remaining mentions are comments noting the removal. Risk is now owned entirely by PYRO + TALON + the drawdown kill-switch.</p>
+   </div>
+ </div>
+ <div class="rf"><span>Confidential</span><span>09</span></div>
+</section>
+
+<!-- ============ BUILD / FILES / RUN ============ -->
+<section class="page">
+ <div class="rh"><span class="mark">FALCON OS</span><span>Build &amp; Delivery</span></div>
+ <div class="page-inner">
+   <div class="eyebrow">10 · Build, Files &amp; Operation</div>
+   <h2 class="section serif">How it ships.<br>How it runs.</h2>
+
+   <div class="grid2">
+     <div class="card">
+       <div class="ct">Source tree</div>
+       <h3>Modular — FALCON_OS/</h3>
+       <div class="code" style="margin-top:8px;font-size:9.5px;"><span class="b">Kernel/</span>
+   FalconConfig · FalconState
+   FalconSeries · FalconEventBus
+   FalconLog · FalconPersistence
+<span class="b">Engines/</span>
+   MarketEngine · MemoryEngine
+   IntelligenceEngine · DecisionEngine
+   ExecutionEngine
+   <span class="k">ThermalRiskEngine (PYRO)</span>
+   <span class="k">SymphonyEngine (phase + TALON)</span>
+   Visualization
+<span class="b">FalconOS.mq5</span>  <span class="c">// orchestrator</span></div>
+     </div>
+     <div class="card">
+       <div class="ct">Delivery</div>
+       <h3>Single-file build</h3>
+       <p><span class="mono">FalconOS_AllInOne.mq5</span> — every kernel + engine concatenated in dependency order, includes/properties stripped, version-stamped. Drop into MetaEditor 5 and compile (the Linux build sandbox cannot compile MQL5, so balance is verified statically each build).</p>
+       <div class="sp"></div>
+       <div class="ct">Run profile</div>
+       <p>XAUUSD · M15. For full backtests set <span class="mono">InpSessionFilter = false</span>. <span class="mono">InpUseSymphony</span>, <span class="mono">InpUseThermalRisk</span>, <span class="mono">InpUseTalon</span> default on.</p>
+     </div>
+   </div>
+
+   <div class="ct" style="margin-top:18px;color:var(--gold);font-size:9px;letter-spacing:.26em;">VERSION HISTORY</div>
+   <table>
+     <thead><tr><th>Build</th><th>Milestone</th></tr></thead>
+     <tbody>
+       <tr><td>v3.2x</td><td>FALCON OS unified — 6 engines, kernel, shared state, deterministic pipeline</td></tr>
+       <tr><td>v3.22</td><td>Symphony Phase 3/4 engine ported as the precision entry/exit authority</td></tr>
+       <tr><td>v3.23</td><td>Symphony made the single phase/direction source of truth (bridge)</td></tr>
+       <tr><td>v3.24</td><td>Symphony trade management added (breakeven · trailing · ARC partial)</td></tr>
+       <tr><td>v3.25</td><td>PYRO Campaign Thermodynamics risk engine for stacked entries</td></tr>
+       <tr><td>v3.26</td><td>DRDWCT scaffolding scrubbed completely</td></tr>
+       <tr><td>v3.27</td><td>TALON curve-convergent structural grip; duplicate breakeven removed</td></tr>
+     </tbody>
+   </table>
+   <div class="rule"></div>
+   <p class="faint" style="font-size:10px;">Repository snxperfx1-dev/combo · branch falcon-os-platform. Each build is committed and pushed; the single-file artifact is pinned per commit for review.</p>
+ </div>
+ <div class="rf"><span>Confidential</span><span>10</span></div>
+</section>
+
+<!-- ============ CLOSING ============ -->
+<section class="page">
+ <div class="page-inner cover">
+   <div class="topbar"><span>FALCON OS</span><span>Summary</span></div>
+   <div class="center">
+     <div class="eyebrow">Built for what comes next</div>
+     <h1 class="title serif" style="font-size:46px;">A system designed<br>to <span class="grad">receive the future</span><br>without disruption.</h1>
+     <p class="lead" style="margin-top:22px;">The kernel is the foundation. The shared state is the contract. The pipeline is the discipline. Symphony owns the phase, PYRO owns the heat, TALON owns the grip — each one job, one truth, one way to communicate. New models, data feeds, markets and instruments plug into a core designed to receive them.</p>
+     <div class="rule" style="margin:28px 0;"></div>
+     <p class="dim" style="font-size:12px;max-width:60ch;">FALCON OS is a complete redesign from three overlapping codebases into a coherent, modular trading operating system — with a shared architecture, a unified state model, a deterministic pipeline, and risk &amp; trade-management subsystems engineered specifically for precision stacked-campaign execution.</p>
+   </div>
+   <div class="confbar">
+     <span>Confidential &amp; Proprietary</span>
+     <span>Implementation Dossier · v1.0 · Not for distribution</span>
+   </div>
+ </div>
+</section>
+
+</body>
+</html>
