@@ -1,0 +1,36 @@
+{
+  "id": "FEAT-007",
+  "type": "feat",
+  "description": "Create Part7_Senseei.mqh - F16's Senseei meta-intelligence (the master decision engine) that synthesizes all sub-engines into Alignment/Contradiction/Threat/Confidence/Timing/Intent/Opportunity/Action. Also includes the V72 probabilistic entry decision that replaces Symphony's simple Phase 3+4 trigger with entryProb > 90% gating.",
+  "status": "completed",
+  "steps": [
+    "Create Part7_Senseei.mqh at the repo root",
+    "Port Senseei meta-intelligence computation: 4 voters (waveDir, stackDir, netBias, pressureDir) -> master direction (sum > 0 ? 1 : < 0 ? -1 : 0). Alignment = voters-for / total-cast * 100. Conflict = (total - voters-for) / total * 100.",
+    "Port threat calculation: conflict*0.40 + residual*0.28 + timeConflict*0.12 + (pressure opposing ? 18 : 0) + (partially resolved ? 10 : 0)",
+    "Port confidence calculation: alignment*0.40 + timeAlign*0.12 + stackPct*0.18 + attractor*0.15 + min(15, eligNodes*1.2) - threat*0.20",
+    "Port timing classification: from ie1a_currentPhase/resolutionState/waveProgress -> VERY EARLY/EARLY/DEVELOPING/MID CYCLE/LATE/TERMINAL/RESOLVED",
+    "Port intent classification: from conflict/liqg_active/currentPhase -> ABSORPTION/DELIVERY/EXPANSION/CONTINUATION/RESOLUTION/BALANCE",
+    "Port opportunity scoring: alignment*0.40 + attractor*0.30 + stackPct*0.30 - threat*0.35. Grade: NONE/DEVELOPING/GOOD/STRONG/EXCEPTIONAL",
+    "Port action decision: WAIT (no master or high conflict), MANAGE/EXIT (resolved), ATTACK (strong/exceptional + confidence >= minConf + threat < 45), PREPARE (good/strong), WAIT (default)",
+    "Implement V72 Probabilistic Entry Decision: Combine 7 probability engines into a single entryProb score (0-100): (1) Curve Maturity from wave progress, (2) Hierarchical Ownership from fractal stack score, (3) Geometry from available space + zone precision, (4) Recursion Forecast from re_recursiveCompletionScore, (5) Dynamic Destination from eae_primaryAttractorScore, (6) Curve Capacity from compression persistence force, (7) Execution Confidence from Senseei confidence. Weight and combine these into entryProb. Entry fires ONLY when entryProb > InpEntryProbThreshold (default 90%).",
+    "Implement the modified entry logic: Replace Symphony's simple L3/L4/S3/S4 phase check with: (Symphony phase 3 or 4 is active) AND (Senseei action == ATTACK or PREPARE) AND (entryProb > threshold) AND (IsTradeTime()). Keep Symphony's lot sizing and stop placement.",
+    "Port the attack sequence tracking: entry/stop/target prices from flipzone/origin/objectives, latch flags for entered/stopHit/t1Hit/t2Hit/t3Hit"
+  ],
+  "acceptance_criteria": [
+    "Part7_Senseei.mqh exists with valid MQL5 syntax",
+    "Senseei produces master direction from 4 voters",
+    "Threat/confidence/opportunity scores match F16 formulas",
+    "Action decision follows the correct priority cascade",
+    "V72 probabilistic entry combines 7 engines into entryProb",
+    "Entry only fires when entryProb > 90% (configurable threshold)",
+    "Symphony's Phase 3/4 detection is preserved as a necessary-but-not-sufficient condition",
+    "Attack sequence tracks entry/stop/target states"
+  ],
+  "verification": [
+    "Read the file and verify Senseei formulas match F16 V70 PART D",
+    "Verify the 7 probability engines map to the documented fundamental law",
+    "Verify entry logic requires BOTH Symphony phase AND probabilistic gate"
+  ],
+  "blocked_reason": null,
+  "findings": "Part7_Senseei.mqh created at 547 lines. All braces (25/25), parentheses (215/215), and brackets (15/15) balanced. Contains: ComputeSenseei() with 4-voter master direction, alignment/conflict/threat/confidence scoring, timing/intent/opportunity/action classification. ComputeEntryProbability() with 7-engine V72 probabilistic model (P1-P7 weighted combination with alignment bonus and threat penalty). UpdateSenseei() master entry point. IsEntryAllowed() helper. IsSymphonyPhaseReady() checks phase>=3 on either side. IsMasterEntrySignal() combined gate (Symphony phase + Senseei action + probability threshold + trade time). AttackSequenceState struct with Init/Update/Reset functions for entry/stop/target tracking. Helper functions: CopyToCharArray, CompareCharArray, CharArrayContains. No duplicate symbols with Parts 1-6. All referenced globals verified to exist in their respective parts. g_attack global exposed for attack sequence tracking. This file should be included after Part6_CurveTree.mqh and before the main execution logic."
+}
