@@ -5,7 +5,7 @@
 //|   Risk: PYRO thermal + TALON curve-convergent structural grip.   |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "3.29"
+#property version   "3.30"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -5280,10 +5280,15 @@ void SymphonyExecuteTrading()
    bool longLocked  = (sym_exitedLongAnchor  != 0.0);
    bool shortLocked = (sym_exitedShortAnchor != 0.0);
 
-   bool L3 = (sym_mode==1  && sym_phaseLong ==3 && !longLocked);
-   bool L4 = (sym_mode==1  && sym_phaseLong ==4 && !longLocked);
-   bool S3 = (sym_mode==-1 && sym_phaseShort==3 && !shortLocked);
-   bool S4 = (sym_mode==-1 && sym_phaseShort==4 && !shortLocked);
+   // EDGE-TRIGGERED entries: fire only on the bar the phase TRANSITIONS into 3/4,
+   // never on every bar it stays there. (Level-triggering re-opened a new stacked
+   // position on every bar of a multi-bar retrace -> the dense entry clusters /
+   // chop.) Controlled pyramiding still happens: each fresh retest cycles phase
+   // back to 3 and arms one more stack.
+   bool L3 = (sym_mode==1  && sym_phaseLong ==3 && sym_prevPhaseLong !=3 && !longLocked);
+   bool L4 = (sym_mode==1  && sym_phaseLong ==4 && sym_prevPhaseLong !=4 && !longLocked);
+   bool S3 = (sym_mode==-1 && sym_phaseShort==3 && sym_prevPhaseShort!=3 && !shortLocked);
+   bool S4 = (sym_mode==-1 && sym_phaseShort==4 && sym_prevPhaseShort!=4 && !shortLocked);
 
    double impL = sym_anchorHigh - sym_anchorLow;
    double impS = sym_anchorHigh - sym_anchorLow;
