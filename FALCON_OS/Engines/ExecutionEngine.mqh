@@ -492,20 +492,25 @@ double EE_TerminalStop(const int dir,const double entry,const double atr)
 
 void EE_OwnerTargets(const int dir,const double entry,const double atr,double &t1,double &t2,double &t3)
 {
-   // T1 = wave objective (owner curve destination, ODDE). T2/T3 extend via the
-   // owner-return target and a further projection, in the trade direction.
-   double obj = g_state.wave.objective;
-   double frz = g_state.frz.targetPrice;
+   // DESTINATION AUTHORITY (WHERE): the conversation route's next node is the
+   // primary target when it sits ahead of price in the trade direction. T2/T3
+   // extend via the owner-return target (FRZ) and the wave objective (ODDE). If
+   // no valid node, fall back to wave objective.
+   double obj  = g_state.wave.objective;
+   double frz  = g_state.frz.targetPrice;
+   double node = g_state.network.nextNodePrice;     // <- conversation route destination
    if(dir==DIR_LONG)
    {
-      t1 = (obj>entry ? obj : entry + atr*3.0);
-      t2 = MathMax(t1, (frz>entry?frz:entry+atr*5.0));
+      bool nodeAhead = (node>entry);
+      t1 = nodeAhead ? node : (obj>entry ? obj : entry + atr*3.0);
+      t2 = MathMax(t1, (obj>entry ? obj : (frz>entry?frz:entry+atr*5.0)));
       t3 = MathMax(t2, entry + atr*8.0);
    }
    else
    {
-      t1 = (obj<entry && obj>0 ? obj : entry - atr*3.0);
-      t2 = MathMin(t1, (frz<entry && frz>0 ? frz : entry-atr*5.0));
+      bool nodeAhead = (node>0 && node<entry);
+      t1 = nodeAhead ? node : (obj<entry && obj>0 ? obj : entry - atr*3.0);
+      t2 = MathMin(t1, (obj<entry && obj>0 ? obj : (frz<entry && frz>0 ? frz : entry-atr*5.0)));
       t3 = MathMin(t2, entry - atr*8.0);
    }
 }
@@ -545,6 +550,13 @@ void EE_HandleEntries(const EE_Market &m)
    double close1=gClose[1];
    double equity=AccountInfoDouble(ACCOUNT_EQUITY);
    double riskCash=equity*g_cfg.riskPercent*0.01;
+   // CONVICTION SIZING: cross-TF agreement (Wave Matrix) scales the risk. Full
+   // size on strong consensus, reduced size on cross-TF noise. (SCALE is exempt.)
+   if(action!=ACT_SCALE)
+   {
+      double convFactor = FalconClamp(0.40 + 0.60*g_state.waveMatrix.agreement/100.0, 0.40, 1.0);
+      riskCash *= convFactor;
+   }
 
    if(wantBuy && ee_lastLongTrade!=barTime)
    {

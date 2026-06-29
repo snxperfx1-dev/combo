@@ -4,7 +4,7 @@
 //|   SINGLE-FILE BUILD (kernel + 6 engines + EA, auto-combined).     |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "3.00"
+#property version   "3.10"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -92,6 +92,7 @@ input double  InpMaxDrawdownPct = 12.0;  // Block entries above this drawdown %
 input double  InpDDFlattenPct   = 20.0;  // Flatten everything above this drawdown %
 input double  InpMaxEntryComplete = 85.0;// Block NEW entries when wave completion >= this (no buying tops / selling bottoms)
 input double  InpMinEntryRoomPct  = 25.0;// Block NEW entries when geometry room to target < this
+input double  InpAttentionATR     = 1.0; // Entry attention: price must be within this many ATR of the active node (0=off)
 
 input string  __sep_viz         = "════════ VISUALIZATION ════════"; // ──
 input bool    InpShowDashboard  = true;  // Show unified dashboard
@@ -126,6 +127,7 @@ struct FalconConfig
    bool   trailEnable, ddProtect;
    double trailStartATR, trailDistATR, maxDrawdownPct, ddFlattenPct;
    double maxEntryComplete, minEntryRoomPct;
+   double attentionATR;
    // viz
    bool   showDashboard, verboseLog;  int dashboardTab;
    bool   showHUD;
@@ -191,6 +193,7 @@ void FalconConfigInit()
    g_cfg.ddFlattenPct     = InpDDFlattenPct;
    g_cfg.maxEntryComplete = InpMaxEntryComplete;
    g_cfg.minEntryRoomPct  = InpMinEntryRoomPct;
+   g_cfg.attentionATR     = InpAttentionATR;
 
    g_cfg.showDashboard    = InpShowDashboard;
    g_cfg.showHUD          = InpShowHUD;
@@ -3354,9 +3357,22 @@ void IE_EntryCycle(FalconIntelligence &x)
 
    // entry cycle is active on F16's native terminal arrival/CHoCH, or once the
    // terminal phase band confirms the return.
-   ec.entryCycleActive = (ec.liqObjArrival || ec.liqTrueChoch
-                          || w.phase==PH_DEMAND_RETURN || w.phase==PH_SUPPLY_RETURN
-                          || (rd==ER_ENTRY_ACTIVE && ec.terminal));
+   bool cycleGo = (ec.liqObjArrival || ec.liqTrueChoch
+                   || w.phase==PH_DEMAND_RETURN || w.phase==PH_SUPPLY_RETURN
+                   || (rd==ER_ENTRY_ACTIVE && ec.terminal));
+
+   // ATTENTION MODEL (FOCUS): execution may only fire where the market is
+   // actually negotiating — at the active node (conversation route) OR inside a
+   // supply/demand zone. This narrows the search space from the whole terminal
+   // band to the specific node/zone. If attention is disabled (InpAttentionATR<=0)
+   // or no node exists, the supply/demand zone alone provides the focus.
+   double node = g_state.network.nextNodePrice;
+   bool nearNode = (g_cfg.attentionATR>0.0 && node!=0.0
+                    && MathAbs(gClose[1]-node) <= atr*g_cfg.attentionATR);
+   bool inZone   = (sd.activeZone!=DIR_NONE);
+   bool attentionOK = (nearNode || inZone || g_cfg.attentionATR<=0.0);
+
+   ec.entryCycleActive = (cycleGo && attentionOK);
    // entry direction = the wave's continuation/return direction (buy demand in
    // an up-wave, sell supply in a down-wave) — NOT the expansion direction.
    ec.entryDir = w.direction;
@@ -3505,11 +3521,12 @@ int DE_MasterChief(int action,const int master)
                  + (100.0-x.threat)*0.10;
    g_state.intel.masterChiefScore = FalconClamp(score,0,100);
 
-   // Commit on genuine agreement + reachable exec prob + holistic conviction.
-   // Validation hit-rate is ADVISORY (it feeds the score above) — it is NOT a
-   // hard gate, because the bar-to-bar direction check is too noisy in ranges
-   // and would otherwise veto strong, well-aligned setups.
-   bool commitOk = ((ownerAgree || netAgree) && execOk && score>=55.0);
+   // Commit on genuine agreement + reachable exec prob + a SINGLE conviction
+   // threshold (intel.confidence vs minConf) — the same threshold the Chief
+   // Strategist uses. This collapses the previously-duplicate conviction gates
+   // (confidence>=minConf AND a separate score>=55) into one. masterChiefScore
+   // remains as a displayed composite only. Validation stays advisory.
+   bool commitOk = ((ownerAgree || netAgree) && execOk && x.confidence>=g_cfg.minConf);
    g_state.intel.masterChiefConfirm = commitOk;
 
    // Veto only NEW-ENTRY actions (BUY/SELL/ATTACK). If conviction is lacking,
@@ -3566,10 +3583,13 @@ void DecisionEngineRun()
    int    eligN     = n.liveCount;
    int    resCode   = x.resolutionState;
 
-   //-- THREAT (Senseei formula) -----------------------------------
+   //-- THREAT (Senseei formula + participant pressure) ------------
    double threat = FalconClamp(conflict*0.40 + residual*0.28 + timeConflict*0.12
                    + ((vPress!=DIR_NONE && vPress!=master)?18.0:0.0)
-                   + (resCode==RES_PARTIALLY_RESOLVED?10.0:0.0),0,100);
+                   + (resCode==RES_PARTIALLY_RESOLVED?10.0:0.0)
+                   + g_state.participants.interference*0.08
+                   + ((master==DIR_LONG  && g_state.participants.seller>70.0)?12.0:0.0)
+                   + ((master==DIR_SHORT && g_state.participants.buyer >70.0)?12.0:0.0),0,100);
 
    //-- CONFIDENCE --------------------------------------------------
    double confidence = FalconClamp(alignment*0.40 + timeAlign*0.12 + stackPct*0.18
@@ -4103,20 +4123,25 @@ double EE_TerminalStop(const int dir,const double entry,const double atr)
 
 void EE_OwnerTargets(const int dir,const double entry,const double atr,double &t1,double &t2,double &t3)
 {
-   // T1 = wave objective (owner curve destination, ODDE). T2/T3 extend via the
-   // owner-return target and a further projection, in the trade direction.
-   double obj = g_state.wave.objective;
-   double frz = g_state.frz.targetPrice;
+   // DESTINATION AUTHORITY (WHERE): the conversation route's next node is the
+   // primary target when it sits ahead of price in the trade direction. T2/T3
+   // extend via the owner-return target (FRZ) and the wave objective (ODDE). If
+   // no valid node, fall back to wave objective.
+   double obj  = g_state.wave.objective;
+   double frz  = g_state.frz.targetPrice;
+   double node = g_state.network.nextNodePrice;     // <- conversation route destination
    if(dir==DIR_LONG)
    {
-      t1 = (obj>entry ? obj : entry + atr*3.0);
-      t2 = MathMax(t1, (frz>entry?frz:entry+atr*5.0));
+      bool nodeAhead = (node>entry);
+      t1 = nodeAhead ? node : (obj>entry ? obj : entry + atr*3.0);
+      t2 = MathMax(t1, (obj>entry ? obj : (frz>entry?frz:entry+atr*5.0)));
       t3 = MathMax(t2, entry + atr*8.0);
    }
    else
    {
-      t1 = (obj<entry && obj>0 ? obj : entry - atr*3.0);
-      t2 = MathMin(t1, (frz<entry && frz>0 ? frz : entry-atr*5.0));
+      bool nodeAhead = (node>0 && node<entry);
+      t1 = nodeAhead ? node : (obj<entry && obj>0 ? obj : entry - atr*3.0);
+      t2 = MathMin(t1, (obj<entry && obj>0 ? obj : (frz<entry && frz>0 ? frz : entry-atr*5.0)));
       t3 = MathMin(t2, entry - atr*8.0);
    }
 }
@@ -4156,6 +4181,13 @@ void EE_HandleEntries(const EE_Market &m)
    double close1=gClose[1];
    double equity=AccountInfoDouble(ACCOUNT_EQUITY);
    double riskCash=equity*g_cfg.riskPercent*0.01;
+   // CONVICTION SIZING: cross-TF agreement (Wave Matrix) scales the risk. Full
+   // size on strong consensus, reduced size on cross-TF noise. (SCALE is exempt.)
+   if(action!=ACT_SCALE)
+   {
+      double convFactor = FalconClamp(0.40 + 0.60*g_state.waveMatrix.agreement/100.0, 0.40, 1.0);
+      riskCash *= convFactor;
+   }
 
    if(wantBuy && ee_lastLongTrade!=barTime)
    {

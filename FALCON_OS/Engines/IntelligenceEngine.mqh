@@ -476,9 +476,22 @@ void IE_EntryCycle(FalconIntelligence &x)
 
    // entry cycle is active on F16's native terminal arrival/CHoCH, or once the
    // terminal phase band confirms the return.
-   ec.entryCycleActive = (ec.liqObjArrival || ec.liqTrueChoch
-                          || w.phase==PH_DEMAND_RETURN || w.phase==PH_SUPPLY_RETURN
-                          || (rd==ER_ENTRY_ACTIVE && ec.terminal));
+   bool cycleGo = (ec.liqObjArrival || ec.liqTrueChoch
+                   || w.phase==PH_DEMAND_RETURN || w.phase==PH_SUPPLY_RETURN
+                   || (rd==ER_ENTRY_ACTIVE && ec.terminal));
+
+   // ATTENTION MODEL (FOCUS): execution may only fire where the market is
+   // actually negotiating — at the active node (conversation route) OR inside a
+   // supply/demand zone. This narrows the search space from the whole terminal
+   // band to the specific node/zone. If attention is disabled (InpAttentionATR<=0)
+   // or no node exists, the supply/demand zone alone provides the focus.
+   double node = g_state.network.nextNodePrice;
+   bool nearNode = (g_cfg.attentionATR>0.0 && node!=0.0
+                    && MathAbs(gClose[1]-node) <= atr*g_cfg.attentionATR);
+   bool inZone   = (sd.activeZone!=DIR_NONE);
+   bool attentionOK = (nearNode || inZone || g_cfg.attentionATR<=0.0);
+
+   ec.entryCycleActive = (cycleGo && attentionOK);
    // entry direction = the wave's continuation/return direction (buy demand in
    // an up-wave, sell supply in a down-wave) — NOT the expansion direction.
    ec.entryDir = w.direction;

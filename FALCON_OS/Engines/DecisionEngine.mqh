@@ -114,11 +114,12 @@ int DE_MasterChief(int action,const int master)
                  + (100.0-x.threat)*0.10;
    g_state.intel.masterChiefScore = FalconClamp(score,0,100);
 
-   // Commit on genuine agreement + reachable exec prob + holistic conviction.
-   // Validation hit-rate is ADVISORY (it feeds the score above) — it is NOT a
-   // hard gate, because the bar-to-bar direction check is too noisy in ranges
-   // and would otherwise veto strong, well-aligned setups.
-   bool commitOk = ((ownerAgree || netAgree) && execOk && score>=55.0);
+   // Commit on genuine agreement + reachable exec prob + a SINGLE conviction
+   // threshold (intel.confidence vs minConf) — the same threshold the Chief
+   // Strategist uses. This collapses the previously-duplicate conviction gates
+   // (confidence>=minConf AND a separate score>=55) into one. masterChiefScore
+   // remains as a displayed composite only. Validation stays advisory.
+   bool commitOk = ((ownerAgree || netAgree) && execOk && x.confidence>=g_cfg.minConf);
    g_state.intel.masterChiefConfirm = commitOk;
 
    // Veto only NEW-ENTRY actions (BUY/SELL/ATTACK). If conviction is lacking,
@@ -175,10 +176,13 @@ void DecisionEngineRun()
    int    eligN     = n.liveCount;
    int    resCode   = x.resolutionState;
 
-   //-- THREAT (Senseei formula) -----------------------------------
+   //-- THREAT (Senseei formula + participant pressure) ------------
    double threat = FalconClamp(conflict*0.40 + residual*0.28 + timeConflict*0.12
                    + ((vPress!=DIR_NONE && vPress!=master)?18.0:0.0)
-                   + (resCode==RES_PARTIALLY_RESOLVED?10.0:0.0),0,100);
+                   + (resCode==RES_PARTIALLY_RESOLVED?10.0:0.0)
+                   + g_state.participants.interference*0.08
+                   + ((master==DIR_LONG  && g_state.participants.seller>70.0)?12.0:0.0)
+                   + ((master==DIR_SHORT && g_state.participants.buyer >70.0)?12.0:0.0),0,100);
 
    //-- CONFIDENCE --------------------------------------------------
    double confidence = FalconClamp(alignment*0.40 + timeAlign*0.12 + stackPct*0.18
