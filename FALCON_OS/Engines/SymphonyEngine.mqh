@@ -525,6 +525,37 @@ void SymphonyUpdatePhases()
 }
 
 //==================================================================
+// CONFLUENCE GATE — Symphony provides precise TIMING; the Decision layer
+// owns the GO / NO-GO. An entry only fires when the brain has not stood the
+// shot down and conviction clears the SAME thresholds the Decision layer uses:
+//   • direction agrees with the established owner/master (no shorting a long book)
+//   • the verdict is not a stand-down action (WAIT / NO_TRADE / EXIT / DEFEND)
+//   • executionProbability >= execProbArm
+//   • confidence       >= minConf
+// (This is what would have vetoed the low-conviction short: WAIT, exec 29%,
+//  confidence 36, threat 64.) Toggle off with InpRequireConfluence=false to run
+// Symphony stand-alone.
+//==================================================================
+bool SymphonyBrainConfirms(const int dir)
+{
+   if(!g_cfg.requireConfluence) return(true);
+   FalconIntelligence x = g_state.intel;
+
+   // wrong side relative to the owner/master direction
+   if(g_state.exec.master!=DIR_NONE && g_state.exec.master!=dir) return(false);
+
+   // brain is actively telling us to stand down / protect / bank
+   int a = g_state.exec.action;
+   if(a==ACT_WAIT || a==ACT_NO_TRADE || a==ACT_EXIT || a==ACT_DEFEND) return(false);
+
+   // continuous-probability conviction gates (phases are outputs, these decide)
+   if(x.executionProbability < g_cfg.execProbArm) return(false);
+   if(x.confidence           < g_cfg.minConf)     return(false);
+
+   return(true);
+}
+
+//==================================================================
 // ENTRIES — Phase 3 + Phase 4 only (long & short)   [Symphony]
 //   Stop placement: anchorLow/High ± atr*0.25 (Symphony precision).
 //   Reuses EE_SendMarketOrder / EE_IsTradeTime from ExecutionEngine.
@@ -558,10 +589,10 @@ void SymphonyExecuteTrading()
    // position on every bar of a multi-bar retrace -> the dense entry clusters /
    // chop.) Controlled pyramiding still happens: each fresh retest cycles phase
    // back to 3 and arms one more stack.
-   bool L3 = (sym_mode==1  && sym_phaseLong ==3 && sym_prevPhaseLong !=3 && !longLocked);
-   bool L4 = (sym_mode==1  && sym_phaseLong ==4 && sym_prevPhaseLong !=4 && !longLocked);
-   bool S3 = (sym_mode==-1 && sym_phaseShort==3 && sym_prevPhaseShort!=3 && !shortLocked);
-   bool S4 = (sym_mode==-1 && sym_phaseShort==4 && sym_prevPhaseShort!=4 && !shortLocked);
+   bool L3 = (sym_mode==1  && sym_phaseLong ==3 && sym_prevPhaseLong !=3 && !longLocked  && SymphonyBrainConfirms(DIR_LONG));
+   bool L4 = (sym_mode==1  && sym_phaseLong ==4 && sym_prevPhaseLong !=4 && !longLocked  && SymphonyBrainConfirms(DIR_LONG));
+   bool S3 = (sym_mode==-1 && sym_phaseShort==3 && sym_prevPhaseShort!=3 && !shortLocked && SymphonyBrainConfirms(DIR_SHORT));
+   bool S4 = (sym_mode==-1 && sym_phaseShort==4 && sym_prevPhaseShort!=4 && !shortLocked && SymphonyBrainConfirms(DIR_SHORT));
 
    double impL = sym_anchorHigh - sym_anchorLow;
    double impS = sym_anchorHigh - sym_anchorLow;

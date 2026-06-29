@@ -65,6 +65,7 @@ input int     InpMinConf        = 55;    // Min confidence to ATTACK
 input double  InpMaxThreat      = 45.0;  // Max threat to ATTACK
 input double  InpMaxConflict    = 60.0;  // Conflict above this => WAIT
 input double  InpExecProbArm    = 0.50;  // Execution probability to arm (calibrated 0..1)
+input bool    InpRequireConfluence = true; // Symphony entries require Decision-layer confirmation (block firing when brain says WAIT / low conviction / wrong side)
 
 input string  __sep_execution   = "════════ EXECUTION / RISK ════════"; // ──
 input bool    InpEnableTrading  = true;  // Allow live order sending
@@ -133,6 +134,7 @@ struct FalconConfig
    double wickFrac;  int fuLookback, authMin, dormantBars, historyBars;
    // decision
    int    minConf;  double maxThreat, maxConflict, execProbArm;
+   bool   requireConfluence;
    // execution
    bool   enableTrading, blockIfBreach, sessionFilter;
    double riskPercent, contractValue;
@@ -202,6 +204,7 @@ void FalconConfigInit()
    g_cfg.maxThreat        = InpMaxThreat;
    g_cfg.maxConflict      = InpMaxConflict;
    g_cfg.execProbArm      = InpExecProbArm;
+   g_cfg.requireConfluence= InpRequireConfluence;
 
    g_cfg.enableTrading    = InpEnableTrading;
    g_cfg.blockIfBreach    = InpBlockIfBreach;

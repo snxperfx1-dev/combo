@@ -5,7 +5,7 @@
 //|   Risk: PYRO thermal + TALON curve-convergent structural grip.   |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "3.30"
+#property version   "3.31"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -79,6 +79,7 @@ input int     InpMinConf        = 55;    // Min confidence to ATTACK
 input double  InpMaxThreat      = 45.0;  // Max threat to ATTACK
 input double  InpMaxConflict    = 60.0;  // Conflict above this => WAIT
 input double  InpExecProbArm    = 0.50;  // Execution probability to arm (calibrated 0..1)
+input bool    InpRequireConfluence = true; // Symphony entries require Decision-layer confirmation (block firing when brain says WAIT / low conviction / wrong side)
 
 input string  __sep_execution   = "════════ EXECUTION / RISK ════════"; // ──
 input bool    InpEnableTrading  = true;  // Allow live order sending
@@ -147,6 +148,7 @@ struct FalconConfig
    double wickFrac;  int fuLookback, authMin, dormantBars, historyBars;
    // decision
    int    minConf;  double maxThreat, maxConflict, execProbArm;
+   bool   requireConfluence;
    // execution
    bool   enableTrading, blockIfBreach, sessionFilter;
    double riskPercent, contractValue;
@@ -216,6 +218,7 @@ void FalconConfigInit()
    g_cfg.maxThreat        = InpMaxThreat;
    g_cfg.maxConflict      = InpMaxConflict;
    g_cfg.execProbArm      = InpExecProbArm;
+   g_cfg.requireConfluence= InpRequireConfluence;
 
    g_cfg.enableTrading    = InpEnableTrading;
    g_cfg.blockIfBreach    = InpBlockIfBreach;
@@ -5252,6 +5255,37 @@ void SymphonyUpdatePhases()
 }
 
 //==================================================================
+// CONFLUENCE GATE — Symphony provides precise TIMING; the Decision layer
+// owns the GO / NO-GO. An entry only fires when the brain has not stood the
+// shot down and conviction clears the SAME thresholds the Decision layer uses:
+//   • direction agrees with the established owner/master (no shorting a long book)
+//   • the verdict is not a stand-down action (WAIT / NO_TRADE / EXIT / DEFEND)
+//   • executionProbability >= execProbArm
+//   • confidence       >= minConf
+// (This is what would have vetoed the low-conviction short: WAIT, exec 29%,
+//  confidence 36, threat 64.) Toggle off with InpRequireConfluence=false to run
+// Symphony stand-alone.
+//==================================================================
+bool SymphonyBrainConfirms(const int dir)
+{
+   if(!g_cfg.requireConfluence) return(true);
+   FalconIntelligence x = g_state.intel;
+
+   // wrong side relative to the owner/master direction
+   if(g_state.exec.master!=DIR_NONE && g_state.exec.master!=dir) return(false);
+
+   // brain is actively telling us to stand down / protect / bank
+   int a = g_state.exec.action;
+   if(a==ACT_WAIT || a==ACT_NO_TRADE || a==ACT_EXIT || a==ACT_DEFEND) return(false);
+
+   // continuous-probability conviction gates (phases are outputs, these decide)
+   if(x.executionProbability < g_cfg.execProbArm) return(false);
+   if(x.confidence           < g_cfg.minConf)     return(false);
+
+   return(true);
+}
+
+//==================================================================
 // ENTRIES — Phase 3 + Phase 4 only (long & short)   [Symphony]
 //   Stop placement: anchorLow/High ± atr*0.25 (Symphony precision).
 //   Reuses EE_SendMarketOrder / EE_IsTradeTime from ExecutionEngine.
@@ -5285,10 +5319,10 @@ void SymphonyExecuteTrading()
    // position on every bar of a multi-bar retrace -> the dense entry clusters /
    // chop.) Controlled pyramiding still happens: each fresh retest cycles phase
    // back to 3 and arms one more stack.
-   bool L3 = (sym_mode==1  && sym_phaseLong ==3 && sym_prevPhaseLong !=3 && !longLocked);
-   bool L4 = (sym_mode==1  && sym_phaseLong ==4 && sym_prevPhaseLong !=4 && !longLocked);
-   bool S3 = (sym_mode==-1 && sym_phaseShort==3 && sym_prevPhaseShort!=3 && !shortLocked);
-   bool S4 = (sym_mode==-1 && sym_phaseShort==4 && sym_prevPhaseShort!=4 && !shortLocked);
+   bool L3 = (sym_mode==1  && sym_phaseLong ==3 && sym_prevPhaseLong !=3 && !longLocked  && SymphonyBrainConfirms(DIR_LONG));
+   bool L4 = (sym_mode==1  && sym_phaseLong ==4 && sym_prevPhaseLong !=4 && !longLocked  && SymphonyBrainConfirms(DIR_LONG));
+   bool S3 = (sym_mode==-1 && sym_phaseShort==3 && sym_prevPhaseShort!=3 && !shortLocked && SymphonyBrainConfirms(DIR_SHORT));
+   bool S4 = (sym_mode==-1 && sym_phaseShort==4 && sym_prevPhaseShort!=4 && !shortLocked && SymphonyBrainConfirms(DIR_SHORT));
 
    double impL = sym_anchorHigh - sym_anchorLow;
    double impS = sym_anchorHigh - sym_anchorLow;
