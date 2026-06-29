@@ -5,7 +5,7 @@
 //|   Risk: PYRO thermal + TALON curve-convergent structural grip.   |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "4.10"
+#property version   "4.20"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -92,6 +92,8 @@ input double  InpMinRR           = 1.2;   // Min reward:risk (from subsystem sto
 input double  InpStopBufATR      = 0.25;  // Buffer beyond the zone-invalidation level for the stop (ATR)
 input bool    InpFractalZones    = true;  // Also consider the OWNER TF's zones (per-TF liquidity/OB/S&D) for entry location + stop
 input double  InpMaxStopATR      = 10.0;  // Cap stop distance (ATR) so a far higher-TF zone can't create an absurd stop
+input bool    InpUseCurveLocator = true;  // Always-on continuous multi-TF curve position ("you are here") + late-on-curve veto
+input double  InpMaxOwnerLegPos  = 0.80;  // Block entries when price is already past this fraction of the OWNER leg (no curve left)
 
 input string  __sep_execution   = "════════ EXECUTION / RISK ════════"; // ──
 input bool    InpEnableTrading  = true;  // Allow live order sending
@@ -182,6 +184,7 @@ struct FalconConfig
    bool   useTradePlan;
    double minRR, stopBufATR;
    bool   fractalZones;  double maxStopATR;
+   bool   useCurveLocator;  double maxOwnerLegPos;
    // execution
    bool   enableTrading, blockIfBreach, sessionFilter;
    double riskPercent, contractValue;
@@ -268,6 +271,8 @@ void FalconConfigInit()
    g_cfg.stopBufATR       = InpStopBufATR;
    g_cfg.fractalZones     = InpFractalZones;
    g_cfg.maxStopATR       = InpMaxStopATR;
+   g_cfg.useCurveLocator  = InpUseCurveLocator;
+   g_cfg.maxOwnerLegPos   = InpMaxOwnerLegPos;
 
    g_cfg.enableTrading    = InpEnableTrading;
    g_cfg.blockIfBreach    = InpBlockIfBreach;
@@ -781,6 +786,25 @@ struct FalconCampaign
 };
 
 //==================================================================
+// SUB-STATE : CURVE LOCATOR  (always-on "you are here" on the curve)
+//   A continuous, persistent, multi-TF coordinate of where price sits
+//   between the owning curve's ORIGIN and DESTINATION. Never undefined:
+//   anchored to the owner TF, cascades up the ladder, confidence decays
+//   instead of hard-resetting. Phases are labels read off `pos`.
+//==================================================================
+struct FalconCurveLocator
+{
+   double pos;          // master position on the OWNER leg, 0..1 (origin->destination)
+   int    dir;          // owner curve direction (FALCON_DIR)
+   double vel;          // d(pos)/bar — advancing toward destination when > 0
+   double conf;         // 0..100 confidence the location is currently valid
+   int    ownerTF;      // ladder index the master location is read from
+   double legPos[7];    // continuous position on each absolute TF's leg (-1 = undefined)
+   bool   advancing;    // moving toward the destination (vel >= 0)
+   string label;        // Early / Developing / Mid / Late / Terminal
+};
+
+//==================================================================
 // SUB-STATE : PARTICIPANTS
 //==================================================================
 struct FalconParticipants
@@ -996,6 +1020,7 @@ struct FalconMarketState
    FalconFRZ          frz;
    FalconCampaign     campaign;
    FalconParticipants participants;
+   FalconCurveLocator curveLocator;
    FalconIntelligence intel;
    FalconEntryCycle   entryCycle;
    FalconExecution    exec;
@@ -3220,6 +3245,105 @@ void MemoryEngineRun()
 }
 
 #endif // FALCON_MEMORY_ENGINE_MQH
+//+------------------------------------------------------------------+
+
+//  ===== Engines/CurveLocator.mqh =====
+//+------------------------------------------------------------------+
+//|  FALCON OS — Intelligence : CurveLocator.mqh                    |
+//|                                                                  |
+//|  "NEVER LOSE WHERE YOU ARE ON THE CURVE."                        |
+//|                                                                  |
+//|  A single always-on, continuous, multi-TF coordinate of where    |
+//|  price sits between the OWNING curve's origin and destination.   |
+//|  It is never undefined:                                          |
+//|    • continuous (geometric interpolation, not a phase bucket),    |
+//|    • anchored to the OWNER TF and cascading UP the ladder when a  |
+//|      lower curve resets,                                          |
+//|    • confidence DECAYS and the last good position PERSISTS on a   |
+//|      reset instead of snapping to zero,                           |
+//|    • velocity tells which way along the curve price is moving.    |
+//|                                                                  |
+//|  Reads the per-TF curves (g_tfCurve) the Market Engine already    |
+//|  builds. Run after the Memory layer (ownership final). Writes     |
+//|  g_state.curveLocator. Phases stay OUTPUTS — labels off `pos`.    |
+//+------------------------------------------------------------------+
+#ifndef FALCON_CURVE_LOCATOR_MQH
+#define FALCON_CURVE_LOCATOR_MQH
+
+
+double cl_prevPos     = -1.0;
+double cl_vel         = 0.0;
+double cl_conf        = 0.0;
+double cl_lastGoodPos = 0.5;
+int    cl_lastGoodDir = 0;
+
+void CurveLocatorInit()
+{
+   cl_prevPos=-1.0; cl_vel=0.0; cl_conf=0.0; cl_lastGoodPos=0.5; cl_lastGoodDir=0;
+}
+
+// Continuous position on one TF's leg: 0 at origin, 1 at destination.
+// The formula self-normalises for both long and short curves (dest-origin
+// flips sign with direction). Returns -1 when the leg is undefined.
+double CL_LegPos(const int idx, const double price)
+{
+   double o = g_tfCurve[idx].oOrigin;
+   double d = g_tfCurve[idx].oObjective;
+   if(o==0.0 || d==0.0 || MathAbs(d-o)<1e-9) return(-1.0);
+   double p = (price - o) / (d - o);
+   return(FalconClamp(p, 0.0, 1.2));   // small overshoot allowed past target
+}
+
+void CurveLocatorRun()
+{
+   if(!g_cfg.useCurveLocator) return;
+
+   FalconCurveLocator cl; ZeroMemory(cl);
+   double price = gClose[1];
+
+   // per-TF positions (the fractal "you are here" on every rung)
+   for(int i=0;i<7;i++) cl.legPos[i] = CL_LegPos(i, price);
+
+   // master = OWNER TF; cascade UP the ladder if the owner leg is undefined,
+   // then DOWN, so a location is essentially always found.
+   int oi = g_state.htf.ownerTF; if(oi<0 || oi>6) oi=4;
+   double pos=-1.0; int usedTF=oi;
+   for(int i=oi;i<7;i++)   { if(cl.legPos[i]>=0.0){ pos=cl.legPos[i]; usedTF=i; break; } }
+   if(pos<0.0) for(int i=oi-1;i>=0;i--){ if(cl.legPos[i]>=0.0){ pos=cl.legPos[i]; usedTF=i; break; } }
+
+   double conf;
+   if(pos>=0.0)
+   {
+      cl_lastGoodPos = pos;
+      cl_lastGoodDir = g_tfCurve[usedTF].oDir;
+      conf = FalconClamp(60.0 + g_state.htf.alignment*0.4, 0, 100);
+   }
+   else
+   {
+      // GRACEFUL DEGRADATION — keep the last known location, decay confidence.
+      pos    = cl_lastGoodPos;
+      usedTF = oi;
+      conf   = cl_conf*0.85;
+   }
+
+   // velocity (EMA of position change) — advancing toward destination when >= 0
+   if(cl_prevPos>=0.0) cl_vel = FalconEMA(cl_vel, pos-cl_prevPos, 3);
+   cl_prevPos = pos;
+   cl_conf    = conf;
+
+   int usedDir = (g_tfCurve[usedTF].oDir!=0 ? g_tfCurve[usedTF].oDir : cl_lastGoodDir);
+   cl.pos       = pos;
+   cl.dir       = usedDir;
+   cl.vel       = cl_vel;
+   cl.conf      = conf;
+   cl.ownerTF   = usedTF;
+   cl.advancing = (cl_vel >= 0.0);
+   cl.label     = (pos<0.20?"Early":pos<0.50?"Developing":pos<0.80?"Mid":pos<0.95?"Late":"Terminal");
+
+   g_state.curveLocator = cl;
+}
+
+#endif // FALCON_CURVE_LOCATOR_MQH
 //+------------------------------------------------------------------+
 
 //  ===== Engines/IntelligenceEngine.mqh =====
@@ -6313,6 +6437,12 @@ bool SymphonyFactsConfirm(const int dir)
    if(g_state.convexity.geometryCapacity < g_cfg.minEntryRoomPct){ sym_factVeto="no room"; return(false); }
    if(g_state.wave.completion >= g_cfg.maxEntryComplete){ sym_factVeto="wave exhausted"; return(false); }
 
+   // 5b) CURVE LOCATOR — never enter LATE on the OWNER leg (continuous, multi-TF
+   //     "you are here"). If price is already past maxOwnerLegPos of the owning
+   //     curve, there's no curve left to trade in that direction.
+   if(g_cfg.useCurveLocator && g_state.curveLocator.pos >= g_cfg.maxOwnerLegPos)
+   { sym_factVeto="late on curve"; return(false); }
+
    // 6) THREAT — dominant opposing network authority OR participant.
    if(g_state.network.pressureDir == -dir
       && MathAbs(g_state.network.pressure) >= g_cfg.factNetPressure){ sym_factVeto="network counter"; return(false); }
@@ -6928,6 +7058,8 @@ string VZ_Body(const int tab)
          break;
       case 4: // CURVE
          s+="Owner Dir   : "+VZ_Dir(cu.ownerDir)+"   ownerTF idx "+IntegerToString(cu.ownerTF)+"\n";
+         s+="YOU ARE HERE: "+DoubleToString(g_state.curveLocator.pos*100.0,0)+"% of owner leg ("+g_state.curveLocator.label+")  "
+            +(g_state.curveLocator.advancing?"advancing":"retracing")+"  conf "+DoubleToString(g_state.curveLocator.conf,0)+"\n";
          s+="Root        : "+VZ_Px(cu.rootOrigin)+" -> "+VZ_Px(cu.rootExtreme)+"  "+VZ_Dir(cu.rootDir)+"\n";
          s+="Parent      : "+VZ_Px(cu.parentOrigin)+" -> "+VZ_Px(cu.parentExtreme)+"  "+VZ_Dir(cu.parentDir)+"\n";
          s+="Life/Energy : "+DoubleToString(cu.life,0)+" / "+DoubleToString(cu.energy,0)+"\n";
@@ -7192,6 +7324,7 @@ void FalconPipeline()
    // Participants   (remembers)
    FalconModuleStart(MOD_MEMORY,t0);
    MemoryEngineRun();
+   CurveLocatorRun();   // always-on "you are here" on the curve (multi-TF, persistent)
    FalconModuleEnd(MOD_MEMORY,t0);
 
    // ── INTELLIGENCE LAYER ────────────────────────────────────────
@@ -7266,6 +7399,7 @@ int OnInit()
    FalconPersistenceInit();
    if(g_cfg.useThermalRisk) ThermalRiskInit();
    MoneyManagerInit();
+   CurveLocatorInit();
    if(g_cfg.useSymphony) SymphonyInit();
    TradeJournalInit();
 

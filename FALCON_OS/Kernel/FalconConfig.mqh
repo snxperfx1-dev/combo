@@ -78,6 +78,8 @@ input double  InpMinRR           = 1.2;   // Min reward:risk (from subsystem sto
 input double  InpStopBufATR      = 0.25;  // Buffer beyond the zone-invalidation level for the stop (ATR)
 input bool    InpFractalZones    = true;  // Also consider the OWNER TF's zones (per-TF liquidity/OB/S&D) for entry location + stop
 input double  InpMaxStopATR      = 10.0;  // Cap stop distance (ATR) so a far higher-TF zone can't create an absurd stop
+input bool    InpUseCurveLocator = true;  // Always-on continuous multi-TF curve position ("you are here") + late-on-curve veto
+input double  InpMaxOwnerLegPos  = 0.80;  // Block entries when price is already past this fraction of the OWNER leg (no curve left)
 
 input string  __sep_execution   = "════════ EXECUTION / RISK ════════"; // ──
 input bool    InpEnableTrading  = true;  // Allow live order sending
@@ -168,6 +170,7 @@ struct FalconConfig
    bool   useTradePlan;
    double minRR, stopBufATR;
    bool   fractalZones;  double maxStopATR;
+   bool   useCurveLocator;  double maxOwnerLegPos;
    // execution
    bool   enableTrading, blockIfBreach, sessionFilter;
    double riskPercent, contractValue;
@@ -254,6 +257,8 @@ void FalconConfigInit()
    g_cfg.stopBufATR       = InpStopBufATR;
    g_cfg.fractalZones     = InpFractalZones;
    g_cfg.maxStopATR       = InpMaxStopATR;
+   g_cfg.useCurveLocator  = InpUseCurveLocator;
+   g_cfg.maxOwnerLegPos   = InpMaxOwnerLegPos;
 
    g_cfg.enableTrading    = InpEnableTrading;
    g_cfg.blockIfBreach    = InpBlockIfBreach;

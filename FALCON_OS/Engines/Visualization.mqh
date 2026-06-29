@@ -127,6 +127,8 @@ string VZ_Body(const int tab)
          break;
       case 4: // CURVE
          s+="Owner Dir   : "+VZ_Dir(cu.ownerDir)+"   ownerTF idx "+IntegerToString(cu.ownerTF)+"\n";
+         s+="YOU ARE HERE: "+DoubleToString(g_state.curveLocator.pos*100.0,0)+"% of owner leg ("+g_state.curveLocator.label+")  "
+            +(g_state.curveLocator.advancing?"advancing":"retracing")+"  conf "+DoubleToString(g_state.curveLocator.conf,0)+"\n";
          s+="Root        : "+VZ_Px(cu.rootOrigin)+" -> "+VZ_Px(cu.rootExtreme)+"  "+VZ_Dir(cu.rootDir)+"\n";
          s+="Parent      : "+VZ_Px(cu.parentOrigin)+" -> "+VZ_Px(cu.parentExtreme)+"  "+VZ_Dir(cu.parentDir)+"\n";
          s+="Life/Energy : "+DoubleToString(cu.life,0)+" / "+DoubleToString(cu.energy,0)+"\n";

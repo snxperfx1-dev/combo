@@ -439,6 +439,25 @@ struct FalconCampaign
 };
 
 //==================================================================
+// SUB-STATE : CURVE LOCATOR  (always-on "you are here" on the curve)
+//   A continuous, persistent, multi-TF coordinate of where price sits
+//   between the owning curve's ORIGIN and DESTINATION. Never undefined:
+//   anchored to the owner TF, cascades up the ladder, confidence decays
+//   instead of hard-resetting. Phases are labels read off `pos`.
+//==================================================================
+struct FalconCurveLocator
+{
+   double pos;          // master position on the OWNER leg, 0..1 (origin->destination)
+   int    dir;          // owner curve direction (FALCON_DIR)
+   double vel;          // d(pos)/bar — advancing toward destination when > 0
+   double conf;         // 0..100 confidence the location is currently valid
+   int    ownerTF;      // ladder index the master location is read from
+   double legPos[7];    // continuous position on each absolute TF's leg (-1 = undefined)
+   bool   advancing;    // moving toward the destination (vel >= 0)
+   string label;        // Early / Developing / Mid / Late / Terminal
+};
+
+//==================================================================
 // SUB-STATE : PARTICIPANTS
 //==================================================================
 struct FalconParticipants
@@ -654,6 +673,7 @@ struct FalconMarketState
    FalconFRZ          frz;
    FalconCampaign     campaign;
    FalconParticipants participants;
+   FalconCurveLocator curveLocator;
    FalconIntelligence intel;
    FalconEntryCycle   entryCycle;
    FalconExecution    exec;

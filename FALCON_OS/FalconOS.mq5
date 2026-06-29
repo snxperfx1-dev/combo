@@ -34,6 +34,7 @@
 //==================================================================
 #include "Engines/MarketEngine.mqh"        // Market Layer
 #include "Engines/MemoryEngine.mqh"        // Intelligence Layer — memory
+#include "Engines/CurveLocator.mqh"        // Intelligence Layer — always-on multi-TF curve position
 #include "Engines/IntelligenceEngine.mqh"  // Intelligence Layer — reasoning
 #include "Engines/DecisionEngine.mqh"      // Decision Layer
 #include "Engines/ExecutionEngine.mqh"     // Execution Layer
@@ -91,6 +92,7 @@ void FalconPipeline()
    // Participants   (remembers)
    FalconModuleStart(MOD_MEMORY,t0);
    MemoryEngineRun();
+   CurveLocatorRun();   // always-on "you are here" on the curve (multi-TF, persistent)
    FalconModuleEnd(MOD_MEMORY,t0);
 
    // ── INTELLIGENCE LAYER ────────────────────────────────────────
@@ -165,6 +167,7 @@ int OnInit()
    FalconPersistenceInit();
    if(g_cfg.useThermalRisk) ThermalRiskInit();
    MoneyManagerInit();
+   CurveLocatorInit();
    if(g_cfg.useSymphony) SymphonyInit();
    TradeJournalInit();
 

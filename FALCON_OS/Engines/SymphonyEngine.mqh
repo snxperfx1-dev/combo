@@ -622,6 +622,12 @@ bool SymphonyFactsConfirm(const int dir)
    if(g_state.convexity.geometryCapacity < g_cfg.minEntryRoomPct){ sym_factVeto="no room"; return(false); }
    if(g_state.wave.completion >= g_cfg.maxEntryComplete){ sym_factVeto="wave exhausted"; return(false); }
 
+   // 5b) CURVE LOCATOR — never enter LATE on the OWNER leg (continuous, multi-TF
+   //     "you are here"). If price is already past maxOwnerLegPos of the owning
+   //     curve, there's no curve left to trade in that direction.
+   if(g_cfg.useCurveLocator && g_state.curveLocator.pos >= g_cfg.maxOwnerLegPos)
+   { sym_factVeto="late on curve"; return(false); }
+
    // 6) THREAT — dominant opposing network authority OR participant.
    if(g_state.network.pressureDir == -dir
       && MathAbs(g_state.network.pressure) >= g_cfg.factNetPressure){ sym_factVeto="network counter"; return(false); }
