@@ -2,7 +2,7 @@
   "id": "FEAT-002",
   "type": "feat",
   "description": "Create Part2_PhaseEngine.mqh - Symphony's Phase Engine (curvature-based impulse detection + Phases 1-4) and ARC v2 convexity exit system. This is the ENTRY generation core - kept verbatim from Symphony minus the DRDWCT risk engine.",
-  "status": "in_progress",
+  "status": "completed",
   "steps": [
     "Create Part2_PhaseEngine.mqh at the repo root",
     "Port UpdatePhaseEngine() verbatim from Symphony: pivot detection, SHORT impulse detection (last high -> new low > ATR * mult), LONG impulse detection (last low -> new high > ATR * mult), mode/anchor state, flipzone/inducement level finding, phase assignment for both SHORT side (retracement-based with pre-conv gating) and LONG side (same logic inverted), impulse invalidation on close beyond anchor, previous phase tracking",
@@ -22,5 +22,5 @@
     "Verify proper use of global PhaseEngineState struct fields"
   ],
   "blocked_reason": null,
-  "findings": ""
+  "findings": "Part2_PhaseEngine.mqh created at 506 lines. Contains 5 functions: UpdatePhaseEngine() (pivot detection, impulse detection, phase assignment 1-4 with inducement gating and pre-conv flags), UpdateARC() (convexity arc projection for long/short), ClosePositionPartial() (raw IOC order execution), ClosePositionFull() (full position close wrapper), ManageArcInstitutionalExits() (composite exit: ARC exhaust + institutional outer-band sweep + phase-change detection). All state accessed via g_phase struct from Part1_Core.mqh. ClosePositionPartial/Full helpers included here since ManageArcInstitutionalExits depends on them directly - downstream parts can call them too. No DRDWCT risk engine code present. Braces and parentheses verified balanced."
 }
