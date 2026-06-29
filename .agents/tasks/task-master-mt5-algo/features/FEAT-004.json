@@ -2,7 +2,7 @@
   "id": "FEAT-004",
   "type": "feat",
   "description": "Create Part4_EnergyFramework.mqh - Energy Resolution Framework (EDE + RE + EAE) from Letra 37, plus Wave Intelligence System (belief engine, hypothesis engine, prediction engine, validation engine, adaptive confidence). Also includes the physics observation layer and convexity maturity engine.",
-  "status": "in_progress",
+  "status": "completed",
   "steps": [
     "Create Part4_EnergyFramework.mqh at the repo root",
     "Port Physics Observation Layer: obs_ExpansionScore, obs_DecayScore, obs_CurvatureScore, obs_AbsorptionScore, obs_LiquidityScore (all 0-100 scores derived from physics primitives)",
@@ -34,5 +34,5 @@
     "Verify hypothesis normalization uses fixed theoretical maxima (not rescale-to-100)"
   ],
   "blocked_reason": null,
-  "findings": ""
+  "findings": "Part4_EnergyFramework.mqh created at 923 lines. Contains: EnergyPersistState struct (for EMA state persistence across ticks), ComputePhysicsObservationLayer() (5 observation scores: Expansion, Decay, Curvature, Absorption, Liquidity - all 0-100), ComputeEnergyDissipation() (EDE: maps canonical phase to states 1-6, computes expansion/dissipated energy and progress), ComputeResolutionEngine() (RE: expectedCycles from waveDepth, completedCycles from entryCycle, resolutionState 0/1/2), ComputeEnergyAttractor() (EAE: attractor price from flipzone/origin based on resolution state, attractor score weighted by residual+resolution+distance), ComputeConvexityMaturity() (3 sub-scores: expWeakness, inductionMat, liqMat -> EMA smoothed), ComputeWaveProgress() (geometric 60% + physics 40% -> EMA smoothed), ComputeBeliefs() (6 beliefs: expansion/convexity/creation/absorption/retracement/demandReturn, all position-weighted and EMA smoothed), ComputeHypotheses() (6 hypotheses normalized against fixed maxima: 105/108/97/100/100/100), ComputePrediction() (6 candidate next-phases scored, highest picked with probability), ComputeValidation() (rolling 100-outcome buffer for prediction accuracy), ComputeAdaptiveConfidence() (increase/decrease drivers + decay toward 50), ComputeLiquidationWaveOverlay() (Engine 1A.7: arms on induction, distance compression, objective arrival with 3D agreement, trueCHoCH detection, absorption gate), UpdateEnergyFramework() (master orchestrator calling all sub-engines in order). Used simplified liqHeat=50 default and flipzone proximity for liqSweep since full heatmap runs in Part5. All brackets/braces/parens verified balanced. No duplicate names with Part1/Part2/Part3."
 }
