@@ -5,7 +5,7 @@
 //|   Risk: PYRO thermal + TALON curve-convergent structural grip.   |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "3.32"
+#property version   "3.33"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -79,7 +79,7 @@ input int     InpMinConf        = 55;    // Min confidence to ATTACK
 input double  InpMaxThreat      = 45.0;  // Max threat to ATTACK
 input double  InpMaxConflict    = 60.0;  // Conflict above this => WAIT
 input double  InpExecProbArm    = 0.50;  // Execution probability to arm (calibrated 0..1)
-input bool    InpRequireConfluence = true; // Symphony entries require Decision-layer confirmation (block firing when brain says WAIT / low conviction / wrong side)
+input bool    InpRequireConfluence = false; // Symphony entries require Decision-layer confirmation (default off: fact gate governs)
 
 input string  __sep_execution   = "════════ EXECUTION / RISK ════════"; // ──
 input bool    InpEnableTrading  = true;  // Allow live order sending
@@ -98,8 +98,20 @@ input double  InpMaxEntryComplete = 85.0;// Block NEW entries when wave completi
 input double  InpMinEntryRoomPct  = 25.0;// Block NEW entries when geometry room to target < this
 input double  InpAttentionATR     = 1.0; // Entry attention: price must be within this many ATR of the active node (0=off)
 
+input string  __sep_money      = "════════ MONEY MANAGER (Symphony v3.0) ════════"; // ──
+input bool    InpUseProfitLadder= true;  // Use v3.0 live-PnL profit ladder (default manager)
+input bool    InpCounterDirBlock= true;  // Block new entries against a net-profitable opposite book
+input double  InpMaxBasketRiskPct= 3.0;  // Max per-direction basket dollar-risk-at-SL (% equity); 0=off
+input double  InpLadderR1        = 0.7;  // Rung 1 trigger (PnL >= R1 x basket risk) -> bank + breakeven
+input double  InpLadderR2        = 1.5;  // Rung 2 trigger -> bank + trail
+input double  InpLadderR3        = 2.5;  // Rung 3 trigger -> bank + trail runner
+input double  InpLadderFrac1     = 0.20; // Fraction of each leg banked at R1
+input double  InpLadderFrac2     = 0.25; // Fraction banked at R2
+input double  InpLadderFrac3     = 0.25; // Fraction banked at R3
+input double  InpTrailLockPct    = 50.0; // %% of price move locked when trailing (after R2)
+
 input string  __sep_thermal     = "════════ CAMPAIGN THERMAL RISK (PYRO) ════════"; // ──
-input bool    InpUseThermalRisk  = true;  // Use PYRO campaign-thermodynamics risk engine
+input bool    InpUseThermalRisk  = false; // Use PYRO campaign-thermodynamics risk engine (off: basket ceiling governs)
 input int     InpMaxStacks       = 12;    // Max stacked entries per directional campaign
 input double  InpMaxCampaignLots = 8.0;   // Max total lots per directional campaign
 input double  InpHeatThrottle    = 0.55;  // Heat above this shrinks new stack size
@@ -110,7 +122,7 @@ input double  InpHeatAdverseSpan = 4.0;   // Adverse excursion (ATR) that equals
 input double  InpAcctHeatDDPct   = 15.0;  // Account heat: equity drawdown %% that fully freezes admissions
 
 input string  __sep_talon       = "════════ TALON GRIP — breakeven + trail ════════"; // ──
-input bool    InpUseTalon        = true;  // Use TALON curve-convergent structural grip (off = no trail)
+input bool    InpUseTalon        = false; // Use TALON curve-convergent grip (off: profit ladder governs trailing)
 input int     InpTalonStructLen  = 5;     // Structural pivot length for the grip anchor
 input double  InpTalonBufATR      = 0.35; // Buffer beyond the structural pivot (ATR)
 input double  InpTalonBaseATR     = 2.5;  // Base trail distance far from target (ATR)
@@ -163,6 +175,10 @@ struct FalconConfig
    double heatThrottle, heatFreeze, heatCritical;
    int    maxAvgDownStacks;
    double heatAdverseSpan, acctHeatDDPct;
+   // money manager (Symphony v3.0)
+   bool   useProfitLadder, counterDirBlock;
+   double maxBasketRiskPct;
+   double ladderR1, ladderR2, ladderR3, ladderFrac1, ladderFrac2, ladderFrac3, trailLockPct;
    // TALON grip (breakeven + trail)
    bool   useTalon;  int talonStructLen;
    double talonBufATR, talonBaseATR, talonConvSpanATR, talonMinTighten, talonBeATR;
@@ -247,6 +263,17 @@ void FalconConfigInit()
    g_cfg.maxAvgDownStacks = InpMaxAvgDownStacks;
    g_cfg.heatAdverseSpan  = InpHeatAdverseSpan;
    g_cfg.acctHeatDDPct    = InpAcctHeatDDPct;
+
+   g_cfg.useProfitLadder  = InpUseProfitLadder;
+   g_cfg.counterDirBlock  = InpCounterDirBlock;
+   g_cfg.maxBasketRiskPct = InpMaxBasketRiskPct;
+   g_cfg.ladderR1         = InpLadderR1;
+   g_cfg.ladderR2         = InpLadderR2;
+   g_cfg.ladderR3         = InpLadderR3;
+   g_cfg.ladderFrac1      = InpLadderFrac1;
+   g_cfg.ladderFrac2      = InpLadderFrac2;
+   g_cfg.ladderFrac3      = InpLadderFrac3;
+   g_cfg.trailLockPct     = InpTrailLockPct;
 
    g_cfg.useTalon         = InpUseTalon;
    g_cfg.talonStructLen   = InpTalonStructLen;
@@ -4741,6 +4768,303 @@ double TR_AdmitLots(const int dir,const double proposedLots)
 #endif // FALCON_THERMAL_RISK_ENGINE_MQH
 //+------------------------------------------------------------------+
 
+//  ===== Engines/MoneyManager.mqh =====
+//+------------------------------------------------------------------+
+//|  FALCON OS — Execution Layer : MoneyManager.mqh                 |
+//|  Source: SYMPHONY v3.0 (the profitable standalone)               |
+//|                                                                  |
+//|  The three money-management mechanisms that made the standalone  |
+//|  Symphony profitable — ported verbatim in behaviour, adapted to  |
+//|  FALCON's shared config + EE order helpers:                      |
+//|                                                                  |
+//|   1. COUNTER-DIRECTION PROFITABILITY LOCK                        |
+//|        Never open longs while the short book is net profitable,  |
+//|        and vice-versa. A counter-trend bounce inside a running   |
+//|        profitable campaign is noise, not a new campaign. This is |
+//|        the single biggest reason v3.0 doesn't chop.              |
+//|                                                                  |
+//|   2. PRE-ENTRY BASKET RISK CEILING                               |
+//|        Size lots DOWN at entry so per-direction dollar-risk-at-SL |
+//|        stays under InpMaxBasketRiskPct of equity. Deterministic, |
+//|        correct at entry — no trim-after-entry. Lets the book     |
+//|        pyramid into a trend while total risk stays bounded.      |
+//|                                                                  |
+//|   3. LIVE-PnL PROFIT LADDER                                      |
+//|        Banks on the realised reward:risk RATIO of the live book  |
+//|        (not on phase geometry): R1 @0.7x -> bank+breakeven,      |
+//|        R2 @1.5x -> bank+trail 50%, R3 @2.5x -> bank+trail runner. |
+//|        Anchored to broker positions; survives phase resets.      |
+//|                                                                  |
+//|  Reuses EE_ClosePartial / EE_ModifySL. Include AFTER             |
+//|  ExecutionEngine, BEFORE SymphonyEngine (which calls these).     |
+//+------------------------------------------------------------------+
+#ifndef FALCON_MONEY_MANAGER_MQH
+#define FALCON_MONEY_MANAGER_MQH
+
+
+//==================================================================
+// LADDER STATE — keyed to the LIVE position book (per direction).
+// Rungs reset only when a direction's position count reaches zero
+// (campaign fully closed), so they survive phase-engine resets.
+//==================================================================
+int  mm_longRungs        = 0;
+int  mm_shortRungs       = 0;
+bool mm_longBEActive     = false;
+bool mm_shortBEActive    = false;
+bool mm_longTrailActive  = false;
+bool mm_shortTrailActive = false;
+
+struct MMPos { ulong ticket; datetime openTime; double lots; };
+
+void MoneyManagerInit()
+{
+   mm_longRungs=0; mm_shortRungs=0;
+   mm_longBEActive=false; mm_shortBEActive=false;
+   mm_longTrailActive=false; mm_shortTrailActive=false;
+}
+
+//==================================================================
+// EXPOSURE / RISK HELPERS
+//==================================================================
+// Total dollar-risk-at-SL for all open positions in one direction:
+//   sum( lots * |entry-sl| * contractValue ).  No VaR, no netting.
+double MM_BasketDollarRisk(const int direction)
+{
+   double totalRisk=0.0;
+   double atrFB=FalconATR(1); if(atrFB<=0.0) atrFB=10.0;
+   int total=PositionsTotal();
+   for(int i=0;i<total;i++)
+   {
+      ulong ticket=PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL)!=_Symbol)  continue;
+      if(PositionGetInteger(POSITION_MAGIC)!=g_cfg.magic) continue;
+      int dir=(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY)?1:-1;
+      if(dir!=direction) continue;
+      double lots =PositionGetDouble(POSITION_VOLUME);
+      double entry=PositionGetDouble(POSITION_PRICE_OPEN);
+      double sl   =PositionGetDouble(POSITION_SL);
+      double distSL=(sl>0.0)?MathAbs(entry-sl):(2.0*atrFB);
+      totalRisk += lots*distSL*g_cfg.contractValue;
+   }
+   return(totalRisk);
+}
+
+// Floating PnL (profit+swap only; MT5 deprecated POSITION_COMMISSION) for a dir.
+double MM_DirectionFloatingPnL(const int direction)
+{
+   double total=0.0;
+   int cnt=PositionsTotal();
+   for(int i=0;i<cnt;i++)
+   {
+      ulong ticket=PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL)!=_Symbol)  continue;
+      if(PositionGetInteger(POSITION_MAGIC)!=g_cfg.magic) continue;
+      int dir=(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY)?1:-1;
+      if(dir!=direction) continue;
+      total += PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP);
+   }
+   return(total);
+}
+
+// COUNTER-DIRECTION LOCK: block a new entry in `dir` while the OPPOSITE
+// book is net profitable. (The heart of v3.0's no-chop behaviour.)
+bool MM_CounterDirBlocked(const int dir)
+{
+   if(!g_cfg.counterDirBlock) return(false);
+   int opp=-dir;
+   return(MM_DirectionFloatingPnL(opp) > 0.0);
+}
+
+// PRE-ENTRY BASKET CEILING: scale computedLots down so adding this entry
+// keeps the direction's basket dollar-risk under InpMaxBasketRiskPct of
+// equity. Returns 0 if even one min-lot would breach. No trim-after-entry.
+double MM_AdjustLotsForBasketCeiling(const int direction,const double entry,
+                                     const double sl,const double computedLots)
+{
+   if(computedLots<=0.0) return(0.0);
+   if(g_cfg.maxBasketRiskPct<=0.0) return(computedLots);   // ceiling disabled
+
+   double equity        = AccountInfoDouble(ACCOUNT_EQUITY);
+   double maxBasketRisk = equity*g_cfg.maxBasketRiskPct/100.0;
+   double currentRisk   = MM_BasketDollarRisk(direction);
+   double available     = maxBasketRisk-currentRisk;
+   if(available<=0.0) return(0.0);                          // ceiling reached
+
+   double distSL=MathAbs(entry-sl);
+   if(distSL<=0.0) return(0.0);
+
+   if(computedLots*distSL*g_cfg.contractValue <= available)
+      return(computedLots);                                 // fits as-is
+
+   double maxLots = available/(distSL*g_cfg.contractValue);
+   double minLot  = SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);
+   double lotStep = SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP);
+   if(lotStep<=0) lotStep=0.01; if(minLot<=0) minLot=0.01;
+   maxLots=MathFloor(maxLots/lotStep)*lotStep;
+   if(maxLots<minLot) return(0.0);
+   return(NormalizeDouble(maxLots,2));
+}
+
+//==================================================================
+// STOP PROTECTION (after ladder rungs)
+//==================================================================
+// Move all remaining stops in a direction to at least breakeven (entry).
+void MM_MoveStopsToBreakeven(const int direction)
+{
+   int cnt=PositionsTotal();
+   for(int i=0;i<cnt;i++)
+   {
+      ulong ticket=PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL)!=_Symbol)  continue;
+      if(PositionGetInteger(POSITION_MAGIC)!=g_cfg.magic) continue;
+      int dir=(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY)?1:-1;
+      if(dir!=direction) continue;
+      double entry=PositionGetDouble(POSITION_PRICE_OPEN);
+      double sl   =PositionGetDouble(POSITION_SL);
+      bool   move=false;
+      if(direction>0 && (sl==0.0 || sl<entry)) move=true;
+      if(direction<0 && (sl==0.0 || sl>entry)) move=true;
+      if(move) EE_ModifySL(ticket,entry);
+   }
+}
+
+// Trail stops to lock InpTrailLockPct of the move from entry (after R2).
+void MM_TrailStops(const int direction)
+{
+   double ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
+   double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
+   int cnt=PositionsTotal();
+   for(int i=0;i<cnt;i++)
+   {
+      ulong ticket=PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL)!=_Symbol)  continue;
+      if(PositionGetInteger(POSITION_MAGIC)!=g_cfg.magic) continue;
+      int dir=(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY)?1:-1;
+      if(dir!=direction) continue;
+      double entry=PositionGetDouble(POSITION_PRICE_OPEN);
+      double sl   =PositionGetDouble(POSITION_SL);
+      if(direction>0)
+      {
+         double locked=entry+(bid-entry)*g_cfg.trailLockPct/100.0;
+         if(locked>sl && locked>entry) EE_ModifySL(ticket,locked);
+      }
+      else
+      {
+         double locked=entry-(entry-ask)*g_cfg.trailLockPct/100.0;
+         if((sl==0.0 || locked<sl) && locked<entry) EE_ModifySL(ticket,locked);
+      }
+   }
+}
+
+void MM_RunStopProtection()
+{
+   if(mm_longBEActive  && !mm_longTrailActive)  MM_MoveStopsToBreakeven(1);
+   if(mm_shortBEActive && !mm_shortTrailActive) MM_MoveStopsToBreakeven(-1);
+   if(mm_longTrailActive)  MM_TrailStops(1);
+   if(mm_shortTrailActive) MM_TrailStops(-1);
+}
+
+//==================================================================
+// PROFIT LADDER
+//==================================================================
+// Close `fractionPerPos` of EVERY open position in a direction (proportional),
+// so every leg banks at each rung — not just the oldest.
+void MM_CloseProportionalAll(const int direction,const double fractionPerPos,const string tag)
+{
+   if(fractionPerPos<=0.0) return;
+   double minLot =SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);
+   double lotStep=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP);
+   if(lotStep<=0) lotStep=0.01; if(minLot<=0) minLot=0.01;
+   int total=PositionsTotal();
+   for(int i=0;i<total;i++)
+   {
+      ulong ticket=PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL)!=_Symbol)  continue;
+      if(PositionGetInteger(POSITION_MAGIC)!=g_cfg.magic) continue;
+      int dir=(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY)?1:-1;
+      if(dir!=direction) continue;
+      double lots=PositionGetDouble(POSITION_VOLUME);
+      double closeThis=MathFloor((lots*fractionPerPos)/lotStep)*lotStep;
+      if(closeThis<minLot) continue;
+      EE_ClosePartial(ticket,closeThis);
+   }
+}
+
+// One direction's ladder: read live book, compute realised reward:risk ratio,
+// fire at most one rung per bar. Reset when the direction is flat.
+void MM_RunLadderDirection(const int direction,int &rungs)
+{
+   double totalLots=0.0,totalRisk=0.0,totalPnL=0.0;
+   int    posCount=0;
+   double atrFB=FalconATR(1); if(atrFB<=0.0) atrFB=10.0;
+
+   int total=PositionsTotal();
+   for(int i=0;i<total;i++)
+   {
+      ulong ticket=PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL)!=_Symbol)  continue;
+      if(PositionGetInteger(POSITION_MAGIC)!=g_cfg.magic) continue;
+      int dir=(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY)?1:-1;
+      if(dir!=direction) continue;
+      double lots =PositionGetDouble(POSITION_VOLUME);
+      double entry=PositionGetDouble(POSITION_PRICE_OPEN);
+      double sl   =PositionGetDouble(POSITION_SL);
+      double pnl  =PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP);
+      double distSL=(sl>0.0)?MathAbs(entry-sl):0.0;
+      // Once SL is at/past breakeven distSL->0 would kill the denominator;
+      // floor it at 1 ATR so rungs 2/3 can still evaluate.
+      if(distSL<1.0) distSL=atrFB;
+      totalLots+=lots; totalRisk+=lots*distSL*g_cfg.contractValue; totalPnL+=pnl;
+      posCount++;
+   }
+
+   if(posCount==0)
+   {
+      rungs=0;
+      if(direction>0){ mm_longBEActive=false;  mm_longTrailActive=false; }
+      else           { mm_shortBEActive=false; mm_shortTrailActive=false; }
+      return;
+   }
+   if(totalRisk<=0.0) return;
+
+   double ratio=totalPnL/totalRisk;
+
+   if(rungs==0 && ratio>=g_cfg.ladderR1)
+   {
+      MM_CloseProportionalAll(direction,g_cfg.ladderFrac1,"FALCON LADDER R1");
+      rungs=1;
+      if(direction>0) mm_longBEActive=true;  else mm_shortBEActive=true;
+      MM_MoveStopsToBreakeven(direction);
+   }
+   else if(rungs==1 && ratio>=g_cfg.ladderR2)
+   {
+      MM_CloseProportionalAll(direction,g_cfg.ladderFrac2,"FALCON LADDER R2");
+      rungs=2;
+      if(direction>0){ mm_longBEActive=false;  mm_longTrailActive=true; }
+      else           { mm_shortBEActive=false; mm_shortTrailActive=true; }
+   }
+   else if(rungs==2 && ratio>=g_cfg.ladderR3)
+   {
+      MM_CloseProportionalAll(direction,g_cfg.ladderFrac3,"FALCON LADDER R3");
+      rungs=3;
+   }
+}
+
+void MM_RunProfitLadder()
+{
+   MM_RunLadderDirection( 1, mm_longRungs);
+   MM_RunLadderDirection(-1, mm_shortRungs);
+}
+
+#endif // FALCON_MONEY_MANAGER_MQH
+//+------------------------------------------------------------------+
+
 //  ===== Engines/TradeJournal.mqh =====
 //+------------------------------------------------------------------+
 //|  FALCON OS — Diagnostics : TradeJournal.mqh                      |
@@ -5145,6 +5469,18 @@ double Sym_ComputeLots(const double riskCash,const double entry,const double sl)
 
    int volDigits=(lotStep>=1.0?0:lotStep>=0.1?1:2);
    return(NormalizeDouble(lots,volDigits));
+}
+
+//==================================================================
+// LOT SIZING PIPELINE — base risk%% size, optional PYRO thermal admission,
+// then the v3.0 pre-entry basket ceiling (hard per-direction risk cap).
+//==================================================================
+double Sym_SizeLots(const int dir,const double riskCash,const double entry,const double sl)
+{
+   double lots = Sym_ComputeLots(riskCash,entry,sl);
+   if(g_cfg.useThermalRisk) lots = TR_AdmitLots(dir, lots);
+   lots = MM_AdjustLotsForBasketCeiling(dir, entry, sl, lots);
+   return(lots);
 }
 
 //==================================================================
@@ -5578,10 +5914,10 @@ void SymphonyExecuteTrading()
    // position on every bar of a multi-bar retrace -> the dense entry clusters /
    // chop.) Controlled pyramiding still happens: each fresh retest cycles phase
    // back to 3 and arms one more stack.
-   bool L3 = (sym_mode==1  && sym_phaseLong ==3 && sym_prevPhaseLong !=3 && !longLocked  && SymphonyBrainConfirms(DIR_LONG));
-   bool L4 = (sym_mode==1  && sym_phaseLong ==4 && sym_prevPhaseLong !=4 && !longLocked  && SymphonyBrainConfirms(DIR_LONG));
-   bool S3 = (sym_mode==-1 && sym_phaseShort==3 && sym_prevPhaseShort!=3 && !shortLocked && SymphonyBrainConfirms(DIR_SHORT));
-   bool S4 = (sym_mode==-1 && sym_phaseShort==4 && sym_prevPhaseShort!=4 && !shortLocked && SymphonyBrainConfirms(DIR_SHORT));
+   bool L3 = (sym_mode==1  && sym_phaseLong ==3 && sym_prevPhaseLong !=3 && !longLocked  && !MM_CounterDirBlocked(DIR_LONG)  && SymphonyBrainConfirms(DIR_LONG));
+   bool L4 = (sym_mode==1  && sym_phaseLong ==4 && sym_prevPhaseLong !=4 && !longLocked  && !MM_CounterDirBlocked(DIR_LONG)  && SymphonyBrainConfirms(DIR_LONG));
+   bool S3 = (sym_mode==-1 && sym_phaseShort==3 && sym_prevPhaseShort!=3 && !shortLocked && !MM_CounterDirBlocked(DIR_SHORT) && SymphonyBrainConfirms(DIR_SHORT));
+   bool S4 = (sym_mode==-1 && sym_phaseShort==4 && sym_prevPhaseShort!=4 && !shortLocked && !MM_CounterDirBlocked(DIR_SHORT) && SymphonyBrainConfirms(DIR_SHORT));
 
    double impL = sym_anchorHigh - sym_anchorLow;
    double impS = sym_anchorHigh - sym_anchorLow;
@@ -5591,7 +5927,7 @@ void SymphonyExecuteTrading()
    {
       double entry = SymbolInfoDouble(_Symbol,SYMBOL_ASK);
       double sl    = sym_anchorLow - atrNow*0.25;
-      double lots  = TR_AdmitLots(DIR_LONG, Sym_ComputeLots(riskCash,entry,sl));
+      double lots  = Sym_SizeLots(DIR_LONG,riskCash,entry,sl);
       if(sl>0 && entry>sl && lots>0)
       {
          if(EE_SendMarketOrder(+1,lots,sl,"SYM P3 Long"))
@@ -5611,7 +5947,7 @@ void SymphonyExecuteTrading()
       {
          double entry = SymbolInfoDouble(_Symbol,SYMBOL_ASK);
          double sl    = sym_anchorLow - atrNow*0.25;
-         double lots  = TR_AdmitLots(DIR_LONG, Sym_ComputeLots(riskCash,entry,sl));
+         double lots  = Sym_SizeLots(DIR_LONG,riskCash,entry,sl);
          if(sl>0 && entry>sl && lots>0)
          {
             if(EE_SendMarketOrder(+1,lots,sl,"SYM P4 Long"))
@@ -5629,7 +5965,7 @@ void SymphonyExecuteTrading()
    {
       double entry = SymbolInfoDouble(_Symbol,SYMBOL_BID);
       double sl    = sym_anchorHigh + atrNow*0.25;
-      double lots  = TR_AdmitLots(DIR_SHORT, Sym_ComputeLots(riskCash,entry,sl));
+      double lots  = Sym_SizeLots(DIR_SHORT,riskCash,entry,sl);
       if(sl>0 && sl>entry && lots>0)
       {
          if(EE_SendMarketOrder(-1,lots,sl,"SYM P3 Short"))
@@ -5649,7 +5985,7 @@ void SymphonyExecuteTrading()
       {
          double entry = SymbolInfoDouble(_Symbol,SYMBOL_BID);
          double sl    = sym_anchorHigh + atrNow*0.25;
-         double lots  = TR_AdmitLots(DIR_SHORT, Sym_ComputeLots(riskCash,entry,sl));
+         double lots  = Sym_SizeLots(DIR_SHORT,riskCash,entry,sl);
          if(sl>0 && sl>entry && lots>0)
          {
             if(EE_SendMarketOrder(-1,lots,sl,"SYM P4 Short"))
@@ -5987,8 +6323,16 @@ void SymphonyUpdateCampaignLockout()
 void SymphonyTradeManage()
 {
    SymphonyUpdateCampaignLockout(); // detect closed campaigns -> lock the impulse (no churn)
-   TalonGrip();             // TALON curve-convergent structural grip (breakeven + trail)
-   SymphonyArcPartial();    // bank a fraction at the projected ARC destination
+   if(g_cfg.useProfitLadder)        // v3.0 default: live-PnL ladder + BE/trail protection
+   {
+      MM_RunStopProtection();
+      MM_RunProfitLadder();
+   }
+   if(g_cfg.useTalon)               // optional: TALON curve-convergent grip + ARC partial
+   {
+      TalonGrip();
+      SymphonyArcPartial();
+   }
    SymphonyManageExits();   // composite ARC + institutional + phase reversal exit
    SymphonyExecuteTrading();// Phase 3/4 entries
 }
@@ -6452,6 +6796,7 @@ int OnInit()
    ExecutionEngineInit();
    FalconPersistenceInit();
    if(g_cfg.useThermalRisk) ThermalRiskInit();
+   MoneyManagerInit();
    if(g_cfg.useSymphony) SymphonyInit();
    TradeJournalInit();
 

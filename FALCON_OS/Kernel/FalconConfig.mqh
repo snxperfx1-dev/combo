@@ -65,7 +65,7 @@ input int     InpMinConf        = 55;    // Min confidence to ATTACK
 input double  InpMaxThreat      = 45.0;  // Max threat to ATTACK
 input double  InpMaxConflict    = 60.0;  // Conflict above this => WAIT
 input double  InpExecProbArm    = 0.50;  // Execution probability to arm (calibrated 0..1)
-input bool    InpRequireConfluence = true; // Symphony entries require Decision-layer confirmation (block firing when brain says WAIT / low conviction / wrong side)
+input bool    InpRequireConfluence = false; // Symphony entries require Decision-layer confirmation (default off: fact gate governs)
 
 input string  __sep_execution   = "════════ EXECUTION / RISK ════════"; // ──
 input bool    InpEnableTrading  = true;  // Allow live order sending
@@ -84,8 +84,20 @@ input double  InpMaxEntryComplete = 85.0;// Block NEW entries when wave completi
 input double  InpMinEntryRoomPct  = 25.0;// Block NEW entries when geometry room to target < this
 input double  InpAttentionATR     = 1.0; // Entry attention: price must be within this many ATR of the active node (0=off)
 
+input string  __sep_money      = "════════ MONEY MANAGER (Symphony v3.0) ════════"; // ──
+input bool    InpUseProfitLadder= true;  // Use v3.0 live-PnL profit ladder (default manager)
+input bool    InpCounterDirBlock= true;  // Block new entries against a net-profitable opposite book
+input double  InpMaxBasketRiskPct= 3.0;  // Max per-direction basket dollar-risk-at-SL (% equity); 0=off
+input double  InpLadderR1        = 0.7;  // Rung 1 trigger (PnL >= R1 x basket risk) -> bank + breakeven
+input double  InpLadderR2        = 1.5;  // Rung 2 trigger -> bank + trail
+input double  InpLadderR3        = 2.5;  // Rung 3 trigger -> bank + trail runner
+input double  InpLadderFrac1     = 0.20; // Fraction of each leg banked at R1
+input double  InpLadderFrac2     = 0.25; // Fraction banked at R2
+input double  InpLadderFrac3     = 0.25; // Fraction banked at R3
+input double  InpTrailLockPct    = 50.0; // %% of price move locked when trailing (after R2)
+
 input string  __sep_thermal     = "════════ CAMPAIGN THERMAL RISK (PYRO) ════════"; // ──
-input bool    InpUseThermalRisk  = true;  // Use PYRO campaign-thermodynamics risk engine
+input bool    InpUseThermalRisk  = false; // Use PYRO campaign-thermodynamics risk engine (off: basket ceiling governs)
 input int     InpMaxStacks       = 12;    // Max stacked entries per directional campaign
 input double  InpMaxCampaignLots = 8.0;   // Max total lots per directional campaign
 input double  InpHeatThrottle    = 0.55;  // Heat above this shrinks new stack size
@@ -96,7 +108,7 @@ input double  InpHeatAdverseSpan = 4.0;   // Adverse excursion (ATR) that equals
 input double  InpAcctHeatDDPct   = 15.0;  // Account heat: equity drawdown %% that fully freezes admissions
 
 input string  __sep_talon       = "════════ TALON GRIP — breakeven + trail ════════"; // ──
-input bool    InpUseTalon        = true;  // Use TALON curve-convergent structural grip (off = no trail)
+input bool    InpUseTalon        = false; // Use TALON curve-convergent grip (off: profit ladder governs trailing)
 input int     InpTalonStructLen  = 5;     // Structural pivot length for the grip anchor
 input double  InpTalonBufATR      = 0.35; // Buffer beyond the structural pivot (ATR)
 input double  InpTalonBaseATR     = 2.5;  // Base trail distance far from target (ATR)
@@ -149,6 +161,10 @@ struct FalconConfig
    double heatThrottle, heatFreeze, heatCritical;
    int    maxAvgDownStacks;
    double heatAdverseSpan, acctHeatDDPct;
+   // money manager (Symphony v3.0)
+   bool   useProfitLadder, counterDirBlock;
+   double maxBasketRiskPct;
+   double ladderR1, ladderR2, ladderR3, ladderFrac1, ladderFrac2, ladderFrac3, trailLockPct;
    // TALON grip (breakeven + trail)
    bool   useTalon;  int talonStructLen;
    double talonBufATR, talonBaseATR, talonConvSpanATR, talonMinTighten, talonBeATR;
@@ -233,6 +249,17 @@ void FalconConfigInit()
    g_cfg.maxAvgDownStacks = InpMaxAvgDownStacks;
    g_cfg.heatAdverseSpan  = InpHeatAdverseSpan;
    g_cfg.acctHeatDDPct    = InpAcctHeatDDPct;
+
+   g_cfg.useProfitLadder  = InpUseProfitLadder;
+   g_cfg.counterDirBlock  = InpCounterDirBlock;
+   g_cfg.maxBasketRiskPct = InpMaxBasketRiskPct;
+   g_cfg.ladderR1         = InpLadderR1;
+   g_cfg.ladderR2         = InpLadderR2;
+   g_cfg.ladderR3         = InpLadderR3;
+   g_cfg.ladderFrac1      = InpLadderFrac1;
+   g_cfg.ladderFrac2      = InpLadderFrac2;
+   g_cfg.ladderFrac3      = InpLadderFrac3;
+   g_cfg.trailLockPct     = InpTrailLockPct;
 
    g_cfg.useTalon         = InpUseTalon;
    g_cfg.talonStructLen   = InpTalonStructLen;

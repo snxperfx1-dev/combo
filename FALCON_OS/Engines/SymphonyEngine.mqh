@@ -159,6 +159,18 @@ double Sym_ComputeLots(const double riskCash,const double entry,const double sl)
 }
 
 //==================================================================
+// LOT SIZING PIPELINE — base risk%% size, optional PYRO thermal admission,
+// then the v3.0 pre-entry basket ceiling (hard per-direction risk cap).
+//==================================================================
+double Sym_SizeLots(const int dir,const double riskCash,const double entry,const double sl)
+{
+   double lots = Sym_ComputeLots(riskCash,entry,sl);
+   if(g_cfg.useThermalRisk) lots = TR_AdmitLots(dir, lots);
+   lots = MM_AdjustLotsForBasketCeiling(dir, entry, sl, lots);
+   return(lots);
+}
+
+//==================================================================
 // BRIDGE — SYMPHONY IS THE SINGLE PHASE/DIRECTION SOURCE OF TRUTH
 //------------------------------------------------------------------
 // The Market Engine still OBSERVES geometry/physics (sub-scores, energy,
@@ -589,10 +601,10 @@ void SymphonyExecuteTrading()
    // position on every bar of a multi-bar retrace -> the dense entry clusters /
    // chop.) Controlled pyramiding still happens: each fresh retest cycles phase
    // back to 3 and arms one more stack.
-   bool L3 = (sym_mode==1  && sym_phaseLong ==3 && sym_prevPhaseLong !=3 && !longLocked  && SymphonyBrainConfirms(DIR_LONG));
-   bool L4 = (sym_mode==1  && sym_phaseLong ==4 && sym_prevPhaseLong !=4 && !longLocked  && SymphonyBrainConfirms(DIR_LONG));
-   bool S3 = (sym_mode==-1 && sym_phaseShort==3 && sym_prevPhaseShort!=3 && !shortLocked && SymphonyBrainConfirms(DIR_SHORT));
-   bool S4 = (sym_mode==-1 && sym_phaseShort==4 && sym_prevPhaseShort!=4 && !shortLocked && SymphonyBrainConfirms(DIR_SHORT));
+   bool L3 = (sym_mode==1  && sym_phaseLong ==3 && sym_prevPhaseLong !=3 && !longLocked  && !MM_CounterDirBlocked(DIR_LONG)  && SymphonyBrainConfirms(DIR_LONG));
+   bool L4 = (sym_mode==1  && sym_phaseLong ==4 && sym_prevPhaseLong !=4 && !longLocked  && !MM_CounterDirBlocked(DIR_LONG)  && SymphonyBrainConfirms(DIR_LONG));
+   bool S3 = (sym_mode==-1 && sym_phaseShort==3 && sym_prevPhaseShort!=3 && !shortLocked && !MM_CounterDirBlocked(DIR_SHORT) && SymphonyBrainConfirms(DIR_SHORT));
+   bool S4 = (sym_mode==-1 && sym_phaseShort==4 && sym_prevPhaseShort!=4 && !shortLocked && !MM_CounterDirBlocked(DIR_SHORT) && SymphonyBrainConfirms(DIR_SHORT));
 
    double impL = sym_anchorHigh - sym_anchorLow;
    double impS = sym_anchorHigh - sym_anchorLow;
@@ -602,7 +614,7 @@ void SymphonyExecuteTrading()
    {
       double entry = SymbolInfoDouble(_Symbol,SYMBOL_ASK);
       double sl    = sym_anchorLow - atrNow*0.25;
-      double lots  = TR_AdmitLots(DIR_LONG, Sym_ComputeLots(riskCash,entry,sl));
+      double lots  = Sym_SizeLots(DIR_LONG,riskCash,entry,sl);
       if(sl>0 && entry>sl && lots>0)
       {
          if(EE_SendMarketOrder(+1,lots,sl,"SYM P3 Long"))
@@ -622,7 +634,7 @@ void SymphonyExecuteTrading()
       {
          double entry = SymbolInfoDouble(_Symbol,SYMBOL_ASK);
          double sl    = sym_anchorLow - atrNow*0.25;
-         double lots  = TR_AdmitLots(DIR_LONG, Sym_ComputeLots(riskCash,entry,sl));
+         double lots  = Sym_SizeLots(DIR_LONG,riskCash,entry,sl);
          if(sl>0 && entry>sl && lots>0)
          {
             if(EE_SendMarketOrder(+1,lots,sl,"SYM P4 Long"))
@@ -640,7 +652,7 @@ void SymphonyExecuteTrading()
    {
       double entry = SymbolInfoDouble(_Symbol,SYMBOL_BID);
       double sl    = sym_anchorHigh + atrNow*0.25;
-      double lots  = TR_AdmitLots(DIR_SHORT, Sym_ComputeLots(riskCash,entry,sl));
+      double lots  = Sym_SizeLots(DIR_SHORT,riskCash,entry,sl);
       if(sl>0 && sl>entry && lots>0)
       {
          if(EE_SendMarketOrder(-1,lots,sl,"SYM P3 Short"))
@@ -660,7 +672,7 @@ void SymphonyExecuteTrading()
       {
          double entry = SymbolInfoDouble(_Symbol,SYMBOL_BID);
          double sl    = sym_anchorHigh + atrNow*0.25;
-         double lots  = TR_AdmitLots(DIR_SHORT, Sym_ComputeLots(riskCash,entry,sl));
+         double lots  = Sym_SizeLots(DIR_SHORT,riskCash,entry,sl);
          if(sl>0 && sl>entry && lots>0)
          {
             if(EE_SendMarketOrder(-1,lots,sl,"SYM P4 Short"))
@@ -998,8 +1010,16 @@ void SymphonyUpdateCampaignLockout()
 void SymphonyTradeManage()
 {
    SymphonyUpdateCampaignLockout(); // detect closed campaigns -> lock the impulse (no churn)
-   TalonGrip();             // TALON curve-convergent structural grip (breakeven + trail)
-   SymphonyArcPartial();    // bank a fraction at the projected ARC destination
+   if(g_cfg.useProfitLadder)        // v3.0 default: live-PnL ladder + BE/trail protection
+   {
+      MM_RunStopProtection();
+      MM_RunProfitLadder();
+   }
+   if(g_cfg.useTalon)               // optional: TALON curve-convergent grip + ARC partial
+   {
+      TalonGrip();
+      SymphonyArcPartial();
+   }
    SymphonyManageExits();   // composite ARC + institutional + phase reversal exit
    SymphonyExecuteTrading();// Phase 3/4 entries
 }

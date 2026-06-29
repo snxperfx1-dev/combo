@@ -38,6 +38,7 @@
 #include "Engines/DecisionEngine.mqh"      // Decision Layer
 #include "Engines/ExecutionEngine.mqh"     // Execution Layer
 #include "Engines/ThermalRiskEngine.mqh"   // Execution Layer — PYRO campaign-thermodynamics risk (after EE, before Symphony)
+#include "Engines/MoneyManager.mqh"        // Execution Layer — Symphony v3.0 money mgmt (counter-dir lock / ladder / basket ceiling)
 #include "Engines/TradeJournal.mqh"        // Diagnostics — per-trade CSV journal (before Symphony so entries can record)
 #include "Engines/SymphonyEngine.mqh"      // Execution Layer — Symphony phase entries/exits (after EE helpers)
 #include "Engines/Visualization.mqh"       // Visualization Layer
@@ -162,6 +163,7 @@ int OnInit()
    ExecutionEngineInit();
    FalconPersistenceInit();
    if(g_cfg.useThermalRisk) ThermalRiskInit();
+   MoneyManagerInit();
    if(g_cfg.useSymphony) SymphonyInit();
    TradeJournalInit();
 
