@@ -4,7 +4,7 @@
 //|   SINGLE-FILE BUILD (kernel + 6 engines + EA, auto-combined).     |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "3.20"
+#property version   "3.21"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -79,6 +79,7 @@ input double  InpExecProbArm    = 0.50;  // Execution probability to arm (calibr
 input string  __sep_execution   = "════════ EXECUTION / RISK ════════"; // ──
 input bool    InpEnableTrading  = true;  // Allow live order sending
 input double  InpRiskPercent    = 0.5;   // Risk % per trade
+input double  InpMaxLots        = 1.0;   // Hard cap on lots per entry (safety)
 input bool    InpEnableRiskEng  = true;  // Enable DRDWCT risk engine
 input bool    InpBlockIfBreach  = true;  // Block new entries if VaR breached
 input bool    InpSessionFilter  = false; // Restrict to London/US windows (off for full backtests)
@@ -124,6 +125,7 @@ struct FalconConfig
    // execution
    bool   enableTrading, enableRiskEng, blockIfBreach, sessionFilter;
    double riskPercent, rdLimit, contractValue;
+   double maxLots;
    bool   trailEnable, ddProtect;
    double trailStartATR, trailDistATR, maxDrawdownPct, ddFlattenPct;
    double maxEntryComplete, minEntryRoomPct;
@@ -183,6 +185,7 @@ void FalconConfigInit()
    g_cfg.blockIfBreach    = InpBlockIfBreach;
    g_cfg.sessionFilter    = InpSessionFilter;
    g_cfg.riskPercent      = InpRiskPercent;
+   g_cfg.maxLots          = InpMaxLots;
    g_cfg.rdLimit          = InpRdLimit;
    g_cfg.contractValue    = InpContractValue;
    g_cfg.trailEnable      = InpTrailEnable;
@@ -3377,7 +3380,16 @@ void IE_EntryCycle(FalconIntelligence &x)
    double node = g_state.network.nextNodePrice;
    bool nearNode = (g_cfg.attentionATR>0.0 && node!=0.0
                     && MathAbs(gClose[1]-node) <= atr*g_cfg.attentionATR);
-   bool attentionOK = (nearNode || inZone || g_cfg.attentionATR<=0.0);
+
+   // ZONE-DIRECTION LAW (buy demand / sell supply, NEVER the opposite extreme):
+   // an entry may only fire from the zone that matches its direction. A LONG
+   // (buy) is only valid in DEMAND (activeZone==LONG); a SHORT (sell) only in
+   // SUPPLY (activeZone==SHORT). Being in the OPPOSITE zone (e.g. selling at a
+   // demand low) is hard-blocked — this stops the "sell the low / buy the high"
+   // behaviour. With no active zone, a matching node is allowed.
+   bool wrongZone = (sd.activeZone!=DIR_NONE && sd.activeZone!=w.direction);
+   bool zoneOK    = (sd.activeZone!=DIR_NONE && sd.activeZone==w.direction);
+   bool attentionOK = (!wrongZone) && (zoneOK || nearNode || g_cfg.attentionATR<=0.0);
 
    ec.entryCycleActive = (cycleGo && attentionOK);
    // entry direction = the wave's continuation/return direction (buy demand in
@@ -3736,6 +3748,7 @@ double EE_ComputeLots(const double riskCash,const double entry,const double sl)
    lots=MathFloor(lots/lotStep)*lotStep;
    if(lots<minLot) lots=minLot;
    if(maxLot>0 && lots>maxLot) lots=maxLot;
+   if(g_cfg.maxLots>0 && lots>g_cfg.maxLots) lots=g_cfg.maxLots;   // hard safety cap
    int volDigits=(lotStep>=1.0?0:lotStep>=0.1?1:2);
    return(NormalizeDouble(lots,volDigits));
 }

@@ -98,6 +98,7 @@ double EE_ComputeLots(const double riskCash,const double entry,const double sl)
    lots=MathFloor(lots/lotStep)*lotStep;
    if(lots<minLot) lots=minLot;
    if(maxLot>0 && lots>maxLot) lots=maxLot;
+   if(g_cfg.maxLots>0 && lots>g_cfg.maxLots) lots=g_cfg.maxLots;   // hard safety cap
    int volDigits=(lotStep>=1.0?0:lotStep>=0.1?1:2);
    return(NormalizeDouble(lots,volDigits));
 }

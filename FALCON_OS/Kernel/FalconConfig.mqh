@@ -66,6 +66,7 @@ input double  InpExecProbArm    = 0.50;  // Execution probability to arm (calibr
 input string  __sep_execution   = "════════ EXECUTION / RISK ════════"; // ──
 input bool    InpEnableTrading  = true;  // Allow live order sending
 input double  InpRiskPercent    = 0.5;   // Risk % per trade
+input double  InpMaxLots        = 1.0;   // Hard cap on lots per entry (safety)
 input bool    InpEnableRiskEng  = true;  // Enable DRDWCT risk engine
 input bool    InpBlockIfBreach  = true;  // Block new entries if VaR breached
 input bool    InpSessionFilter  = false; // Restrict to London/US windows (off for full backtests)
@@ -111,6 +112,7 @@ struct FalconConfig
    // execution
    bool   enableTrading, enableRiskEng, blockIfBreach, sessionFilter;
    double riskPercent, rdLimit, contractValue;
+   double maxLots;
    bool   trailEnable, ddProtect;
    double trailStartATR, trailDistATR, maxDrawdownPct, ddFlattenPct;
    double maxEntryComplete, minEntryRoomPct;
@@ -170,6 +172,7 @@ void FalconConfigInit()
    g_cfg.blockIfBreach    = InpBlockIfBreach;
    g_cfg.sessionFilter    = InpSessionFilter;
    g_cfg.riskPercent      = InpRiskPercent;
+   g_cfg.maxLots          = InpMaxLots;
    g_cfg.rdLimit          = InpRdLimit;
    g_cfg.contractValue    = InpContractValue;
    g_cfg.trailEnable      = InpTrailEnable;

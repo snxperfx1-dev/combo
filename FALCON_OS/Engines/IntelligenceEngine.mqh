@@ -496,7 +496,16 @@ void IE_EntryCycle(FalconIntelligence &x)
    double node = g_state.network.nextNodePrice;
    bool nearNode = (g_cfg.attentionATR>0.0 && node!=0.0
                     && MathAbs(gClose[1]-node) <= atr*g_cfg.attentionATR);
-   bool attentionOK = (nearNode || inZone || g_cfg.attentionATR<=0.0);
+
+   // ZONE-DIRECTION LAW (buy demand / sell supply, NEVER the opposite extreme):
+   // an entry may only fire from the zone that matches its direction. A LONG
+   // (buy) is only valid in DEMAND (activeZone==LONG); a SHORT (sell) only in
+   // SUPPLY (activeZone==SHORT). Being in the OPPOSITE zone (e.g. selling at a
+   // demand low) is hard-blocked — this stops the "sell the low / buy the high"
+   // behaviour. With no active zone, a matching node is allowed.
+   bool wrongZone = (sd.activeZone!=DIR_NONE && sd.activeZone!=w.direction);
+   bool zoneOK    = (sd.activeZone!=DIR_NONE && sd.activeZone==w.direction);
+   bool attentionOK = (!wrongZone) && (zoneOK || nearNode || g_cfg.attentionATR<=0.0);
 
    ec.entryCycleActive = (cycleGo && attentionOK);
    // entry direction = the wave's continuation/return direction (buy demand in
