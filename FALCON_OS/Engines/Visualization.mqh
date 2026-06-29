@@ -164,6 +164,9 @@ string VZ_Body(const int tab)
          s+="Stack Dir   : "+VZ_Dir(h.stackDir)+"\n";
          s+="Alignment   : "+DoubleToString(h.alignment,0)+"%   Conflict "+DoubleToString(h.conflict,0)+"%\n";
          s+="Owner TF idx: "+IntegerToString(h.ownerTF)+" ("+VZ_Dir(g_state.curve.ownerDir)+")   Fractal "+(h.fractalAgreement?"AGREE":"split")+"\n";
+         s+="Owner zone  : "+((h.ownerTF>=0 && h.ownerTF<7 && g_tfZones[h.ownerTF].valid)?
+              ("D "+VZ_Px(g_tfZones[h.ownerTF].demBot)+"-"+VZ_Px(g_tfZones[h.ownerTF].demTop)
+              +"  S "+VZ_Px(g_tfZones[h.ownerTF].supBot)+"-"+VZ_Px(g_tfZones[h.ownerTF].supTop)) : "—")+"\n";
          s+="FU Candle   : "+(fuv.active?VZ_Dir(fuv.dir)+" zone "+VZ_Px(fuv.zoneBot)+"-"+VZ_Px(fuv.zoneTop)+"  conf "+DoubleToString(fuv.confidence,0)+"  life "+IntegerToString(fuv.lifecycle):"none");
          break;
       case 8: // RISK — PYRO Campaign Thermodynamics

@@ -58,13 +58,21 @@ double TP_StopLong(const double entry,const double atr,string &src)
    double minD = MathMax(atr*0.6, buf*2.0);
 
    // candidate invalidation levels (price, label), each is a zone BOTTOM
-   double cand[6]; string lbl[6]; int n=0;
+   double cand[12]; string lbl[12]; int n=0;
    if(g_state.supplyDemand.inDemand && g_state.supplyDemand.demandBot>0){ cand[n]=g_state.supplyDemand.demandBot; lbl[n]="demand"; n++; }
    if(g_state.orderBlocks.activeDir==DIR_LONG && g_state.orderBlocks.activeBot>0){ cand[n]=g_state.orderBlocks.activeBot; lbl[n]="orderblock"; n++; }
    if(g_state.wave.flipBot>0){ cand[n]=g_state.wave.flipBot; lbl[n]="flip"; n++; }
    if(g_state.liquidity.induceBot>0){ cand[n]=g_state.liquidity.induceBot; lbl[n]="inducement"; n++; }
    if(g_state.structure.swingLow>0){ cand[n]=g_state.structure.swingLow; lbl[n]="swingLow"; n++; }
    if(g_state.wave.origin>0){ cand[n]=g_state.wave.origin; lbl[n]="origin"; n++; }
+   // OWNER-TF zones (fractal): invalidation of the controlling higher-TF curve
+   int oiL=g_state.htf.ownerTF;
+   if(g_cfg.fractalZones && oiL>=0 && oiL<7 && g_tfZones[oiL].valid)
+   {
+      if(g_tfZones[oiL].demBot>0){ cand[n]=g_tfZones[oiL].demBot; lbl[n]="ownerDemand"; n++; }
+      if(g_tfZones[oiL].obDir==DIR_LONG && g_tfZones[oiL].obBot>0){ cand[n]=g_tfZones[oiL].obBot; lbl[n]="ownerOB"; n++; }
+      if(g_tfZones[oiL].swingLo>0){ cand[n]=g_tfZones[oiL].swingLo; lbl[n]="ownerSwing"; n++; }
+   }
 
    // choose the HIGHEST candidate that is below entry by >= minD (tightest precise stop)
    double best=0.0; src="";
@@ -80,7 +88,10 @@ double TP_StopLong(const double entry,const double atr,string &src)
       for(int i=0;i<n;i++) if(cand[i]>0 && cand[i]<entry && (best==0.0||cand[i]<best)){ best=cand[i]; src=lbl[i]; }
       if(best<=0.0){ src="atr"; return(entry - 1.5*atr - buf); }
    }
-   return(best - buf);
+   double stopL = best - buf;
+   double capL  = entry - g_cfg.maxStopATR*atr;   // never wider than the cap
+   if(stopL < capL){ stopL = capL; src=src+"(cap)"; }
+   return(stopL);
 }
 
 double TP_StopShort(const double entry,const double atr,string &src)
@@ -88,13 +99,20 @@ double TP_StopShort(const double entry,const double atr,string &src)
    double buf  = atr*g_cfg.stopBufATR;
    double minD = MathMax(atr*0.6, buf*2.0);
 
-   double cand[6]; string lbl[6]; int n=0;
+   double cand[12]; string lbl[12]; int n=0;
    if(g_state.supplyDemand.inSupply && g_state.supplyDemand.supplyTop>0){ cand[n]=g_state.supplyDemand.supplyTop; lbl[n]="supply"; n++; }
    if(g_state.orderBlocks.activeDir==DIR_SHORT && g_state.orderBlocks.activeTop>0){ cand[n]=g_state.orderBlocks.activeTop; lbl[n]="orderblock"; n++; }
    if(g_state.wave.flipTop>0){ cand[n]=g_state.wave.flipTop; lbl[n]="flip"; n++; }
    if(g_state.liquidity.induceTop>0){ cand[n]=g_state.liquidity.induceTop; lbl[n]="inducement"; n++; }
    if(g_state.structure.swingHigh>0){ cand[n]=g_state.structure.swingHigh; lbl[n]="swingHigh"; n++; }
    if(g_state.wave.origin>0){ cand[n]=g_state.wave.origin; lbl[n]="origin"; n++; }
+   int oiS=g_state.htf.ownerTF;
+   if(g_cfg.fractalZones && oiS>=0 && oiS<7 && g_tfZones[oiS].valid)
+   {
+      if(g_tfZones[oiS].supTop>0){ cand[n]=g_tfZones[oiS].supTop; lbl[n]="ownerSupply"; n++; }
+      if(g_tfZones[oiS].obDir==DIR_SHORT && g_tfZones[oiS].obTop>0){ cand[n]=g_tfZones[oiS].obTop; lbl[n]="ownerOB"; n++; }
+      if(g_tfZones[oiS].swingHi>0){ cand[n]=g_tfZones[oiS].swingHi; lbl[n]="ownerSwing"; n++; }
+   }
 
    // choose the LOWEST candidate that is above entry by >= minD
    double best=0.0; src="";
@@ -109,7 +127,10 @@ double TP_StopShort(const double entry,const double atr,string &src)
       for(int i=0;i<n;i++) if(cand[i]>0 && cand[i]>entry && cand[i]>best){ best=cand[i]; src=lbl[i]; }
       if(best<=0.0){ src="atr"; return(entry + 1.5*atr + buf); }
    }
-   return(best + buf);
+   double stopS = best + buf;
+   double capS  = entry + g_cfg.maxStopATR*atr;
+   if(stopS > capS){ stopS = capS; src=src+"(cap)"; }
+   return(stopS);
 }
 
 //------------------------------------------------------------------

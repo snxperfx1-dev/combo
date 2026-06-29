@@ -76,6 +76,8 @@ input string  __sep_plan        = "════════ TRADE PLAN (subsyste
 input bool    InpUseTradePlan    = true;  // Compose stop/target/size from subsystems (off: Symphony anchor+-ATR / ARC)
 input double  InpMinRR           = 1.2;   // Min reward:risk (from subsystem stop+target) to take an entry
 input double  InpStopBufATR      = 0.25;  // Buffer beyond the zone-invalidation level for the stop (ATR)
+input bool    InpFractalZones    = true;  // Also consider the OWNER TF's zones (per-TF liquidity/OB/S&D) for entry location + stop
+input double  InpMaxStopATR      = 10.0;  // Cap stop distance (ATR) so a far higher-TF zone can't create an absurd stop
 
 input string  __sep_execution   = "════════ EXECUTION / RISK ════════"; // ──
 input bool    InpEnableTrading  = true;  // Allow live order sending
@@ -165,6 +167,7 @@ struct FalconConfig
    double factPartThreat, factNetPressure;
    bool   useTradePlan;
    double minRR, stopBufATR;
+   bool   fractalZones;  double maxStopATR;
    // execution
    bool   enableTrading, blockIfBreach, sessionFilter;
    double riskPercent, contractValue;
@@ -249,6 +252,8 @@ void FalconConfigInit()
    g_cfg.useTradePlan     = InpUseTradePlan;
    g_cfg.minRR            = InpMinRR;
    g_cfg.stopBufATR       = InpStopBufATR;
+   g_cfg.fractalZones     = InpFractalZones;
+   g_cfg.maxStopATR       = InpMaxStopATR;
 
    g_cfg.enableTrading    = InpEnableTrading;
    g_cfg.blockIfBreach    = InpBlockIfBreach;

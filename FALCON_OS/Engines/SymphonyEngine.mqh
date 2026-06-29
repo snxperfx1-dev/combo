@@ -574,19 +574,25 @@ bool Sym_AtRealZone(const int dir,const double px)
 
    bool flip   = Sym_PriceInBand(px, w.flipBot, w.flipTop);             // wave flip zone
    bool sweptL = lq.induceSwept;                                        // liquidity grabbed
+   // owner-TF zone (fractal): price reacting at the controlling higher-TF zone
+   int oiZ=g_state.htf.ownerTF;
+   bool ownerZone=false;
+   if(g_cfg.fractalZones && oiZ>=0 && oiZ<7 && g_tfZones[oiZ].valid)
+      ownerZone = (dir==DIR_LONG ? (g_tfZones[oiZ].inDemand || (g_tfZones[oiZ].obDir==DIR_LONG && Sym_PriceInBand(px,g_tfZones[oiZ].obBot,g_tfZones[oiZ].obTop)))
+                                 : (g_tfZones[oiZ].inSupply || (g_tfZones[oiZ].obDir==DIR_SHORT && Sym_PriceInBand(px,g_tfZones[oiZ].obBot,g_tfZones[oiZ].obTop))));
    if(dir==DIR_LONG)
    {
       bool dz  = sd.inDemand;                                           // supply/demand engine
       bool obz = (ob.activeDir==DIR_LONG && Sym_PriceInBand(px,ob.activeBot,ob.activeTop));
       bool fuz = (fu.active && fu.dir==DIR_LONG && Sym_PriceInBand(px,fu.zoneBot,fu.zoneTop));
-      return(flip || dz || obz || fuz || sweptL);
+      return(flip || dz || obz || fuz || sweptL || ownerZone);
    }
    else
    {
       bool sz  = sd.inSupply;
       bool obz = (ob.activeDir==DIR_SHORT && Sym_PriceInBand(px,ob.activeBot,ob.activeTop));
       bool fuz = (fu.active && fu.dir==DIR_SHORT && Sym_PriceInBand(px,fu.zoneBot,fu.zoneTop));
-      return(flip || sz || obz || fuz || sweptL);
+      return(flip || sz || obz || fuz || sweptL || ownerZone);
    }
 }
 

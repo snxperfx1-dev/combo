@@ -5,7 +5,7 @@
 //|   Risk: PYRO thermal + TALON curve-convergent structural grip.   |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "4.00"
+#property version   "4.10"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -90,6 +90,8 @@ input string  __sep_plan        = "════════ TRADE PLAN (subsyste
 input bool    InpUseTradePlan    = true;  // Compose stop/target/size from subsystems (off: Symphony anchor+-ATR / ARC)
 input double  InpMinRR           = 1.2;   // Min reward:risk (from subsystem stop+target) to take an entry
 input double  InpStopBufATR      = 0.25;  // Buffer beyond the zone-invalidation level for the stop (ATR)
+input bool    InpFractalZones    = true;  // Also consider the OWNER TF's zones (per-TF liquidity/OB/S&D) for entry location + stop
+input double  InpMaxStopATR      = 10.0;  // Cap stop distance (ATR) so a far higher-TF zone can't create an absurd stop
 
 input string  __sep_execution   = "════════ EXECUTION / RISK ════════"; // ──
 input bool    InpEnableTrading  = true;  // Allow live order sending
@@ -179,6 +181,7 @@ struct FalconConfig
    double factPartThreat, factNetPressure;
    bool   useTradePlan;
    double minRR, stopBufATR;
+   bool   fractalZones;  double maxStopATR;
    // execution
    bool   enableTrading, blockIfBreach, sessionFilter;
    double riskPercent, contractValue;
@@ -263,6 +266,8 @@ void FalconConfigInit()
    g_cfg.useTradePlan     = InpUseTradePlan;
    g_cfg.minRR            = InpMinRR;
    g_cfg.stopBufATR       = InpStopBufATR;
+   g_cfg.fractalZones     = InpFractalZones;
+   g_cfg.maxStopATR       = InpMaxStopATR;
 
    g_cfg.enableTrading    = InpEnableTrading;
    g_cfg.blockIfBreach    = InpBlockIfBreach;
@@ -1802,6 +1807,27 @@ struct TFCurve
 };
 TFCurve g_tfCurve[7];
 
+//==================================================================
+// PER-TIMEFRAME ZONES — liquidity pools/sweeps, order blocks and
+// supply/demand computed on EACH absolute rung (W1..M1), so the zone
+// engines are genuinely fractal, not just run on the operating TF.
+// Mirrors the operating-TF definitions (OB = last opposing candle
+// before an impulse; S/D = OB / flip band +- inducZoneWidth).
+//==================================================================
+struct FalconTFZones
+{
+   bool   valid;
+   double atr;
+   double obTop, obBot;  int obDir;
+   double demTop, demBot, supTop, supBot;
+   double swingHi, swingLo;
+   double poolHi, poolLo;
+   bool   sweptHi, sweptLo;
+   bool   inDemand, inSupply;
+};
+FalconTFZones g_tfZones[7];
+int           me_opTFIdx = -1;   // ladder index of the operating TF (-1 if not a rung)
+
 void MarketEngineInit()
 {
    me_physInit=false;
@@ -1823,6 +1849,9 @@ void MarketEngineInit()
    me_htfTF[0]=PERIOD_M1;  me_htfTF[1]=PERIOD_M5;  me_htfTF[2]=PERIOD_M15;
    me_htfTF[3]=PERIOD_H1;  me_htfTF[4]=PERIOD_H4;  me_htfTF[5]=PERIOD_D1;
    me_htfTF[6]=PERIOD_W1;
+   me_opTFIdx = -1;
+   for(int i=0;i<7;i++){ if(me_htfTF[i]==g_cfg.operatingTF){ me_opTFIdx=i; break; } }
+   for(int i=0;i<7;i++) ZeroMemory(g_tfZones[i]);
    for(int i=0;i<7;i++){ me_htfDirState[i]=0; me_htfOrigin[i]=0; me_htfExtreme[i]=0; }
    for(int i=0;i<7;i++)
    {
@@ -2624,6 +2653,89 @@ void ME_UpdateHTF()
 }
 
 //==================================================================
+// PER-TF ZONES — compute liquidity pools/sweeps, order block and
+// supply/demand for ONE absolute rung from that TF's own bars.
+//==================================================================
+void ME_TFZones(const ENUM_TIMEFRAMES tf, const int idx)
+{
+   int pv   = g_cfg.structLen;
+   int look = g_cfg.liqSweepLookbk;
+   int need = pv*2 + g_cfg.atrLen + MathMax(look,10) + 20;
+   double h[],l[],c[],o[];
+   ArraySetAsSeries(h,true); ArraySetAsSeries(l,true);
+   ArraySetAsSeries(c,true); ArraySetAsSeries(o,true);
+   if(CopyHigh(_Symbol,tf,0,need,h)<need) { g_tfZones[idx].valid=false; return; }
+   if(CopyLow (_Symbol,tf,0,need,l)<need) { g_tfZones[idx].valid=false; return; }
+   if(CopyClose(_Symbol,tf,0,need,c)<need){ g_tfZones[idx].valid=false; return; }
+   if(CopyOpen (_Symbol,tf,0,need,o)<need){ g_tfZones[idx].valid=false; return; }
+
+   FalconTFZones z; ZeroMemory(z);
+   double atr=0; for(int i=1;i<=g_cfg.atrLen;i++) atr+=(h[i]-l[i]); atr/=MathMax(g_cfg.atrLen,1);
+   if(atr<=0) atr=1e-9;
+   z.atr=atr;
+   double close1=c[1];
+
+   // swing hi/lo (pivot at center) — persist last known when no new pivot
+   int center=pv+1; bool isH=true,isL=true;
+   for(int k=1;k<=pv;k++){ if(h[center]<=h[center+k]||h[center]<=h[center-k]) isH=false;
+                           if(l[center]>=l[center+k]||l[center]>=l[center-k]) isL=false; }
+   z.swingHi=(isH? h[center] : g_tfZones[idx].swingHi);
+   z.swingLo=(isL? l[center] : g_tfZones[idx].swingLo);
+
+   // liquidity pools = recent extremes; sweep = pierced then closed back inside
+   double poolHi=-DBL_MAX, poolLo=DBL_MAX;
+   for(int i=2;i<2+look && i<need;i++){ if(h[i]>poolHi) poolHi=h[i]; if(l[i]<poolLo) poolLo=l[i]; }
+   z.poolHi=(poolHi==-DBL_MAX?0:poolHi); z.poolLo=(poolLo==DBL_MAX?0:poolLo);
+   z.sweptHi=(z.poolHi>0 && h[1]>z.poolHi && close1<z.poolHi);
+   z.sweptLo=(z.poolLo>0 && l[1]<z.poolLo && close1>z.poolLo);
+
+   // order block = last opposing candle before a displacement impulse
+   double mv=MathAbs(c[1]-c[1+g_cfg.effLen]);
+   bool bullImp=(c[1]>o[1] && mv>atr*g_cfg.impulseAtrMult);
+   bool bearImp=(c[1]<o[1] && mv>atr*g_cfg.impulseAtrMult);
+   z.obDir=DIR_NONE; z.obTop=0; z.obBot=0;
+   if(bullImp){ for(int i=2;i<=8 && i<need;i++) if(c[i]<o[i]){ z.obTop=h[i]; z.obBot=l[i]; z.obDir=DIR_LONG; break; } }
+   else if(bearImp){ for(int i=2;i<=8 && i<need;i++) if(c[i]>o[i]){ z.obTop=h[i]; z.obBot=l[i]; z.obDir=DIR_SHORT; break; } }
+
+   // supply/demand = OB band, else the per-TF curve flip band, +- inducZoneWidth
+   double fb=g_tfCurve[idx].fb, ft=g_tfCurve[idx].ft;
+   double demMid=(z.obDir==DIR_LONG && z.obTop!=0)? (z.obTop+z.obBot)*0.5 : (fb!=0? fb : z.swingLo);
+   double supMid=(z.obDir==DIR_SHORT&& z.obTop!=0)? (z.obTop+z.obBot)*0.5 : (ft!=0? ft : z.swingHi);
+   double w=atr*g_cfg.inducZoneWidth;
+   z.demTop=(demMid!=0? demMid+w:0); z.demBot=(demMid!=0? demMid-w:0);
+   z.supTop=(supMid!=0? supMid+w:0); z.supBot=(supMid!=0? supMid-w:0);
+   z.inDemand=(demMid!=0 && close1<=z.demTop && close1>=z.demBot);
+   z.inSupply=(supMid!=0 && close1<=z.supTop && close1>=z.supBot);
+   z.valid=true;
+   g_tfZones[idx]=z;
+}
+
+//==================================================================
+// Update per-TF zones for all 7 absolute rungs. The operating-TF rung
+// mirrors the already-computed g_state zones (single source of truth).
+//==================================================================
+void ME_UpdateTFZones()
+{
+   for(int i=0;i<7;i++)
+   {
+      if(i==me_opTFIdx)
+      {
+         FalconTFZones z; ZeroMemory(z);
+         z.atr=g_state.physics.atr;
+         z.obTop=g_state.orderBlocks.activeTop; z.obBot=g_state.orderBlocks.activeBot; z.obDir=g_state.orderBlocks.activeDir;
+         z.demTop=g_state.supplyDemand.demandTop; z.demBot=g_state.supplyDemand.demandBot;
+         z.supTop=g_state.supplyDemand.supplyTop; z.supBot=g_state.supplyDemand.supplyBot;
+         z.inDemand=g_state.supplyDemand.inDemand; z.inSupply=g_state.supplyDemand.inSupply;
+         z.swingHi=g_state.structure.swingHigh;   z.swingLo=g_state.structure.swingLow;
+         z.sweptHi=g_state.liquidity.sweepBear;    z.sweptLo=g_state.liquidity.sweepBull;
+         z.valid=true;
+         g_tfZones[i]=z;
+      }
+      else ME_TFZones(me_htfTF[i], i);
+   }
+}
+
+//==================================================================
 // MASTER ENTRY — Market Engine pipeline step
 //==================================================================
 void MarketEngineRun()
@@ -2639,6 +2751,7 @@ void MarketEngineRun()
    ME_UpdateOrderBlocks();
    ME_UpdateSupplyDemand();
    ME_UpdateHTF();
+   ME_UpdateTFZones();   // per-TF liquidity/OB/S&D across the W1..M1 ladder
 }
 
 #endif // FALCON_MARKET_ENGINE_MQH
@@ -5167,13 +5280,21 @@ double TP_StopLong(const double entry,const double atr,string &src)
    double minD = MathMax(atr*0.6, buf*2.0);
 
    // candidate invalidation levels (price, label), each is a zone BOTTOM
-   double cand[6]; string lbl[6]; int n=0;
+   double cand[12]; string lbl[12]; int n=0;
    if(g_state.supplyDemand.inDemand && g_state.supplyDemand.demandBot>0){ cand[n]=g_state.supplyDemand.demandBot; lbl[n]="demand"; n++; }
    if(g_state.orderBlocks.activeDir==DIR_LONG && g_state.orderBlocks.activeBot>0){ cand[n]=g_state.orderBlocks.activeBot; lbl[n]="orderblock"; n++; }
    if(g_state.wave.flipBot>0){ cand[n]=g_state.wave.flipBot; lbl[n]="flip"; n++; }
    if(g_state.liquidity.induceBot>0){ cand[n]=g_state.liquidity.induceBot; lbl[n]="inducement"; n++; }
    if(g_state.structure.swingLow>0){ cand[n]=g_state.structure.swingLow; lbl[n]="swingLow"; n++; }
    if(g_state.wave.origin>0){ cand[n]=g_state.wave.origin; lbl[n]="origin"; n++; }
+   // OWNER-TF zones (fractal): invalidation of the controlling higher-TF curve
+   int oiL=g_state.htf.ownerTF;
+   if(g_cfg.fractalZones && oiL>=0 && oiL<7 && g_tfZones[oiL].valid)
+   {
+      if(g_tfZones[oiL].demBot>0){ cand[n]=g_tfZones[oiL].demBot; lbl[n]="ownerDemand"; n++; }
+      if(g_tfZones[oiL].obDir==DIR_LONG && g_tfZones[oiL].obBot>0){ cand[n]=g_tfZones[oiL].obBot; lbl[n]="ownerOB"; n++; }
+      if(g_tfZones[oiL].swingLo>0){ cand[n]=g_tfZones[oiL].swingLo; lbl[n]="ownerSwing"; n++; }
+   }
 
    // choose the HIGHEST candidate that is below entry by >= minD (tightest precise stop)
    double best=0.0; src="";
@@ -5189,7 +5310,10 @@ double TP_StopLong(const double entry,const double atr,string &src)
       for(int i=0;i<n;i++) if(cand[i]>0 && cand[i]<entry && (best==0.0||cand[i]<best)){ best=cand[i]; src=lbl[i]; }
       if(best<=0.0){ src="atr"; return(entry - 1.5*atr - buf); }
    }
-   return(best - buf);
+   double stopL = best - buf;
+   double capL  = entry - g_cfg.maxStopATR*atr;   // never wider than the cap
+   if(stopL < capL){ stopL = capL; src=src+"(cap)"; }
+   return(stopL);
 }
 
 double TP_StopShort(const double entry,const double atr,string &src)
@@ -5197,13 +5321,20 @@ double TP_StopShort(const double entry,const double atr,string &src)
    double buf  = atr*g_cfg.stopBufATR;
    double minD = MathMax(atr*0.6, buf*2.0);
 
-   double cand[6]; string lbl[6]; int n=0;
+   double cand[12]; string lbl[12]; int n=0;
    if(g_state.supplyDemand.inSupply && g_state.supplyDemand.supplyTop>0){ cand[n]=g_state.supplyDemand.supplyTop; lbl[n]="supply"; n++; }
    if(g_state.orderBlocks.activeDir==DIR_SHORT && g_state.orderBlocks.activeTop>0){ cand[n]=g_state.orderBlocks.activeTop; lbl[n]="orderblock"; n++; }
    if(g_state.wave.flipTop>0){ cand[n]=g_state.wave.flipTop; lbl[n]="flip"; n++; }
    if(g_state.liquidity.induceTop>0){ cand[n]=g_state.liquidity.induceTop; lbl[n]="inducement"; n++; }
    if(g_state.structure.swingHigh>0){ cand[n]=g_state.structure.swingHigh; lbl[n]="swingHigh"; n++; }
    if(g_state.wave.origin>0){ cand[n]=g_state.wave.origin; lbl[n]="origin"; n++; }
+   int oiS=g_state.htf.ownerTF;
+   if(g_cfg.fractalZones && oiS>=0 && oiS<7 && g_tfZones[oiS].valid)
+   {
+      if(g_tfZones[oiS].supTop>0){ cand[n]=g_tfZones[oiS].supTop; lbl[n]="ownerSupply"; n++; }
+      if(g_tfZones[oiS].obDir==DIR_SHORT && g_tfZones[oiS].obTop>0){ cand[n]=g_tfZones[oiS].obTop; lbl[n]="ownerOB"; n++; }
+      if(g_tfZones[oiS].swingHi>0){ cand[n]=g_tfZones[oiS].swingHi; lbl[n]="ownerSwing"; n++; }
+   }
 
    // choose the LOWEST candidate that is above entry by >= minD
    double best=0.0; src="";
@@ -5218,7 +5349,10 @@ double TP_StopShort(const double entry,const double atr,string &src)
       for(int i=0;i<n;i++) if(cand[i]>0 && cand[i]>entry && cand[i]>best){ best=cand[i]; src=lbl[i]; }
       if(best<=0.0){ src="atr"; return(entry + 1.5*atr + buf); }
    }
-   return(best + buf);
+   double stopS = best + buf;
+   double capS  = entry + g_cfg.maxStopATR*atr;
+   if(stopS > capS){ stopS = capS; src=src+"(cap)"; }
+   return(stopS);
 }
 
 //------------------------------------------------------------------
@@ -6131,19 +6265,25 @@ bool Sym_AtRealZone(const int dir,const double px)
 
    bool flip   = Sym_PriceInBand(px, w.flipBot, w.flipTop);             // wave flip zone
    bool sweptL = lq.induceSwept;                                        // liquidity grabbed
+   // owner-TF zone (fractal): price reacting at the controlling higher-TF zone
+   int oiZ=g_state.htf.ownerTF;
+   bool ownerZone=false;
+   if(g_cfg.fractalZones && oiZ>=0 && oiZ<7 && g_tfZones[oiZ].valid)
+      ownerZone = (dir==DIR_LONG ? (g_tfZones[oiZ].inDemand || (g_tfZones[oiZ].obDir==DIR_LONG && Sym_PriceInBand(px,g_tfZones[oiZ].obBot,g_tfZones[oiZ].obTop)))
+                                 : (g_tfZones[oiZ].inSupply || (g_tfZones[oiZ].obDir==DIR_SHORT && Sym_PriceInBand(px,g_tfZones[oiZ].obBot,g_tfZones[oiZ].obTop))));
    if(dir==DIR_LONG)
    {
       bool dz  = sd.inDemand;                                           // supply/demand engine
       bool obz = (ob.activeDir==DIR_LONG && Sym_PriceInBand(px,ob.activeBot,ob.activeTop));
       bool fuz = (fu.active && fu.dir==DIR_LONG && Sym_PriceInBand(px,fu.zoneBot,fu.zoneTop));
-      return(flip || dz || obz || fuz || sweptL);
+      return(flip || dz || obz || fuz || sweptL || ownerZone);
    }
    else
    {
       bool sz  = sd.inSupply;
       bool obz = (ob.activeDir==DIR_SHORT && Sym_PriceInBand(px,ob.activeBot,ob.activeTop));
       bool fuz = (fu.active && fu.dir==DIR_SHORT && Sym_PriceInBand(px,fu.zoneBot,fu.zoneTop));
-      return(flip || sz || obz || fuz || sweptL);
+      return(flip || sz || obz || fuz || sweptL || ownerZone);
    }
 }
 
@@ -6825,6 +6965,9 @@ string VZ_Body(const int tab)
          s+="Stack Dir   : "+VZ_Dir(h.stackDir)+"\n";
          s+="Alignment   : "+DoubleToString(h.alignment,0)+"%   Conflict "+DoubleToString(h.conflict,0)+"%\n";
          s+="Owner TF idx: "+IntegerToString(h.ownerTF)+" ("+VZ_Dir(g_state.curve.ownerDir)+")   Fractal "+(h.fractalAgreement?"AGREE":"split")+"\n";
+         s+="Owner zone  : "+((h.ownerTF>=0 && h.ownerTF<7 && g_tfZones[h.ownerTF].valid)?
+              ("D "+VZ_Px(g_tfZones[h.ownerTF].demBot)+"-"+VZ_Px(g_tfZones[h.ownerTF].demTop)
+              +"  S "+VZ_Px(g_tfZones[h.ownerTF].supBot)+"-"+VZ_Px(g_tfZones[h.ownerTF].supTop)) : "—")+"\n";
          s+="FU Candle   : "+(fuv.active?VZ_Dir(fuv.dir)+" zone "+VZ_Px(fuv.zoneBot)+"-"+VZ_Px(fuv.zoneTop)+"  conf "+DoubleToString(fuv.confidence,0)+"  life "+IntegerToString(fuv.lifecycle):"none");
          break;
       case 8: // RISK — PYRO Campaign Thermodynamics
