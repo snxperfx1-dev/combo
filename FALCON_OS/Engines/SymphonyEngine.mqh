@@ -82,6 +82,12 @@ datetime sym_lastShortTradeTime = 0;
 // Bridge: previous canonical phase published into g_state.wave (for prevPhase)
 int      sym_bridgePrevPhase    = PH_TRANSITION;
 
+// TALON grip — campaign-level structural trailing anchors + breakeven flags
+double   talon_anchorLong  = 0.0;   // ratcheting higher-low the long grip rides
+double   talon_anchorShort = 0.0;   // ratcheting lower-high the short grip rides
+bool     talon_beLong  = false;     // long campaign breakeven earned
+bool     talon_beShort = false;     // short campaign breakeven earned
+
 //==================================================================
 // INIT — reset all Symphony phase state
 //==================================================================
@@ -107,6 +113,8 @@ void SymphonyInit()
 
    sym_lastLongTradeTime = 0; sym_lastShortTradeTime = 0;
    sym_bridgePrevPhase   = PH_TRANSITION;
+   talon_anchorLong = 0.0; talon_anchorShort = 0.0;
+   talon_beLong = false;   talon_beShort = false;
 }
 
 //==================================================================
@@ -683,26 +691,91 @@ void SymphonyManageExits()
 }
 
 //==================================================================
-// TRADE MANAGEMENT — breakeven -> ATR trailing -> ARC-target partial
-//   Symphony entries pile up as a campaign; this protects and banks
-//   them. Reuses EE_ModifySL / EE_ClosePartial / EE_TPSlot from the
-//   Execution Engine. Runs every bar BEFORE exits/entries.
-//     • Breakeven : once profit > trailStartATR*0.5, lock SL at entry(+buf)
-//     • Trailing  : once profit > trailStartATR, trail SL trailDistATR behind
-//     • Partial   : bank 50% when price reaches the projected ARC target
+// TALON GRIP — curve-convergent STRUCTURAL trailing + earned breakeven
+//   Replaces basic ATR trailing. Operates at the CAMPAIGN (basket) level:
+//   one grip for the whole directional fleet, off blended cost. The stop is
+//   driven by the same intelligence that drives entries:
+//     1) STRUCTURE  — rides behind confirmed swing pivots (higher-lows for
+//        longs / lower-highs for shorts), ratcheting only.
+//     2) BREAKEVEN  — EARNED, not arbitrary: locks once a BOS confirms in the
+//        campaign direction OR the fleet is TalonBeATR in favor. (No more
+//        getting tagged on a healthy phase-2 retrace.)
+//     3) CONVERGENCE — the trail distance CONTRACTS as price nears the curve
+//        destination (ARC target / wave objective) and as geometryCapacity
+//        drains. Far = wide (let it run); near = tight (bank before reversal).
+//     4) PHASE/THERMAL — hard-tightens at terminal phase (NEW_HIGH/NEW_LOW) or
+//        when the campaign's profit velocity (coolingRate) rolls over.
+//   Reuses EE_ModifySL. Applies one ratcheting stop to every leg of the side.
 //==================================================================
-void SymphonyManageTrades()
+void TalonManageSide(const int dir,const FalconThermalCampaign &c,
+                     const double atr,const double bid,const double ask,
+                     const double pivot)
 {
-   double atr = FalconATR(1);
-   if(atr<=0.0) atr=FalconATR(0);
-   if(atr<=0.0) return;
+   double E = c.blendedEntry;
+   if(E<=0.0) return;
+   double price = (dir==DIR_LONG ? bid : ask);
+   double buf   = atr*g_cfg.talonBufATR;
 
-   double bid = SymbolInfoDouble(_Symbol,SYMBOL_BID);
-   double ask = SymbolInfoDouble(_Symbol,SYMBOL_ASK);
-   double beTrig = atr*g_cfg.trailStartATR;   // profit needed to arm BE/trail
-   double trailD = atr*g_cfg.trailDistATR;    // trailing distance behind price
-   double beBuf  = atr*0.05;                  // small breakeven buffer
+   // 1) STRUCTURAL ANCHOR — ratchet to confirmed swings in the trade direction
+   if(dir==DIR_LONG)
+   {
+      if(talon_anchorLong<=0.0)
+         talon_anchorLong = MathMax(g_state.structure.swingLow, E - atr*g_cfg.talonBaseATR);
+      if(pivot>0.0 && pivot>talon_anchorLong && pivot<price) talon_anchorLong = pivot;
+   }
+   else
+   {
+      if(talon_anchorShort<=0.0)
+         talon_anchorShort = (g_state.structure.swingHigh>0.0 ? g_state.structure.swingHigh
+                                                              : E + atr*g_cfg.talonBaseATR);
+      if(pivot>0.0 && pivot<talon_anchorShort && pivot>price) talon_anchorShort = pivot;
+   }
+   double anchor = (dir==DIR_LONG ? talon_anchorLong : talon_anchorShort);
+   double structuralSL = (dir==DIR_LONG ? anchor-buf : anchor+buf);
 
+   // 2) EARNED BREAKEVEN — structural confirm (BOS in dir) OR favor >= TalonBeATR
+   bool earned = (g_state.structure.bos==dir) || (c.favorableATR>=g_cfg.talonBeATR);
+   if(earned){ if(dir==DIR_LONG) talon_beLong=true; else talon_beShort=true; }
+   bool   beLocked = (dir==DIR_LONG ? talon_beLong : talon_beShort);
+   double beFloor  = (dir==DIR_LONG ? E+atr*0.05 : E-atr*0.05);
+
+   // 3) CURVE CONVERGENCE — contract the trail as we approach the destination
+   double target = (dir==DIR_LONG ? (sym_arcLong >0.0 ? sym_arcLong  : g_state.wave.objective)
+                                  : (sym_arcShort>0.0 ? sym_arcShort : g_state.wave.objective));
+   double distATR = (target>0.0 ? MathAbs(target-price)/atr : 999.0);
+   double geom    = FalconClamp(g_state.convexity.geometryCapacity/100.0,0.0,1.0);
+   double convFrac= FalconClamp(MathMin(distATR/MathMax(g_cfg.talonConvSpanATR,1e-6), geom),
+                                g_cfg.talonMinTighten, 1.0);
+
+   // 4) PHASE / THERMAL terminal hard-tighten
+   bool terminal = (dir==DIR_LONG  && g_state.wave.phase==PH_NEW_HIGH)
+                || (dir==DIR_SHORT && g_state.wave.phase==PH_NEW_LOW)
+                || (c.favorableATR>0.0 && c.coolingRate<0.0);
+   if(terminal) convFrac = g_cfg.talonMinTighten;
+   double trailDist = atr*g_cfg.talonBaseATR*convFrac;
+   double convSL    = (dir==DIR_LONG ? price-trailDist : price+trailDist);
+
+   // 5) COMPOSE — ride structure; in the terminal approach take the tighter of
+   //    structure vs convergence; floor at earned breakeven; ratchet only.
+   bool approaching = (distATR < g_cfg.talonConvSpanATR);
+   double cand = structuralSL;
+   if(approaching || terminal)
+      cand = (dir==DIR_LONG ? MathMax(cand,convSL) : MathMin(cand,convSL));
+   if(beLocked)
+      cand = (dir==DIR_LONG ? MathMax(cand,beFloor) : MathMin(cand,beFloor));
+
+   // stage (display)
+   int stage;
+   if(!beLocked)        stage=TG_FORMING;
+   else if(terminal)    stage=TG_TERMINAL;
+   else if(approaching) stage=TG_CONVERGING;
+   else if(g_state.structure.bos==dir) stage=TG_RIDING;
+   else                 stage=TG_BREAKEVEN;
+
+   if(dir==DIR_LONG){ g_state.exec.gripLong=cand;  g_state.exec.talonStageLong=stage; }
+   else             { g_state.exec.gripShort=cand; g_state.exec.talonStageShort=stage; }
+
+   // 6) APPLY one ratcheting grip to every leg of this campaign
    int total=PositionsTotal();
    for(int i=0;i<total;i++)
    {
@@ -710,36 +783,61 @@ void SymphonyManageTrades()
       if(!PositionSelectByTicket(ticket)) continue;
       if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
       if(PositionGetInteger(POSITION_MAGIC)!=g_cfg.magic) continue;
-      long   type =PositionGetInteger(POSITION_TYPE);
-      double entry=PositionGetDouble(POSITION_PRICE_OPEN);
-      double sl   =PositionGetDouble(POSITION_SL);
-      double vol  =PositionGetDouble(POSITION_VOLUME);
-      int    slot =EE_TPSlot((long)ticket);
-      int    stage=ee_tpStage[slot];
+      long type=PositionGetInteger(POSITION_TYPE);
+      double sl=PositionGetDouble(POSITION_SL);
+      if(dir==DIR_LONG && type==POSITION_TYPE_BUY && cand<bid && (sl==0.0||cand>sl))
+      { if(EE_ModifySL(ticket,cand)) g_state.exec.exitState=XS_TRAIL_STOP; }
+      if(dir==DIR_SHORT&& type==POSITION_TYPE_SELL&& cand>ask && (sl==0.0||cand<sl))
+      { if(EE_ModifySL(ticket,cand)) g_state.exec.exitState=XS_TRAIL_STOP; }
+   }
+}
 
-      if(type==POSITION_TYPE_BUY)
-      {
-         double profit=bid-entry;
-         // 50% partial at the projected ARC (curve destination)
-         if(stage<1 && sym_arcLong>0.0 && bid>=sym_arcLong)
-         { if(EE_ClosePartial(ticket,vol*0.5)) ee_tpStage[slot]=1; }
+void TalonGrip()
+{
+   if(!g_cfg.useTalon) return;
+   double atr=FalconATR(1); if(atr<=0.0) atr=FalconATR(0);
+   if(atr<=0.0) return;
+   double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
+   double ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
 
-         double newSL=sl;
-         if(profit>beTrig*0.5){ double be=entry+beBuf; if(sl==0.0 || be>newSL) newSL=be; }   // breakeven
-         if(profit>beTrig)    { double t =bid-trailD;  if(t>newSL)            newSL=t;  }     // trail
-         if(newSL>sl && newSL<bid){ if(EE_ModifySL(ticket,newSL)) g_state.exec.exitState=XS_TRAIL_STOP; }
-      }
-      else // SELL
-      {
-         double profit=entry-ask;
-         if(stage<1 && sym_arcShort>0.0 && ask<=sym_arcShort)
-         { if(EE_ClosePartial(ticket,vol*0.5)) ee_tpStage[slot]=1; }
+   // confirmed structural pivots for the grip anchor
+   int cl = g_cfg.talonStructLen+1;
+   double pLow  = FalconIsPivotLow (cl,g_cfg.talonStructLen) ? gLow[cl]  : 0.0;
+   double pHigh = FalconIsPivotHigh(cl,g_cfg.talonStructLen) ? gHigh[cl] : 0.0;
 
-         double newSL=sl;
-         if(profit>beTrig*0.5){ double be=entry-beBuf; if(sl==0.0 || be<newSL) newSL=be; }   // breakeven
-         if(profit>beTrig)    { double t =ask+trailD;  if(t<newSL)            newSL=t;  }     // trail
-         if(newSL<sl && newSL>ask){ if(EE_ModifySL(ticket,newSL)) g_state.exec.exitState=XS_TRAIL_STOP; }
-      }
+   FalconThermalCampaign cL = g_state.risk.campaign[0];
+   FalconThermalCampaign cS = g_state.risk.campaign[1];
+
+   if(cL.stackCount>0) TalonManageSide(DIR_LONG, cL, atr, bid, ask, pLow);
+   else { talon_anchorLong=0.0;  talon_beLong=false;  g_state.exec.gripLong=0.0;  g_state.exec.talonStageLong=TG_FORMING; }
+
+   if(cS.stackCount>0) TalonManageSide(DIR_SHORT, cS, atr, bid, ask, pHigh);
+   else { talon_anchorShort=0.0; talon_beShort=false; g_state.exec.gripShort=0.0; g_state.exec.talonStageShort=TG_FORMING; }
+}
+
+//==================================================================
+// ARC PARTIAL — bank 50% of each leg when price reaches the projected
+// ARC curve destination (separate, complementary harvest).
+//==================================================================
+void SymphonyArcPartial()
+{
+   double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
+   double ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
+   int total=PositionsTotal();
+   for(int i=0;i<total;i++)
+   {
+      ulong ticket=PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
+      if(PositionGetInteger(POSITION_MAGIC)!=g_cfg.magic) continue;
+      long   type=PositionGetInteger(POSITION_TYPE);
+      double vol =PositionGetDouble(POSITION_VOLUME);
+      int    slot=EE_TPSlot((long)ticket);
+      if(ee_tpStage[slot]>=1) continue;
+      if(type==POSITION_TYPE_BUY && sym_arcLong>0.0 && bid>=sym_arcLong)
+      { if(EE_ClosePartial(ticket,vol*0.5)) ee_tpStage[slot]=1; }
+      if(type==POSITION_TYPE_SELL&& sym_arcShort>0.0 && ask<=sym_arcShort)
+      { if(EE_ClosePartial(ticket,vol*0.5)) ee_tpStage[slot]=1; }
    }
 }
 
@@ -749,9 +847,10 @@ void SymphonyManageTrades()
 //==================================================================
 void SymphonyTradeManage()
 {
-   SymphonyManageTrades();   // breakeven / trailing / ARC partial (protect winners)
-   SymphonyManageExits();    // composite ARC + institutional + phase reversal exit
-   SymphonyExecuteTrading(); // Phase 3/4 entries
+   TalonGrip();             // TALON curve-convergent structural grip (breakeven + trail)
+   SymphonyArcPartial();    // bank 50% at the projected ARC destination
+   SymphonyManageExits();   // composite ARC + institutional + phase reversal exit
+   SymphonyExecuteTrading();// Phase 3/4 entries
 }
 
 #endif // FALCON_SYMPHONY_ENGINE_MQH

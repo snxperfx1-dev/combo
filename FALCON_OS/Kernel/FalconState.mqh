@@ -97,6 +97,16 @@ enum FALCON_ADMIT
    ADM_DERISK    = 3    // critical heat — flatten the campaign (catastrophe stop)
 };
 
+// TALON grip stage — the life-stage of a campaign's protective stop.
+enum FALCON_TALON
+{
+   TG_FORMING    = 0,   // young / no breakeven yet — sits on structural stop
+   TG_BREAKEVEN  = 1,   // breakeven earned (structural confirm)
+   TG_RIDING     = 2,   // trailing behind confirmed swing structure
+   TG_CONVERGING = 3,   // approaching curve target — trail contracting
+   TG_TERMINAL   = 4    // terminal phase / profit rolling over — trail tightest
+};
+
 // Compression regime — controls recursion size/count near terminals
 enum FALCON_COMPRESSION
 {
@@ -522,6 +532,11 @@ struct FalconExecution
    int    openShortCount;
    double openPnL;
    bool   sessionOpen;
+   // TALON grip (campaign-level protective stop) — display
+   double gripLong;        // active long-campaign stop level (0=none)
+   double gripShort;       // active short-campaign stop level (0=none)
+   int    talonStageLong;  // FALCON_TALON
+   int    talonStageShort; // FALCON_TALON
 };
 
 //==================================================================
@@ -758,6 +773,18 @@ string FalconAdmitStr(const int a)
       case ADM_FROZEN:    return("FROZEN");
       case ADM_DERISK:    return("DE-RISK!");
       default:            return("OPEN");
+   }
+}
+
+string FalconTalonStr(const int t)
+{
+   switch(t)
+   {
+      case TG_BREAKEVEN:  return("BREAKEVEN");
+      case TG_RIDING:     return("RIDING");
+      case TG_CONVERGING: return("CONVERGING");
+      case TG_TERMINAL:   return("TERMINAL");
+      default:            return("FORMING");
    }
 }
 

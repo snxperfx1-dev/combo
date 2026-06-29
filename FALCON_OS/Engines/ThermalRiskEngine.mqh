@@ -50,14 +50,12 @@
 //==================================================================
 double tr_prevHeat[2]   = {0.0,0.0};
 double tr_prevPnL[2]    = {0.0,0.0};
-bool   tr_beLocked[2]   = {false,false};
 double tr_equityPeak    = 0.0;
 
 void ThermalRiskInit()
 {
    tr_prevHeat[0]=0.0; tr_prevHeat[1]=0.0;
    tr_prevPnL[0]=0.0;  tr_prevPnL[1]=0.0;
-   tr_beLocked[0]=false; tr_beLocked[1]=false;
    tr_equityPeak = AccountInfoDouble(ACCOUNT_EQUITY);
 }
 
@@ -157,14 +155,15 @@ void TR_Admission(FalconThermalCampaign &c,const FalconThermostat &th)
 }
 
 //==================================================================
-// 4) BASKET MANAGER — breakeven-lock the whole fleet, and the only
-//    forced close: a CRITICAL-heat catastrophe flatten (deeply
-//    underwater + large). Winners are never trimmed here.
+// 4) BASKET MANAGER — the ONLY forced close: a CRITICAL-heat catastrophe
+//    flatten (deeply underwater + large). Winners are never trimmed.
+//    Breakeven + trailing are owned by the TALON grip (Symphony layer).
 //==================================================================
 void TR_ManageBasket(const int idx,FalconThermalCampaign &c)
 {
    int dir = c.dir;
-   if(c.stackCount==0){ tr_beLocked[idx]=false; c.breakevenLocked=false; return; }
+   c.breakevenLocked = false;
+   if(c.stackCount==0) return;
 
    // --- CATASTROPHE STOP: thermal runaway -> flatten this campaign ---
    if(c.admission==ADM_DERISK)
@@ -182,42 +181,7 @@ void TR_ManageBasket(const int idx,FalconThermalCampaign &c)
       }
       FalconPublish(EVT_RISK_BREACH, c.heat, "PYRO thermal runaway flatten");
       g_state.exec.exitState=XS_DD_FLATTEN;
-      tr_beLocked[idx]=false;
-      c.breakevenLocked=false;
-      return;
    }
-
-   // --- BASKET BREAKEVEN LOCK: once the fleet is BasketLockATR in profit,
-   //     pull every leg's stop to the blended breakeven so the campaign as a
-   //     whole can no longer turn red. (Symphony's per-leg trailing still
-   //     runs on top to keep banking beyond breakeven.) ---
-   if(!tr_beLocked[idx] && c.favorableATR>=g_cfg.basketLockATR && c.blendedEntry>0.0)
-   {
-      double atr=MathMax(g_state.physics.atr,1e-10);
-      double beBuf=atr*0.05;
-      double beLong = c.blendedEntry + beBuf;
-      double beShort= c.blendedEntry - beBuf;
-      double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
-      double ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
-      bool any=false;
-      int total=PositionsTotal();
-      for(int i=0;i<total;i++)
-      {
-         ulong ticket=PositionGetTicket(i);
-         if(!PositionSelectByTicket(ticket)) continue;
-         if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
-         if(PositionGetInteger(POSITION_MAGIC)!=g_cfg.magic) continue;
-         long type=PositionGetInteger(POSITION_TYPE);
-         double sl=PositionGetDouble(POSITION_SL);
-         if(dir==DIR_LONG && type==POSITION_TYPE_BUY && beLong<bid && (sl==0.0||beLong>sl))
-         { if(EE_ModifySL(ticket,beLong)) any=true; }
-         if(dir==DIR_SHORT&& type==POSITION_TYPE_SELL&& beShort>ask && (sl==0.0||beShort<sl))
-         { if(EE_ModifySL(ticket,beShort)) any=true; }
-      }
-      if(any){ tr_beLocked[idx]=true; FalconPublish(EVT_RISK_BREACH, c.favorableATR, "PYRO basket breakeven lock"); }
-   }
-   if(c.favorableATR<g_cfg.basketLockATR*0.5) tr_beLocked[idx]=false; // re-arm if profit fades back
-   c.breakevenLocked = tr_beLocked[idx];
 }
 
 //==================================================================
@@ -255,7 +219,7 @@ void ThermalRiskUpdate()
    // commit shared state BEFORE managing (admissions drive the basket manager)
    g_state.risk = r;
 
-   // 4) manage each basket (breakeven lock / catastrophe flatten)
+   // 4) catastrophe-only basket management (TALON owns breakeven + trailing)
    TR_ManageBasket(0, g_state.risk.campaign[0]);
    TR_ManageBasket(1, g_state.risk.campaign[1]);
 }

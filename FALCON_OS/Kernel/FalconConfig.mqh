@@ -92,8 +92,16 @@ input double  InpHeatFreeze      = 0.80;  // Heat above this freezes new stacks
 input double  InpHeatCritical    = 1.10;  // Heat above this flattens the campaign (catastrophe stop)
 input int     InpMaxAvgDownStacks= 3;     // Max stacks allowed while basket is underwater (anti-martingale)
 input double  InpHeatAdverseSpan = 4.0;   // Adverse excursion (ATR) that equals full adverse heat
-input double  InpBasketLockATR   = 1.5;   // Lock basket breakeven once favorable excursion >= this (ATR)
 input double  InpAcctHeatDDPct   = 15.0;  // Account heat: equity drawdown %% that fully freezes admissions
+
+input string  __sep_talon       = "════════ TALON GRIP — breakeven + trail ════════"; // ──
+input bool    InpUseTalon        = true;  // Use TALON curve-convergent structural grip (off = no trail)
+input int     InpTalonStructLen  = 5;     // Structural pivot length for the grip anchor
+input double  InpTalonBufATR      = 0.35; // Buffer beyond the structural pivot (ATR)
+input double  InpTalonBaseATR     = 2.5;  // Base trail distance far from target (ATR)
+input double  InpTalonConvSpanATR = 6.0;  // Distance-to-target (ATR) over which the trail converges
+input double  InpTalonMinTighten  = 0.25; // Tightest trail fraction near target / terminal (0..1)
+input double  InpTalonBeATR        = 1.0; // Favorable excursion (ATR) that earns the breakeven lock
 
 input string  __sep_viz         = "════════ VISUALIZATION ════════"; // ──
 input bool    InpShowDashboard  = true;  // Show unified dashboard
@@ -135,7 +143,10 @@ struct FalconConfig
    bool   useThermalRisk;  int maxStacks;  double maxCampaignLots;
    double heatThrottle, heatFreeze, heatCritical;
    int    maxAvgDownStacks;
-   double heatAdverseSpan, basketLockATR, acctHeatDDPct;
+   double heatAdverseSpan, acctHeatDDPct;
+   // TALON grip (breakeven + trail)
+   bool   useTalon;  int talonStructLen;
+   double talonBufATR, talonBaseATR, talonConvSpanATR, talonMinTighten, talonBeATR;
    // viz
    bool   showDashboard, verboseLog;  int dashboardTab;
    bool   showHUD;
@@ -213,8 +224,15 @@ void FalconConfigInit()
    g_cfg.heatCritical     = InpHeatCritical;
    g_cfg.maxAvgDownStacks = InpMaxAvgDownStacks;
    g_cfg.heatAdverseSpan  = InpHeatAdverseSpan;
-   g_cfg.basketLockATR    = InpBasketLockATR;
    g_cfg.acctHeatDDPct    = InpAcctHeatDDPct;
+
+   g_cfg.useTalon         = InpUseTalon;
+   g_cfg.talonStructLen   = InpTalonStructLen;
+   g_cfg.talonBufATR      = InpTalonBufATR;
+   g_cfg.talonBaseATR     = InpTalonBaseATR;
+   g_cfg.talonConvSpanATR = InpTalonConvSpanATR;
+   g_cfg.talonMinTighten  = InpTalonMinTighten;
+   g_cfg.talonBeATR       = InpTalonBeATR;
 
    g_cfg.showDashboard    = InpShowDashboard;
    g_cfg.showHUD          = InpShowHUD;

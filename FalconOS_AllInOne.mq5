@@ -2,10 +2,10 @@
 //|                                            FalconOS_AllInOne.mq5 |
 //|   FALCON OS — Unified Trading Intelligence Platform               |
 //|   SINGLE-FILE BUILD (all kernel + engines concatenated)          |
-//|   Risk = PYRO Thermal engine only (DRDWCT fully removed).        |
+//|   Risk: PYRO thermal + TALON curve-convergent structural grip.   |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "3.26"
+#property version   "3.27"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -106,8 +106,16 @@ input double  InpHeatFreeze      = 0.80;  // Heat above this freezes new stacks
 input double  InpHeatCritical    = 1.10;  // Heat above this flattens the campaign (catastrophe stop)
 input int     InpMaxAvgDownStacks= 3;     // Max stacks allowed while basket is underwater (anti-martingale)
 input double  InpHeatAdverseSpan = 4.0;   // Adverse excursion (ATR) that equals full adverse heat
-input double  InpBasketLockATR   = 1.5;   // Lock basket breakeven once favorable excursion >= this (ATR)
 input double  InpAcctHeatDDPct   = 15.0;  // Account heat: equity drawdown %% that fully freezes admissions
+
+input string  __sep_talon       = "════════ TALON GRIP — breakeven + trail ════════"; // ──
+input bool    InpUseTalon        = true;  // Use TALON curve-convergent structural grip (off = no trail)
+input int     InpTalonStructLen  = 5;     // Structural pivot length for the grip anchor
+input double  InpTalonBufATR      = 0.35; // Buffer beyond the structural pivot (ATR)
+input double  InpTalonBaseATR     = 2.5;  // Base trail distance far from target (ATR)
+input double  InpTalonConvSpanATR = 6.0;  // Distance-to-target (ATR) over which the trail converges
+input double  InpTalonMinTighten  = 0.25; // Tightest trail fraction near target / terminal (0..1)
+input double  InpTalonBeATR        = 1.0; // Favorable excursion (ATR) that earns the breakeven lock
 
 input string  __sep_viz         = "════════ VISUALIZATION ════════"; // ──
 input bool    InpShowDashboard  = true;  // Show unified dashboard
@@ -149,7 +157,10 @@ struct FalconConfig
    bool   useThermalRisk;  int maxStacks;  double maxCampaignLots;
    double heatThrottle, heatFreeze, heatCritical;
    int    maxAvgDownStacks;
-   double heatAdverseSpan, basketLockATR, acctHeatDDPct;
+   double heatAdverseSpan, acctHeatDDPct;
+   // TALON grip (breakeven + trail)
+   bool   useTalon;  int talonStructLen;
+   double talonBufATR, talonBaseATR, talonConvSpanATR, talonMinTighten, talonBeATR;
    // viz
    bool   showDashboard, verboseLog;  int dashboardTab;
    bool   showHUD;
@@ -227,8 +238,15 @@ void FalconConfigInit()
    g_cfg.heatCritical     = InpHeatCritical;
    g_cfg.maxAvgDownStacks = InpMaxAvgDownStacks;
    g_cfg.heatAdverseSpan  = InpHeatAdverseSpan;
-   g_cfg.basketLockATR    = InpBasketLockATR;
    g_cfg.acctHeatDDPct    = InpAcctHeatDDPct;
+
+   g_cfg.useTalon         = InpUseTalon;
+   g_cfg.talonStructLen   = InpTalonStructLen;
+   g_cfg.talonBufATR      = InpTalonBufATR;
+   g_cfg.talonBaseATR     = InpTalonBaseATR;
+   g_cfg.talonConvSpanATR = InpTalonConvSpanATR;
+   g_cfg.talonMinTighten  = InpTalonMinTighten;
+   g_cfg.talonBeATR       = InpTalonBeATR;
 
    g_cfg.showDashboard    = InpShowDashboard;
    g_cfg.showHUD          = InpShowHUD;
@@ -348,6 +366,16 @@ enum FALCON_ADMIT
    ADM_THROTTLED = 1,   // warming — stack size shrinks with heat
    ADM_FROZEN    = 2,   // hot / maxed / underwater-limit — no new stacks
    ADM_DERISK    = 3    // critical heat — flatten the campaign (catastrophe stop)
+};
+
+// TALON grip stage — the life-stage of a campaign's protective stop.
+enum FALCON_TALON
+{
+   TG_FORMING    = 0,   // young / no breakeven yet — sits on structural stop
+   TG_BREAKEVEN  = 1,   // breakeven earned (structural confirm)
+   TG_RIDING     = 2,   // trailing behind confirmed swing structure
+   TG_CONVERGING = 3,   // approaching curve target — trail contracting
+   TG_TERMINAL   = 4    // terminal phase / profit rolling over — trail tightest
 };
 
 // Compression regime — controls recursion size/count near terminals
@@ -775,6 +803,11 @@ struct FalconExecution
    int    openShortCount;
    double openPnL;
    bool   sessionOpen;
+   // TALON grip (campaign-level protective stop) — display
+   double gripLong;        // active long-campaign stop level (0=none)
+   double gripShort;       // active short-campaign stop level (0=none)
+   int    talonStageLong;  // FALCON_TALON
+   int    talonStageShort; // FALCON_TALON
 };
 
 //==================================================================
@@ -1011,6 +1044,18 @@ string FalconAdmitStr(const int a)
       case ADM_FROZEN:    return("FROZEN");
       case ADM_DERISK:    return("DE-RISK!");
       default:            return("OPEN");
+   }
+}
+
+string FalconTalonStr(const int t)
+{
+   switch(t)
+   {
+      case TG_BREAKEVEN:  return("BREAKEVEN");
+      case TG_RIDING:     return("RIDING");
+      case TG_CONVERGING: return("CONVERGING");
+      case TG_TERMINAL:   return("TERMINAL");
+      default:            return("FORMING");
    }
 }
 
@@ -4463,14 +4508,12 @@ void ExecutionEngineRun()
 //==================================================================
 double tr_prevHeat[2]   = {0.0,0.0};
 double tr_prevPnL[2]    = {0.0,0.0};
-bool   tr_beLocked[2]   = {false,false};
 double tr_equityPeak    = 0.0;
 
 void ThermalRiskInit()
 {
    tr_prevHeat[0]=0.0; tr_prevHeat[1]=0.0;
    tr_prevPnL[0]=0.0;  tr_prevPnL[1]=0.0;
-   tr_beLocked[0]=false; tr_beLocked[1]=false;
    tr_equityPeak = AccountInfoDouble(ACCOUNT_EQUITY);
 }
 
@@ -4570,14 +4613,15 @@ void TR_Admission(FalconThermalCampaign &c,const FalconThermostat &th)
 }
 
 //==================================================================
-// 4) BASKET MANAGER — breakeven-lock the whole fleet, and the only
-//    forced close: a CRITICAL-heat catastrophe flatten (deeply
-//    underwater + large). Winners are never trimmed here.
+// 4) BASKET MANAGER — the ONLY forced close: a CRITICAL-heat catastrophe
+//    flatten (deeply underwater + large). Winners are never trimmed.
+//    Breakeven + trailing are owned by the TALON grip (Symphony layer).
 //==================================================================
 void TR_ManageBasket(const int idx,FalconThermalCampaign &c)
 {
    int dir = c.dir;
-   if(c.stackCount==0){ tr_beLocked[idx]=false; c.breakevenLocked=false; return; }
+   c.breakevenLocked = false;
+   if(c.stackCount==0) return;
 
    // --- CATASTROPHE STOP: thermal runaway -> flatten this campaign ---
    if(c.admission==ADM_DERISK)
@@ -4595,42 +4639,7 @@ void TR_ManageBasket(const int idx,FalconThermalCampaign &c)
       }
       FalconPublish(EVT_RISK_BREACH, c.heat, "PYRO thermal runaway flatten");
       g_state.exec.exitState=XS_DD_FLATTEN;
-      tr_beLocked[idx]=false;
-      c.breakevenLocked=false;
-      return;
    }
-
-   // --- BASKET BREAKEVEN LOCK: once the fleet is BasketLockATR in profit,
-   //     pull every leg's stop to the blended breakeven so the campaign as a
-   //     whole can no longer turn red. (Symphony's per-leg trailing still
-   //     runs on top to keep banking beyond breakeven.) ---
-   if(!tr_beLocked[idx] && c.favorableATR>=g_cfg.basketLockATR && c.blendedEntry>0.0)
-   {
-      double atr=MathMax(g_state.physics.atr,1e-10);
-      double beBuf=atr*0.05;
-      double beLong = c.blendedEntry + beBuf;
-      double beShort= c.blendedEntry - beBuf;
-      double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
-      double ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
-      bool any=false;
-      int total=PositionsTotal();
-      for(int i=0;i<total;i++)
-      {
-         ulong ticket=PositionGetTicket(i);
-         if(!PositionSelectByTicket(ticket)) continue;
-         if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
-         if(PositionGetInteger(POSITION_MAGIC)!=g_cfg.magic) continue;
-         long type=PositionGetInteger(POSITION_TYPE);
-         double sl=PositionGetDouble(POSITION_SL);
-         if(dir==DIR_LONG && type==POSITION_TYPE_BUY && beLong<bid && (sl==0.0||beLong>sl))
-         { if(EE_ModifySL(ticket,beLong)) any=true; }
-         if(dir==DIR_SHORT&& type==POSITION_TYPE_SELL&& beShort>ask && (sl==0.0||beShort<sl))
-         { if(EE_ModifySL(ticket,beShort)) any=true; }
-      }
-      if(any){ tr_beLocked[idx]=true; FalconPublish(EVT_RISK_BREACH, c.favorableATR, "PYRO basket breakeven lock"); }
-   }
-   if(c.favorableATR<g_cfg.basketLockATR*0.5) tr_beLocked[idx]=false; // re-arm if profit fades back
-   c.breakevenLocked = tr_beLocked[idx];
 }
 
 //==================================================================
@@ -4668,7 +4677,7 @@ void ThermalRiskUpdate()
    // commit shared state BEFORE managing (admissions drive the basket manager)
    g_state.risk = r;
 
-   // 4) manage each basket (breakeven lock / catastrophe flatten)
+   // 4) catastrophe-only basket management (TALON owns breakeven + trailing)
    TR_ManageBasket(0, g_state.risk.campaign[0]);
    TR_ManageBasket(1, g_state.risk.campaign[1]);
 }
@@ -4795,6 +4804,12 @@ datetime sym_lastShortTradeTime = 0;
 // Bridge: previous canonical phase published into g_state.wave (for prevPhase)
 int      sym_bridgePrevPhase    = PH_TRANSITION;
 
+// TALON grip — campaign-level structural trailing anchors + breakeven flags
+double   talon_anchorLong  = 0.0;   // ratcheting higher-low the long grip rides
+double   talon_anchorShort = 0.0;   // ratcheting lower-high the short grip rides
+bool     talon_beLong  = false;     // long campaign breakeven earned
+bool     talon_beShort = false;     // short campaign breakeven earned
+
 //==================================================================
 // INIT — reset all Symphony phase state
 //==================================================================
@@ -4820,6 +4835,8 @@ void SymphonyInit()
 
    sym_lastLongTradeTime = 0; sym_lastShortTradeTime = 0;
    sym_bridgePrevPhase   = PH_TRANSITION;
+   talon_anchorLong = 0.0; talon_anchorShort = 0.0;
+   talon_beLong = false;   talon_beShort = false;
 }
 
 //==================================================================
@@ -5396,26 +5413,91 @@ void SymphonyManageExits()
 }
 
 //==================================================================
-// TRADE MANAGEMENT — breakeven -> ATR trailing -> ARC-target partial
-//   Symphony entries pile up as a campaign; this protects and banks
-//   them. Reuses EE_ModifySL / EE_ClosePartial / EE_TPSlot from the
-//   Execution Engine. Runs every bar BEFORE exits/entries.
-//     • Breakeven : once profit > trailStartATR*0.5, lock SL at entry(+buf)
-//     • Trailing  : once profit > trailStartATR, trail SL trailDistATR behind
-//     • Partial   : bank 50% when price reaches the projected ARC target
+// TALON GRIP — curve-convergent STRUCTURAL trailing + earned breakeven
+//   Replaces basic ATR trailing. Operates at the CAMPAIGN (basket) level:
+//   one grip for the whole directional fleet, off blended cost. The stop is
+//   driven by the same intelligence that drives entries:
+//     1) STRUCTURE  — rides behind confirmed swing pivots (higher-lows for
+//        longs / lower-highs for shorts), ratcheting only.
+//     2) BREAKEVEN  — EARNED, not arbitrary: locks once a BOS confirms in the
+//        campaign direction OR the fleet is TalonBeATR in favor. (No more
+//        getting tagged on a healthy phase-2 retrace.)
+//     3) CONVERGENCE — the trail distance CONTRACTS as price nears the curve
+//        destination (ARC target / wave objective) and as geometryCapacity
+//        drains. Far = wide (let it run); near = tight (bank before reversal).
+//     4) PHASE/THERMAL — hard-tightens at terminal phase (NEW_HIGH/NEW_LOW) or
+//        when the campaign's profit velocity (coolingRate) rolls over.
+//   Reuses EE_ModifySL. Applies one ratcheting stop to every leg of the side.
 //==================================================================
-void SymphonyManageTrades()
+void TalonManageSide(const int dir,const FalconThermalCampaign &c,
+                     const double atr,const double bid,const double ask,
+                     const double pivot)
 {
-   double atr = FalconATR(1);
-   if(atr<=0.0) atr=FalconATR(0);
-   if(atr<=0.0) return;
+   double E = c.blendedEntry;
+   if(E<=0.0) return;
+   double price = (dir==DIR_LONG ? bid : ask);
+   double buf   = atr*g_cfg.talonBufATR;
 
-   double bid = SymbolInfoDouble(_Symbol,SYMBOL_BID);
-   double ask = SymbolInfoDouble(_Symbol,SYMBOL_ASK);
-   double beTrig = atr*g_cfg.trailStartATR;   // profit needed to arm BE/trail
-   double trailD = atr*g_cfg.trailDistATR;    // trailing distance behind price
-   double beBuf  = atr*0.05;                  // small breakeven buffer
+   // 1) STRUCTURAL ANCHOR — ratchet to confirmed swings in the trade direction
+   if(dir==DIR_LONG)
+   {
+      if(talon_anchorLong<=0.0)
+         talon_anchorLong = MathMax(g_state.structure.swingLow, E - atr*g_cfg.talonBaseATR);
+      if(pivot>0.0 && pivot>talon_anchorLong && pivot<price) talon_anchorLong = pivot;
+   }
+   else
+   {
+      if(talon_anchorShort<=0.0)
+         talon_anchorShort = (g_state.structure.swingHigh>0.0 ? g_state.structure.swingHigh
+                                                              : E + atr*g_cfg.talonBaseATR);
+      if(pivot>0.0 && pivot<talon_anchorShort && pivot>price) talon_anchorShort = pivot;
+   }
+   double anchor = (dir==DIR_LONG ? talon_anchorLong : talon_anchorShort);
+   double structuralSL = (dir==DIR_LONG ? anchor-buf : anchor+buf);
 
+   // 2) EARNED BREAKEVEN — structural confirm (BOS in dir) OR favor >= TalonBeATR
+   bool earned = (g_state.structure.bos==dir) || (c.favorableATR>=g_cfg.talonBeATR);
+   if(earned){ if(dir==DIR_LONG) talon_beLong=true; else talon_beShort=true; }
+   bool   beLocked = (dir==DIR_LONG ? talon_beLong : talon_beShort);
+   double beFloor  = (dir==DIR_LONG ? E+atr*0.05 : E-atr*0.05);
+
+   // 3) CURVE CONVERGENCE — contract the trail as we approach the destination
+   double target = (dir==DIR_LONG ? (sym_arcLong >0.0 ? sym_arcLong  : g_state.wave.objective)
+                                  : (sym_arcShort>0.0 ? sym_arcShort : g_state.wave.objective));
+   double distATR = (target>0.0 ? MathAbs(target-price)/atr : 999.0);
+   double geom    = FalconClamp(g_state.convexity.geometryCapacity/100.0,0.0,1.0);
+   double convFrac= FalconClamp(MathMin(distATR/MathMax(g_cfg.talonConvSpanATR,1e-6), geom),
+                                g_cfg.talonMinTighten, 1.0);
+
+   // 4) PHASE / THERMAL terminal hard-tighten
+   bool terminal = (dir==DIR_LONG  && g_state.wave.phase==PH_NEW_HIGH)
+                || (dir==DIR_SHORT && g_state.wave.phase==PH_NEW_LOW)
+                || (c.favorableATR>0.0 && c.coolingRate<0.0);
+   if(terminal) convFrac = g_cfg.talonMinTighten;
+   double trailDist = atr*g_cfg.talonBaseATR*convFrac;
+   double convSL    = (dir==DIR_LONG ? price-trailDist : price+trailDist);
+
+   // 5) COMPOSE — ride structure; in the terminal approach take the tighter of
+   //    structure vs convergence; floor at earned breakeven; ratchet only.
+   bool approaching = (distATR < g_cfg.talonConvSpanATR);
+   double cand = structuralSL;
+   if(approaching || terminal)
+      cand = (dir==DIR_LONG ? MathMax(cand,convSL) : MathMin(cand,convSL));
+   if(beLocked)
+      cand = (dir==DIR_LONG ? MathMax(cand,beFloor) : MathMin(cand,beFloor));
+
+   // stage (display)
+   int stage;
+   if(!beLocked)        stage=TG_FORMING;
+   else if(terminal)    stage=TG_TERMINAL;
+   else if(approaching) stage=TG_CONVERGING;
+   else if(g_state.structure.bos==dir) stage=TG_RIDING;
+   else                 stage=TG_BREAKEVEN;
+
+   if(dir==DIR_LONG){ g_state.exec.gripLong=cand;  g_state.exec.talonStageLong=stage; }
+   else             { g_state.exec.gripShort=cand; g_state.exec.talonStageShort=stage; }
+
+   // 6) APPLY one ratcheting grip to every leg of this campaign
    int total=PositionsTotal();
    for(int i=0;i<total;i++)
    {
@@ -5423,36 +5505,61 @@ void SymphonyManageTrades()
       if(!PositionSelectByTicket(ticket)) continue;
       if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
       if(PositionGetInteger(POSITION_MAGIC)!=g_cfg.magic) continue;
-      long   type =PositionGetInteger(POSITION_TYPE);
-      double entry=PositionGetDouble(POSITION_PRICE_OPEN);
-      double sl   =PositionGetDouble(POSITION_SL);
-      double vol  =PositionGetDouble(POSITION_VOLUME);
-      int    slot =EE_TPSlot((long)ticket);
-      int    stage=ee_tpStage[slot];
+      long type=PositionGetInteger(POSITION_TYPE);
+      double sl=PositionGetDouble(POSITION_SL);
+      if(dir==DIR_LONG && type==POSITION_TYPE_BUY && cand<bid && (sl==0.0||cand>sl))
+      { if(EE_ModifySL(ticket,cand)) g_state.exec.exitState=XS_TRAIL_STOP; }
+      if(dir==DIR_SHORT&& type==POSITION_TYPE_SELL&& cand>ask && (sl==0.0||cand<sl))
+      { if(EE_ModifySL(ticket,cand)) g_state.exec.exitState=XS_TRAIL_STOP; }
+   }
+}
 
-      if(type==POSITION_TYPE_BUY)
-      {
-         double profit=bid-entry;
-         // 50% partial at the projected ARC (curve destination)
-         if(stage<1 && sym_arcLong>0.0 && bid>=sym_arcLong)
-         { if(EE_ClosePartial(ticket,vol*0.5)) ee_tpStage[slot]=1; }
+void TalonGrip()
+{
+   if(!g_cfg.useTalon) return;
+   double atr=FalconATR(1); if(atr<=0.0) atr=FalconATR(0);
+   if(atr<=0.0) return;
+   double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
+   double ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
 
-         double newSL=sl;
-         if(profit>beTrig*0.5){ double be=entry+beBuf; if(sl==0.0 || be>newSL) newSL=be; }   // breakeven
-         if(profit>beTrig)    { double t =bid-trailD;  if(t>newSL)            newSL=t;  }     // trail
-         if(newSL>sl && newSL<bid){ if(EE_ModifySL(ticket,newSL)) g_state.exec.exitState=XS_TRAIL_STOP; }
-      }
-      else // SELL
-      {
-         double profit=entry-ask;
-         if(stage<1 && sym_arcShort>0.0 && ask<=sym_arcShort)
-         { if(EE_ClosePartial(ticket,vol*0.5)) ee_tpStage[slot]=1; }
+   // confirmed structural pivots for the grip anchor
+   int cl = g_cfg.talonStructLen+1;
+   double pLow  = FalconIsPivotLow (cl,g_cfg.talonStructLen) ? gLow[cl]  : 0.0;
+   double pHigh = FalconIsPivotHigh(cl,g_cfg.talonStructLen) ? gHigh[cl] : 0.0;
 
-         double newSL=sl;
-         if(profit>beTrig*0.5){ double be=entry-beBuf; if(sl==0.0 || be<newSL) newSL=be; }   // breakeven
-         if(profit>beTrig)    { double t =ask+trailD;  if(t<newSL)            newSL=t;  }     // trail
-         if(newSL<sl && newSL>ask){ if(EE_ModifySL(ticket,newSL)) g_state.exec.exitState=XS_TRAIL_STOP; }
-      }
+   FalconThermalCampaign cL = g_state.risk.campaign[0];
+   FalconThermalCampaign cS = g_state.risk.campaign[1];
+
+   if(cL.stackCount>0) TalonManageSide(DIR_LONG, cL, atr, bid, ask, pLow);
+   else { talon_anchorLong=0.0;  talon_beLong=false;  g_state.exec.gripLong=0.0;  g_state.exec.talonStageLong=TG_FORMING; }
+
+   if(cS.stackCount>0) TalonManageSide(DIR_SHORT, cS, atr, bid, ask, pHigh);
+   else { talon_anchorShort=0.0; talon_beShort=false; g_state.exec.gripShort=0.0; g_state.exec.talonStageShort=TG_FORMING; }
+}
+
+//==================================================================
+// ARC PARTIAL — bank 50% of each leg when price reaches the projected
+// ARC curve destination (separate, complementary harvest).
+//==================================================================
+void SymphonyArcPartial()
+{
+   double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
+   double ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
+   int total=PositionsTotal();
+   for(int i=0;i<total;i++)
+   {
+      ulong ticket=PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
+      if(PositionGetInteger(POSITION_MAGIC)!=g_cfg.magic) continue;
+      long   type=PositionGetInteger(POSITION_TYPE);
+      double vol =PositionGetDouble(POSITION_VOLUME);
+      int    slot=EE_TPSlot((long)ticket);
+      if(ee_tpStage[slot]>=1) continue;
+      if(type==POSITION_TYPE_BUY && sym_arcLong>0.0 && bid>=sym_arcLong)
+      { if(EE_ClosePartial(ticket,vol*0.5)) ee_tpStage[slot]=1; }
+      if(type==POSITION_TYPE_SELL&& sym_arcShort>0.0 && ask<=sym_arcShort)
+      { if(EE_ClosePartial(ticket,vol*0.5)) ee_tpStage[slot]=1; }
    }
 }
 
@@ -5462,9 +5569,10 @@ void SymphonyManageTrades()
 //==================================================================
 void SymphonyTradeManage()
 {
-   SymphonyManageTrades();   // breakeven / trailing / ARC partial (protect winners)
-   SymphonyManageExits();    // composite ARC + institutional + phase reversal exit
-   SymphonyExecuteTrading(); // Phase 3/4 entries
+   TalonGrip();             // TALON curve-convergent structural grip (breakeven + trail)
+   SymphonyArcPartial();    // bank 50% at the projected ARC destination
+   SymphonyManageExits();   // composite ARC + institutional + phase reversal exit
+   SymphonyExecuteTrading();// Phase 3/4 entries
 }
 
 #endif // FALCON_SYMPHONY_ENGINE_MQH
@@ -5658,6 +5766,8 @@ string VZ_Body(const int tab)
          s+="Trade State : "+FalconTradeStateStr(e.tradeState)+"   Last exit "+FalconExitStateStr(e.exitState)+"\n";
          s+="Entry/Stop  : "+VZ_Px(e.entry)+" / "+VZ_Px(e.stop)+"\n";
          s+="Target      : "+VZ_Px(e.target)+"   R:R "+DoubleToString(e.reward,2)+"\n";
+         s+="TALON grip  : L "+(e.gripLong>0?VZ_Px(e.gripLong)+" "+FalconTalonStr(e.talonStageLong):"—")
+            +"   S "+(e.gripShort>0?VZ_Px(e.gripShort)+" "+FalconTalonStr(e.talonStageShort):"—")+"\n";
          s+="Lots        : "+DoubleToString(e.lots,2)+"   Risk $ "+DoubleToString(e.riskCash,0)+"\n";
          s+="Open L/S    : "+IntegerToString(e.openLongCount)+" / "+IntegerToString(e.openShortCount)+"\n";
          s+="Open PnL    : "+DoubleToString(e.openPnL,2)+"\n";
