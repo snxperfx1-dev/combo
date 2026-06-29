@@ -658,9 +658,50 @@ bool SymphonyBrainConfirms(const int dir)
 }
 
 //==================================================================
+// PLACE ENTRY — compose the subsystem trade plan, then execute it.
+//   When useTradePlan: stop = subsystem zone-invalidation, target =
+//   owner-driven destination, lots scaled by participant/campaign
+//   conviction, and the entry must clear the subsystem reward:risk gate.
+//   Otherwise falls back to Symphony's anchor ± 0.25 ATR stop.
+//==================================================================
+void Sym_PlaceEntry(const int dir,const string tag,const double riskCash,const double atrNow)
+{
+   double entry = (dir==DIR_LONG ? SymbolInfoDouble(_Symbol,SYMBOL_ASK)
+                                 : SymbolInfoDouble(_Symbol,SYMBOL_BID));
+   double sl, target=0.0, t2=0.0, rr=0.0;
+   double lots;
+
+   if(g_cfg.useTradePlan)
+   {
+      FalconTradePlan pl = ComposeTradePlan(dir, entry, atrNow);
+      if(!pl.valid)          return;
+      if(pl.rr < g_cfg.minRR) return;                 // subsystem-derived R:R gate
+      sl     = pl.stop; target = pl.target; t2 = pl.target2; rr = pl.rr;
+      lots   = Sym_SizeLots(dir, riskCash*pl.convictionMult, entry, sl);  // conviction size
+   }
+   else
+   {
+      sl   = (dir==DIR_LONG ? sym_anchorLow - atrNow*0.25 : sym_anchorHigh + atrNow*0.25);
+      lots = Sym_SizeLots(dir, riskCash, entry, sl);
+   }
+
+   bool slOk = (dir==DIR_LONG ? (sl>0 && entry>sl) : (sl>0 && sl>entry));
+   if(!slOk || lots<=0.0) return;
+
+   if(EE_SendMarketOrder(dir>0?+1:-1, lots, sl, "SYM "+tag))
+   {
+      if(dir==DIR_LONG){ sym_lastLongTradeTime=gTime[0]; sym_longCampaignOpen=true; }
+      else             { sym_lastShortTradeTime=gTime[0]; sym_shortCampaignOpen=true; }
+      TJ_RecordEntry(ee_lastTicket,dir,tag,entry,sl,lots);
+      g_state.exec.entry=entry; g_state.exec.stop=sl; g_state.exec.lots=lots; g_state.exec.riskCash=riskCash;
+      g_state.exec.target=target; g_state.exec.target2=t2; g_state.exec.reward=rr;
+   }
+}
+
+//==================================================================
 // ENTRIES — Phase 3 + Phase 4 only (long & short)   [Symphony]
-//   Stop placement: anchorLow/High ± atr*0.25 (Symphony precision).
-//   Reuses EE_SendMarketOrder / EE_IsTradeTime from ExecutionEngine.
+//   Trigger/timing = Symphony phase edge; stop/target/size = composed
+//   from the subsystems (TradePlan). Reuses EE_IsTradeTime.
 //==================================================================
 void SymphonyExecuteTrading()
 {
@@ -701,78 +742,24 @@ void SymphonyExecuteTrading()
 
    // LONG P3
    if(L3 && sym_lastLongTradeTime!=barTime)
-   {
-      double entry = SymbolInfoDouble(_Symbol,SYMBOL_ASK);
-      double sl    = sym_anchorLow - atrNow*0.25;
-      double lots  = Sym_SizeLots(DIR_LONG,riskCash,entry,sl);
-      if(sl>0 && entry>sl && lots>0)
-      {
-         if(EE_SendMarketOrder(+1,lots,sl,"SYM P3 Long"))
-         {
-            sym_lastLongTradeTime=barTime; sym_longCampaignOpen=true;
-            TJ_RecordEntry(ee_lastTicket,DIR_LONG,"P3 Long",entry,sl,lots);
-            g_state.exec.entry=entry; g_state.exec.stop=sl; g_state.exec.lots=lots; g_state.exec.riskCash=riskCash;
-         }
-      }
-   }
+      Sym_PlaceEntry(DIR_LONG,"P3 Long",riskCash,atrNow);
 
    // LONG P4
    if(L4 && sym_lastLongTradeTime!=barTime && impL>0)
    {
       bool breakout = (closeNow>sym_anchorHigh || closeNow>gHigh[shiftNow+1] + 0.20*atrNow);
-      if(breakout)
-      {
-         double entry = SymbolInfoDouble(_Symbol,SYMBOL_ASK);
-         double sl    = sym_anchorLow - atrNow*0.25;
-         double lots  = Sym_SizeLots(DIR_LONG,riskCash,entry,sl);
-         if(sl>0 && entry>sl && lots>0)
-         {
-            if(EE_SendMarketOrder(+1,lots,sl,"SYM P4 Long"))
-            {
-               sym_lastLongTradeTime=barTime; sym_longCampaignOpen=true;
-               TJ_RecordEntry(ee_lastTicket,DIR_LONG,"P4 Long",entry,sl,lots);
-               g_state.exec.entry=entry; g_state.exec.stop=sl; g_state.exec.lots=lots; g_state.exec.riskCash=riskCash;
-            }
-         }
-      }
+      if(breakout) Sym_PlaceEntry(DIR_LONG,"P4 Long",riskCash,atrNow);
    }
 
    // SHORT P3
    if(S3 && sym_lastShortTradeTime!=barTime)
-   {
-      double entry = SymbolInfoDouble(_Symbol,SYMBOL_BID);
-      double sl    = sym_anchorHigh + atrNow*0.25;
-      double lots  = Sym_SizeLots(DIR_SHORT,riskCash,entry,sl);
-      if(sl>0 && sl>entry && lots>0)
-      {
-         if(EE_SendMarketOrder(-1,lots,sl,"SYM P3 Short"))
-         {
-            sym_lastShortTradeTime=barTime; sym_shortCampaignOpen=true;
-            TJ_RecordEntry(ee_lastTicket,DIR_SHORT,"P3 Short",entry,sl,lots);
-            g_state.exec.entry=entry; g_state.exec.stop=sl; g_state.exec.lots=lots; g_state.exec.riskCash=riskCash;
-         }
-      }
-   }
+      Sym_PlaceEntry(DIR_SHORT,"P3 Short",riskCash,atrNow);
 
    // SHORT P4
    if(S4 && sym_lastShortTradeTime!=barTime && impS>0)
    {
       bool breakout = (closeNow<sym_anchorLow || closeNow<gLow[shiftNow+1] - 0.20*atrNow);
-      if(breakout)
-      {
-         double entry = SymbolInfoDouble(_Symbol,SYMBOL_BID);
-         double sl    = sym_anchorHigh + atrNow*0.25;
-         double lots  = Sym_SizeLots(DIR_SHORT,riskCash,entry,sl);
-         if(sl>0 && sl>entry && lots>0)
-         {
-            if(EE_SendMarketOrder(-1,lots,sl,"SYM P4 Short"))
-            {
-               sym_lastShortTradeTime=barTime; sym_shortCampaignOpen=true;
-               TJ_RecordEntry(ee_lastTicket,DIR_SHORT,"P4 Short",entry,sl,lots);
-               g_state.exec.entry=entry; g_state.exec.stop=sl; g_state.exec.lots=lots; g_state.exec.riskCash=riskCash;
-            }
-         }
-      }
+      if(breakout) Sym_PlaceEntry(DIR_SHORT,"P4 Short",riskCash,atrNow);
    }
 }
 

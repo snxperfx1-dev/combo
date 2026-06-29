@@ -39,6 +39,7 @@
 #include "Engines/ExecutionEngine.mqh"     // Execution Layer
 #include "Engines/ThermalRiskEngine.mqh"   // Execution Layer — PYRO campaign-thermodynamics risk (after EE, before Symphony)
 #include "Engines/MoneyManager.mqh"        // Execution Layer — Symphony v3.0 money mgmt (counter-dir lock / ladder / basket ceiling)
+#include "Engines/TradePlan.mqh"           // Decision/Execution — subsystem-composed trade plan (stop/target/size each owned by an engine)
 #include "Engines/TradeJournal.mqh"        // Diagnostics — per-trade CSV journal (before Symphony so entries can record)
 #include "Engines/SymphonyEngine.mqh"      // Execution Layer — Symphony phase entries/exits (after EE helpers)
 #include "Engines/Visualization.mqh"       // Visualization Layer

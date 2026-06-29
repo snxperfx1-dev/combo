@@ -190,6 +190,7 @@ string VZ_Body(const int tab)
          s+="Trade State : "+FalconTradeStateStr(e.tradeState)+"   Last exit "+FalconExitStateStr(e.exitState)+"\n";
          s+="Entry/Stop  : "+VZ_Px(e.entry)+" / "+VZ_Px(e.stop)+"\n";
          s+="Target      : "+VZ_Px(e.target)+"   R:R "+DoubleToString(e.reward,2)+"\n";
+         s+="Plan        : stop<"+(g_plan.stopSrc==""?"—":g_plan.stopSrc)+"> target<"+(g_plan.targetSrc==""?"—":g_plan.targetSrc)+"> tf"+IntegerToString(g_plan.targetTF)+"  conv x"+DoubleToString(g_plan.convictionMult,2)+"\n";
          s+="TALON grip  : L "+(e.gripLong>0?VZ_Px(e.gripLong)+" "+FalconTalonStr(e.talonStageLong):"—")
             +"   S "+(e.gripShort>0?VZ_Px(e.gripShort)+" "+FalconTalonStr(e.talonStageShort):"—")+"\n";
          s+="Lots        : "+DoubleToString(e.lots,2)+"   Risk $ "+DoubleToString(e.riskCash,0)+"\n";
