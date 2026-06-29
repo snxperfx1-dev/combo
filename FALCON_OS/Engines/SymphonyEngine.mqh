@@ -683,13 +683,75 @@ void SymphonyManageExits()
 }
 
 //==================================================================
-// MASTER — Symphony manage step (exits first, then entries)
+// TRADE MANAGEMENT — breakeven -> ATR trailing -> ARC-target partial
+//   Symphony entries pile up as a campaign; this protects and banks
+//   them. Reuses EE_ModifySL / EE_ClosePartial / EE_TPSlot from the
+//   Execution Engine. Runs every bar BEFORE exits/entries.
+//     • Breakeven : once profit > trailStartATR*0.5, lock SL at entry(+buf)
+//     • Trailing  : once profit > trailStartATR, trail SL trailDistATR behind
+//     • Partial   : bank 50% when price reaches the projected ARC target
+//==================================================================
+void SymphonyManageTrades()
+{
+   double atr = FalconATR(1);
+   if(atr<=0.0) atr=FalconATR(0);
+   if(atr<=0.0) return;
+
+   double bid = SymbolInfoDouble(_Symbol,SYMBOL_BID);
+   double ask = SymbolInfoDouble(_Symbol,SYMBOL_ASK);
+   double beTrig = atr*g_cfg.trailStartATR;   // profit needed to arm BE/trail
+   double trailD = atr*g_cfg.trailDistATR;    // trailing distance behind price
+   double beBuf  = atr*0.05;                  // small breakeven buffer
+
+   int total=PositionsTotal();
+   for(int i=0;i<total;i++)
+   {
+      ulong ticket=PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
+      if(PositionGetInteger(POSITION_MAGIC)!=g_cfg.magic) continue;
+      long   type =PositionGetInteger(POSITION_TYPE);
+      double entry=PositionGetDouble(POSITION_PRICE_OPEN);
+      double sl   =PositionGetDouble(POSITION_SL);
+      double vol  =PositionGetDouble(POSITION_VOLUME);
+      int    slot =EE_TPSlot((long)ticket);
+      int    stage=ee_tpStage[slot];
+
+      if(type==POSITION_TYPE_BUY)
+      {
+         double profit=bid-entry;
+         // 50% partial at the projected ARC (curve destination)
+         if(stage<1 && sym_arcLong>0.0 && bid>=sym_arcLong)
+         { if(EE_ClosePartial(ticket,vol*0.5)) ee_tpStage[slot]=1; }
+
+         double newSL=sl;
+         if(profit>beTrig*0.5){ double be=entry+beBuf; if(sl==0.0 || be>newSL) newSL=be; }   // breakeven
+         if(profit>beTrig)    { double t =bid-trailD;  if(t>newSL)            newSL=t;  }     // trail
+         if(newSL>sl && newSL<bid){ if(EE_ModifySL(ticket,newSL)) g_state.exec.exitState=XS_TRAIL_STOP; }
+      }
+      else // SELL
+      {
+         double profit=entry-ask;
+         if(stage<1 && sym_arcShort>0.0 && ask<=sym_arcShort)
+         { if(EE_ClosePartial(ticket,vol*0.5)) ee_tpStage[slot]=1; }
+
+         double newSL=sl;
+         if(profit>beTrig*0.5){ double be=entry-beBuf; if(sl==0.0 || be<newSL) newSL=be; }   // breakeven
+         if(profit>beTrig)    { double t =ask+trailD;  if(t<newSL)            newSL=t;  }     // trail
+         if(newSL<sl && newSL>ask){ if(EE_ModifySL(ticket,newSL)) g_state.exec.exitState=XS_TRAIL_STOP; }
+      }
+   }
+}
+
+//==================================================================
+// MASTER — Symphony manage step (manage open trades, then exits, then entries)
 //   Called from the pipeline's execution stage when g_cfg.useSymphony.
 //==================================================================
 void SymphonyTradeManage()
 {
-   SymphonyManageExits();
-   SymphonyExecuteTrading();
+   SymphonyManageTrades();   // breakeven / trailing / ARC partial (protect winners)
+   SymphonyManageExits();    // composite ARC + institutional + phase reversal exit
+   SymphonyExecuteTrading(); // Phase 3/4 entries
 }
 
 #endif // FALCON_SYMPHONY_ENGINE_MQH
