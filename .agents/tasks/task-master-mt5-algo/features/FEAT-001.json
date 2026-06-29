@@ -1,0 +1,30 @@
+{
+  "id": "FEAT-001",
+  "type": "feat",
+  "description": "Create Part1_Core.mqh - Core infrastructure, helpers, series buffers, inputs, and global state declarations for the entire Master EA system. This includes Symphony's series emulation, ATR/pivot helpers, time session gating, lot computation, new bar detection, and all input parameters for all engines (phase engine, Letra structure engine, F16 network, Senseei, curve tree, energy framework).",
+  "status": "in_progress",
+  "steps": [
+    "Create Part1_Core.mqh at the repo root",
+    "Port Symphony's series buffer system (gCloseSeries, gHighSeries, gLowSeries, gTimeSeries, RefreshSeries, #define macros for Close/High/Low/Time)",
+    "Define ALL input parameters organized by section: Core Engine (from Symphony: InpPivotLen, InpATRLen, InpImpulseAtrMult, InpRetrMin, InpRetrMax, InpInducLookbackBars, InpInducZoneATRWidth), ARC v2 (InpArcHorizonBars, InpConvPower, InpArcExtMult, InpArcToleranceAtr, InpOuterBandAtrMult), Trading (InpRiskPercent, InpMagic, InpTargetGMT), Letra Engine params (effLen, effThresh, dispThresh, convMult, chochBufferATR, structLen, acceptBars, obMaxBars, inducZoneWidth, liqSweepLookback, liqRadius, liqAgDecay, requireLiqSweep, resetBars, beliefSmooth), F16 Network (wickFrac, lookback, authMin, nodeMax, dormantBars, historyBars), Senseei (minConf), and Probabilistic Entry (entryProbThreshold=90)",
+    "Define ALL global state structs: PhaseEngineState (pivot history, impulse/mode, phases, flipzone/inducement, pre-conv flags, ARC state, outer-band breach flags, bar/trade timing), LetraStructureResult (dir, phase, swingHigh/Low, prevSwingHigh/Low, bos, choch, p4h, p4l, inv, tgt, ft, fb, frzScore, waveProgress, convexityMaturity, modelFit), CurveObject (dir, origin, extreme, dispATR, eIn, eDiss, eRes, convex, compress, maturity), CurveNode (id, parent, dir, origin, extreme, energy, alive, depth, state, bar, comp, mat, srcTf), NetworkNode (px, mid, dir, score, weight, state, bar, revisits), TimeIntelCycle (open, high, low, prevHigh, prevLow, time, bias, elapsed, highTaken, lowTaken), SenseeiState (master, alignment, conflict, confidence, threat, timing, intent, opportunity, action, oppScore)",
+    "Port Symphony's basic helper functions: IsNewBar(), GetATR(shift), GetATRSmooth(shift,len), IsPivotHigh(c), IsPivotLow(c), ComputeLots(riskCash, entry, sl), IsTradeTime()",
+    "Add multi-timeframe data retrieval helper: function to get OHLC data from different timeframes using iCustom or CopyRates approach for M1/M3/M5/M15/H1/H4 fixed timeframes",
+    "Add utility math functions needed by downstream engines: f_normalize(arr, n), f_emaSmooth(prev, raw, period), f_clamp(val, min, max), f_idealSimilarity(obs4, ideal4)"
+  ],
+  "acceptance_criteria": [
+    "Part1_Core.mqh exists at repo root with valid MQL5 syntax",
+    "All input parameters are defined with appropriate types and defaults",
+    "All global structs are defined with all necessary fields",
+    "Series buffer system compiles (RefreshSeries, macros)",
+    "Helper functions have correct signatures matching Symphony patterns",
+    "Multi-TF data helper provides a clean interface for fixed-timeframe requests"
+  ],
+  "verification": [
+    "Read the file and verify matching braces, valid MQL5 types, and no syntax errors",
+    "Verify all Symphony helper functions are ported with correct logic",
+    "Verify struct definitions cover all fields needed by downstream engines"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}
