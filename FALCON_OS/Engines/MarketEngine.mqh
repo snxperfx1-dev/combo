@@ -45,7 +45,9 @@ int    me_waveSpawnBar=0;
 int    me_entryCycle=0; int me_waveDepth=0; bool me_isRecursive=false;
 bool   me_recursiveComplete=false; int me_recursiveFiredBar=-1; int me_prevPstForCycle=0;
 
-// HTF rung labels (M1 M3 M5 M15 H1 H4 chart) and periods
+// Absolute HTF rung ladder: [0]M1 [1]M5 [2]M15 [3]H1 [4]H4 [5]D1 [6]W1
+// (index 0 = lowest TF, index 6 = highest). Fixed/absolute so the fractal
+// model is chart-invariant: the chart is only a viewport.
 ENUM_TIMEFRAMES me_htfTF[7];
 int             me_htfDirState[7];
 double          me_htfOrigin[7];
@@ -94,8 +96,8 @@ void MarketEngineInit()
    me_obCount=0;
 
    me_htfTF[0]=PERIOD_M1;  me_htfTF[1]=PERIOD_M5;  me_htfTF[2]=PERIOD_M15;
-   me_htfTF[3]=PERIOD_M30; me_htfTF[4]=PERIOD_H1;  me_htfTF[5]=PERIOD_H4;
-   me_htfTF[6]=_Period;
+   me_htfTF[3]=PERIOD_H1;  me_htfTF[4]=PERIOD_H4;  me_htfTF[5]=PERIOD_D1;
+   me_htfTF[6]=PERIOD_W1;
    for(int i=0;i<7;i++){ me_htfDirState[i]=0; me_htfOrigin[i]=0; me_htfExtreme[i]=0; }
    for(int i=0;i<7;i++)
    {
@@ -862,11 +864,12 @@ void ME_UpdateHTF()
    for(int i=0;i<7;i++)
    {
       int d;
-      if(me_htfTF[i]==_Period)
+      if(me_htfTF[i]==g_cfg.operatingTF)
       {
-         // UNIFY (single source of truth): the chart rung REUSES the primary
-         // wave FSM (g_state.wave) instead of running a second FSM. Removes the
-         // one true duplication — chart phase now exists exactly once.
+         // UNIFY (single source of truth): the rung that equals the OPERATING TF
+         // REUSES the primary wave FSM (g_state.wave) instead of running a second
+         // FSM. The chart TF no longer matters — the core runs on operatingTF and
+         // this rung mirrors it, so the operating-scale phase exists exactly once.
          d = g_state.wave.direction;
          g_tfCurve[i].oDir       = d;
          g_tfCurve[i].oPhase     = g_state.wave.phase;

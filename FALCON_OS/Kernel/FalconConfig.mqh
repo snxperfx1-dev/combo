@@ -23,6 +23,7 @@ enum FALCON_PROFILE
 input string  __sep_general    = "════════ FALCON OS — GENERAL ════════"; // ──
 input FALCON_PROFILE InpProfile = PROFILE_LIVE;   // Run profile
 input long    InpMagic          = 770077;         // EA magic number
+input ENUM_TIMEFRAMES InpOperatingTF = PERIOD_CURRENT; // Operating TF for the trading CORE (PERIOD_CURRENT=use chart). Set explicitly (e.g. M5) to make the chart a pure viewport.
 input int     InpTargetGMT      = 0;              // Session timezone (GMT offset)
 input int     InpSeriesBars     = 5000;           // Bars copied per refresh
 
@@ -104,6 +105,8 @@ input double  InpLadderFrac1     = 0.20; // Fraction of each leg banked at R1
 input double  InpLadderFrac2     = 0.25; // Fraction banked at R2
 input double  InpLadderFrac3     = 0.25; // Fraction banked at R3
 input double  InpTrailLockPct    = 50.0; // %% of price move locked when trailing (after R2)
+input double  InpLadderBEbufATR  = 0.20; // R1 moves stop to BE minus this ATR buffer (room so normal pullbacks don't scratch the runner)
+input bool    InpTargetTP        = true; // Set the composed trade-plan target as the position take-profit (bank the runner at destination)
 
 input string  __sep_thermal     = "════════ CAMPAIGN THERMAL RISK (PYRO) ════════"; // ──
 input bool    InpUseThermalRisk  = false; // Use PYRO campaign-thermodynamics risk engine (off: basket ceiling governs)
@@ -143,6 +146,7 @@ struct FalconConfig
    long   magic;
    int    targetGMT;
    int    seriesBars;
+   ENUM_TIMEFRAMES operatingTF;   // the absolute TF the trading core runs on (chart = viewport)
    // market
    int    pivotLen, structLen, atrLen, effLen;
    double impulseAtrMult, effThresh, dispThresh, convMult, chochBufferATR;
@@ -178,6 +182,7 @@ struct FalconConfig
    bool   useProfitLadder, counterDirBlock;
    double maxBasketRiskPct;
    double ladderR1, ladderR2, ladderR3, ladderFrac1, ladderFrac2, ladderFrac3, trailLockPct;
+   double ladderBEbufATR;  bool targetTP;
    // TALON grip (breakeven + trail)
    bool   useTalon;  int talonStructLen;
    double talonBufATR, talonBaseATR, talonConvSpanATR, talonMinTighten, talonBeATR;
@@ -199,6 +204,7 @@ void FalconConfigInit()
    g_cfg.magic            = InpMagic;
    g_cfg.targetGMT        = InpTargetGMT;
    g_cfg.seriesBars       = InpSeriesBars;
+   g_cfg.operatingTF      = (InpOperatingTF==PERIOD_CURRENT ? (ENUM_TIMEFRAMES)_Period : InpOperatingTF);
 
    g_cfg.pivotLen         = InpPivotLen;
    g_cfg.structLen        = InpStructLen;
@@ -280,6 +286,8 @@ void FalconConfigInit()
    g_cfg.ladderFrac2      = InpLadderFrac2;
    g_cfg.ladderFrac3      = InpLadderFrac3;
    g_cfg.trailLockPct     = InpTrailLockPct;
+   g_cfg.ladderBEbufATR   = InpLadderBEbufATR;
+   g_cfg.targetTP         = InpTargetTP;
 
    g_cfg.useTalon         = InpUseTalon;
    g_cfg.talonStructLen   = InpTalonStructLen;

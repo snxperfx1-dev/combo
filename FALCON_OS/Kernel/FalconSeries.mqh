@@ -37,11 +37,12 @@ bool FalconRefreshSeries()
    ArraySetAsSeries(gOpen,true);
    ArraySetAsSeries(gTime,true);
 
-   int c1 = CopyClose(_Symbol,_Period,0,need,gClose);
-   int c2 = CopyHigh (_Symbol,_Period,0,need,gHigh);
-   int c3 = CopyLow  (_Symbol,_Period,0,need,gLow);
-   int c4 = CopyOpen (_Symbol,_Period,0,need,gOpen);
-   int c5 = CopyTime (_Symbol,_Period,0,need,gTime);
+   ENUM_TIMEFRAMES tf = g_cfg.operatingTF;
+   int c1 = CopyClose(_Symbol,tf,0,need,gClose);
+   int c2 = CopyHigh (_Symbol,tf,0,need,gHigh);
+   int c3 = CopyLow  (_Symbol,tf,0,need,gLow);
+   int c4 = CopyOpen (_Symbol,tf,0,need,gOpen);
+   int c5 = CopyTime (_Symbol,tf,0,need,gTime);
 
    if(c1<=0 || c2<=0 || c3<=0 || c4<=0 || c5<=0)
       return(false);
@@ -70,17 +71,17 @@ double FalconATR(const int shift, const int variant=0)
    int handle = INVALID_HANDLE;
    if(variant==0)
    {
-      if(g_atrHandle==INVALID_HANDLE) g_atrHandle = iATR(_Symbol,_Period,g_cfg.atrLen);
+      if(g_atrHandle==INVALID_HANDLE) g_atrHandle = iATR(_Symbol,g_cfg.operatingTF,g_cfg.atrLen);
       handle = g_atrHandle;
    }
    else if(variant==1)
    {
-      if(g_atrFastHandle==INVALID_HANDLE) g_atrFastHandle = iATR(_Symbol,_Period,15);
+      if(g_atrFastHandle==INVALID_HANDLE) g_atrFastHandle = iATR(_Symbol,g_cfg.operatingTF,15);
       handle = g_atrFastHandle;
    }
    else
    {
-      if(g_atrSlowHandle==INVALID_HANDLE) g_atrSlowHandle = iATR(_Symbol,_Period,30);
+      if(g_atrSlowHandle==INVALID_HANDLE) g_atrSlowHandle = iATR(_Symbol,g_cfg.operatingTF,30);
       handle = g_atrSlowHandle;
    }
    if(handle==INVALID_HANDLE) return(0.0);

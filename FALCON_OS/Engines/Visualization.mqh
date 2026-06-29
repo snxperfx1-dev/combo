@@ -156,13 +156,14 @@ string VZ_Body(const int tab)
          s+="FRZ (return): "+(frz.active?VZ_Px(frz.targetPrice)+" "+VZ_Dir(frz.dir)+" ownerTF "+IntegerToString(frz.ownerTF):"—")+"\n";
          s+="Recursion   : breaks "+IntegerToString(w.recursionBreaks)+"  transfer "+DoubleToString(w.dominanceTransfer,0)+"%";
          break;
-      case 7: // HTF
-         s+="M1  "+VZ_Dir(h.dir[0])+"   M5  "+VZ_Dir(h.dir[1])+"\n";
-         s+="M15 "+VZ_Dir(h.dir[2])+"   M30 "+VZ_Dir(h.dir[3])+"\n";
-         s+="H1  "+VZ_Dir(h.dir[4])+"   H4  "+VZ_Dir(h.dir[5])+"\n";
+      case 7: // HTF — absolute fractal ladder [0]M1 [1]M5 [2]M15 [3]H1 [4]H4 [5]D1 [6]W1
+         s+="W1  "+VZ_Dir(h.dir[6])+"   D1  "+VZ_Dir(h.dir[5])+"\n";
+         s+="H4  "+VZ_Dir(h.dir[4])+"   H1  "+VZ_Dir(h.dir[3])+"\n";
+         s+="M15 "+VZ_Dir(h.dir[2])+"   M5  "+VZ_Dir(h.dir[1])+"   M1 "+VZ_Dir(h.dir[0])+"\n";
+         s+="Operating TF: "+EnumToString(g_cfg.operatingTF)+"\n";
          s+="Stack Dir   : "+VZ_Dir(h.stackDir)+"\n";
          s+="Alignment   : "+DoubleToString(h.alignment,0)+"%   Conflict "+DoubleToString(h.conflict,0)+"%\n";
-         s+="Owner TF idx: "+IntegerToString(h.ownerTF)+"   Fractal "+(h.fractalAgreement?"AGREE":"split")+"\n";
+         s+="Owner TF idx: "+IntegerToString(h.ownerTF)+" ("+VZ_Dir(g_state.curve.ownerDir)+")   Fractal "+(h.fractalAgreement?"AGREE":"split")+"\n";
          s+="FU Candle   : "+(fuv.active?VZ_Dir(fuv.dir)+" zone "+VZ_Px(fuv.zoneBot)+"-"+VZ_Px(fuv.zoneTop)+"  conf "+DoubleToString(fuv.confidence,0)+"  life "+IntegerToString(fuv.lifecycle):"none");
          break;
       case 8: // RISK — PYRO Campaign Thermodynamics

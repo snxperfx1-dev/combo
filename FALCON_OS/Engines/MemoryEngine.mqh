@@ -258,9 +258,16 @@ void MEM_ComputeCurve()
    FalconWave w=g_state.wave;
    FalconHTF  h=g_state.htf;
 
-   c.ownerDir    = (h.stackDir!=DIR_NONE ? h.stackDir : w.direction);
-   c.ownerOrigin = w.origin;
-   c.ownerExtreme= w.extreme;
+   // OWNERSHIP CASCADE — the owner is the HIGHEST absolute TF in control
+   // (h.ownerTF, from the W1->M1 ladder). Direction, origin (invalidation) and
+   // extreme are INHERITED from that owning TF's curve, not the operating-TF
+   // wave. When a higher TF takes control, ownerTF rises and the whole frame
+   // (direction + destination) escalates with it — a true fractal cascade.
+   int ownTF = (h.ownerTF>=0 && h.ownerTF<7)? h.ownerTF : 4;
+   int ownTFDir = g_tfCurve[ownTF].oDir;
+   c.ownerDir    = (ownTFDir!=DIR_NONE ? ownTFDir : (h.stackDir!=DIR_NONE ? h.stackDir : w.direction));
+   c.ownerOrigin = (g_tfCurve[ownTF].oOrigin!=0.0 ? g_tfCurve[ownTF].oOrigin : w.origin);
+   c.ownerExtreme= (g_tfCurve[ownTF].oExtreme!=0.0 ? g_tfCurve[ownTF].oExtreme : w.extreme);
    c.rootDir     = h.stackDir;
    c.emergentPhase = w.phase;
    c.childCount  = w.entryCycle;

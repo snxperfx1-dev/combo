@@ -146,7 +146,7 @@ void EE_BuildMarket(EE_Market &m)
 // ORDER HELPERS (raw MqlTradeRequest, IOC)
 //==================================================================
 ulong ee_lastTicket = 0;   // POSITION ticket of the most recent successful entry
-bool EE_SendMarketOrder(const int direction,const double lots,const double sl,const string comment)
+bool EE_SendMarketOrder(const int direction,const double lots,const double sl,const string comment,const double tp=0.0)
 {
    if(lots<=0.0) return(false);
    if(!g_cfg.enableTrading) { FalconInfo("ExecutionEngine","trading disabled - skipped order"); return(false); }
@@ -154,7 +154,7 @@ bool EE_SendMarketOrder(const int direction,const double lots,const double sl,co
    double ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
    double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
    req.action=TRADE_ACTION_DEAL; req.symbol=_Symbol; req.magic=g_cfg.magic;
-   req.volume=lots; req.sl=sl; req.tp=0.0; req.deviation=20;
+   req.volume=lots; req.sl=sl; req.tp=(tp>0.0?tp:0.0); req.deviation=20;
    req.type_filling=ORDER_FILLING_IOC; req.type_time=ORDER_TIME_GTC; req.comment=comment;
    if(direction>0){ req.type=ORDER_TYPE_BUY; req.price=ask; }
    else           { req.type=ORDER_TYPE_SELL;req.price=bid; }

@@ -5,7 +5,7 @@
 //|   Risk: PYRO thermal + TALON curve-convergent structural grip.   |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "3.35"
+#property version   "4.00"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -37,6 +37,7 @@ enum FALCON_PROFILE
 input string  __sep_general    = "════════ FALCON OS — GENERAL ════════"; // ──
 input FALCON_PROFILE InpProfile = PROFILE_LIVE;   // Run profile
 input long    InpMagic          = 770077;         // EA magic number
+input ENUM_TIMEFRAMES InpOperatingTF = PERIOD_CURRENT; // Operating TF for the trading CORE (PERIOD_CURRENT=use chart). Set explicitly (e.g. M5) to make the chart a pure viewport.
 input int     InpTargetGMT      = 0;              // Session timezone (GMT offset)
 input int     InpSeriesBars     = 5000;           // Bars copied per refresh
 
@@ -118,6 +119,8 @@ input double  InpLadderFrac1     = 0.20; // Fraction of each leg banked at R1
 input double  InpLadderFrac2     = 0.25; // Fraction banked at R2
 input double  InpLadderFrac3     = 0.25; // Fraction banked at R3
 input double  InpTrailLockPct    = 50.0; // %% of price move locked when trailing (after R2)
+input double  InpLadderBEbufATR  = 0.20; // R1 moves stop to BE minus this ATR buffer (room so normal pullbacks don't scratch the runner)
+input bool    InpTargetTP        = true; // Set the composed trade-plan target as the position take-profit (bank the runner at destination)
 
 input string  __sep_thermal     = "════════ CAMPAIGN THERMAL RISK (PYRO) ════════"; // ──
 input bool    InpUseThermalRisk  = false; // Use PYRO campaign-thermodynamics risk engine (off: basket ceiling governs)
@@ -157,6 +160,7 @@ struct FalconConfig
    long   magic;
    int    targetGMT;
    int    seriesBars;
+   ENUM_TIMEFRAMES operatingTF;   // the absolute TF the trading core runs on (chart = viewport)
    // market
    int    pivotLen, structLen, atrLen, effLen;
    double impulseAtrMult, effThresh, dispThresh, convMult, chochBufferATR;
@@ -192,6 +196,7 @@ struct FalconConfig
    bool   useProfitLadder, counterDirBlock;
    double maxBasketRiskPct;
    double ladderR1, ladderR2, ladderR3, ladderFrac1, ladderFrac2, ladderFrac3, trailLockPct;
+   double ladderBEbufATR;  bool targetTP;
    // TALON grip (breakeven + trail)
    bool   useTalon;  int talonStructLen;
    double talonBufATR, talonBaseATR, talonConvSpanATR, talonMinTighten, talonBeATR;
@@ -213,6 +218,7 @@ void FalconConfigInit()
    g_cfg.magic            = InpMagic;
    g_cfg.targetGMT        = InpTargetGMT;
    g_cfg.seriesBars       = InpSeriesBars;
+   g_cfg.operatingTF      = (InpOperatingTF==PERIOD_CURRENT ? (ENUM_TIMEFRAMES)_Period : InpOperatingTF);
 
    g_cfg.pivotLen         = InpPivotLen;
    g_cfg.structLen        = InpStructLen;
@@ -294,6 +300,8 @@ void FalconConfigInit()
    g_cfg.ladderFrac2      = InpLadderFrac2;
    g_cfg.ladderFrac3      = InpLadderFrac3;
    g_cfg.trailLockPct     = InpTrailLockPct;
+   g_cfg.ladderBEbufATR   = InpLadderBEbufATR;
+   g_cfg.targetTP         = InpTargetTP;
 
    g_cfg.useTalon         = InpUseTalon;
    g_cfg.talonStructLen   = InpTalonStructLen;
@@ -1159,11 +1167,12 @@ bool FalconRefreshSeries()
    ArraySetAsSeries(gOpen,true);
    ArraySetAsSeries(gTime,true);
 
-   int c1 = CopyClose(_Symbol,_Period,0,need,gClose);
-   int c2 = CopyHigh (_Symbol,_Period,0,need,gHigh);
-   int c3 = CopyLow  (_Symbol,_Period,0,need,gLow);
-   int c4 = CopyOpen (_Symbol,_Period,0,need,gOpen);
-   int c5 = CopyTime (_Symbol,_Period,0,need,gTime);
+   ENUM_TIMEFRAMES tf = g_cfg.operatingTF;
+   int c1 = CopyClose(_Symbol,tf,0,need,gClose);
+   int c2 = CopyHigh (_Symbol,tf,0,need,gHigh);
+   int c3 = CopyLow  (_Symbol,tf,0,need,gLow);
+   int c4 = CopyOpen (_Symbol,tf,0,need,gOpen);
+   int c5 = CopyTime (_Symbol,tf,0,need,gTime);
 
    if(c1<=0 || c2<=0 || c3<=0 || c4<=0 || c5<=0)
       return(false);
@@ -1192,17 +1201,17 @@ double FalconATR(const int shift, const int variant=0)
    int handle = INVALID_HANDLE;
    if(variant==0)
    {
-      if(g_atrHandle==INVALID_HANDLE) g_atrHandle = iATR(_Symbol,_Period,g_cfg.atrLen);
+      if(g_atrHandle==INVALID_HANDLE) g_atrHandle = iATR(_Symbol,g_cfg.operatingTF,g_cfg.atrLen);
       handle = g_atrHandle;
    }
    else if(variant==1)
    {
-      if(g_atrFastHandle==INVALID_HANDLE) g_atrFastHandle = iATR(_Symbol,_Period,15);
+      if(g_atrFastHandle==INVALID_HANDLE) g_atrFastHandle = iATR(_Symbol,g_cfg.operatingTF,15);
       handle = g_atrFastHandle;
    }
    else
    {
-      if(g_atrSlowHandle==INVALID_HANDLE) g_atrSlowHandle = iATR(_Symbol,_Period,30);
+      if(g_atrSlowHandle==INVALID_HANDLE) g_atrSlowHandle = iATR(_Symbol,g_cfg.operatingTF,30);
       handle = g_atrSlowHandle;
    }
    if(handle==INVALID_HANDLE) return(0.0);
@@ -1761,7 +1770,9 @@ int    me_waveSpawnBar=0;
 int    me_entryCycle=0; int me_waveDepth=0; bool me_isRecursive=false;
 bool   me_recursiveComplete=false; int me_recursiveFiredBar=-1; int me_prevPstForCycle=0;
 
-// HTF rung labels (M1 M3 M5 M15 H1 H4 chart) and periods
+// Absolute HTF rung ladder: [0]M1 [1]M5 [2]M15 [3]H1 [4]H4 [5]D1 [6]W1
+// (index 0 = lowest TF, index 6 = highest). Fixed/absolute so the fractal
+// model is chart-invariant: the chart is only a viewport.
 ENUM_TIMEFRAMES me_htfTF[7];
 int             me_htfDirState[7];
 double          me_htfOrigin[7];
@@ -1810,8 +1821,8 @@ void MarketEngineInit()
    me_obCount=0;
 
    me_htfTF[0]=PERIOD_M1;  me_htfTF[1]=PERIOD_M5;  me_htfTF[2]=PERIOD_M15;
-   me_htfTF[3]=PERIOD_M30; me_htfTF[4]=PERIOD_H1;  me_htfTF[5]=PERIOD_H4;
-   me_htfTF[6]=_Period;
+   me_htfTF[3]=PERIOD_H1;  me_htfTF[4]=PERIOD_H4;  me_htfTF[5]=PERIOD_D1;
+   me_htfTF[6]=PERIOD_W1;
    for(int i=0;i<7;i++){ me_htfDirState[i]=0; me_htfOrigin[i]=0; me_htfExtreme[i]=0; }
    for(int i=0;i<7;i++)
    {
@@ -2578,11 +2589,12 @@ void ME_UpdateHTF()
    for(int i=0;i<7;i++)
    {
       int d;
-      if(me_htfTF[i]==_Period)
+      if(me_htfTF[i]==g_cfg.operatingTF)
       {
-         // UNIFY (single source of truth): the chart rung REUSES the primary
-         // wave FSM (g_state.wave) instead of running a second FSM. Removes the
-         // one true duplication — chart phase now exists exactly once.
+         // UNIFY (single source of truth): the rung that equals the OPERATING TF
+         // REUSES the primary wave FSM (g_state.wave) instead of running a second
+         // FSM. The chart TF no longer matters — the core runs on operatingTF and
+         // this rung mirrors it, so the operating-scale phase exists exactly once.
          d = g_state.wave.direction;
          g_tfCurve[i].oDir       = d;
          g_tfCurve[i].oPhase     = g_state.wave.phase;
@@ -2887,9 +2899,16 @@ void MEM_ComputeCurve()
    FalconWave w=g_state.wave;
    FalconHTF  h=g_state.htf;
 
-   c.ownerDir    = (h.stackDir!=DIR_NONE ? h.stackDir : w.direction);
-   c.ownerOrigin = w.origin;
-   c.ownerExtreme= w.extreme;
+   // OWNERSHIP CASCADE — the owner is the HIGHEST absolute TF in control
+   // (h.ownerTF, from the W1->M1 ladder). Direction, origin (invalidation) and
+   // extreme are INHERITED from that owning TF's curve, not the operating-TF
+   // wave. When a higher TF takes control, ownerTF rises and the whole frame
+   // (direction + destination) escalates with it — a true fractal cascade.
+   int ownTF = (h.ownerTF>=0 && h.ownerTF<7)? h.ownerTF : 4;
+   int ownTFDir = g_tfCurve[ownTF].oDir;
+   c.ownerDir    = (ownTFDir!=DIR_NONE ? ownTFDir : (h.stackDir!=DIR_NONE ? h.stackDir : w.direction));
+   c.ownerOrigin = (g_tfCurve[ownTF].oOrigin!=0.0 ? g_tfCurve[ownTF].oOrigin : w.origin);
+   c.ownerExtreme= (g_tfCurve[ownTF].oExtreme!=0.0 ? g_tfCurve[ownTF].oExtreme : w.extreme);
    c.rootDir     = h.stackDir;
    c.emergentPhase = w.phase;
    c.childCount  = w.entryCycle;
@@ -4001,7 +4020,7 @@ void EE_BuildMarket(EE_Market &m)
 // ORDER HELPERS (raw MqlTradeRequest, IOC)
 //==================================================================
 ulong ee_lastTicket = 0;   // POSITION ticket of the most recent successful entry
-bool EE_SendMarketOrder(const int direction,const double lots,const double sl,const string comment)
+bool EE_SendMarketOrder(const int direction,const double lots,const double sl,const string comment,const double tp=0.0)
 {
    if(lots<=0.0) return(false);
    if(!g_cfg.enableTrading) { FalconInfo("ExecutionEngine","trading disabled - skipped order"); return(false); }
@@ -4009,7 +4028,7 @@ bool EE_SendMarketOrder(const int direction,const double lots,const double sl,co
    double ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
    double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
    req.action=TRADE_ACTION_DEAL; req.symbol=_Symbol; req.magic=g_cfg.magic;
-   req.volume=lots; req.sl=sl; req.tp=0.0; req.deviation=20;
+   req.volume=lots; req.sl=sl; req.tp=(tp>0.0?tp:0.0); req.deviation=20;
    req.type_filling=ORDER_FILLING_IOC; req.type_time=ORDER_TIME_GTC; req.comment=comment;
    if(direction>0){ req.type=ORDER_TYPE_BUY; req.price=ask; }
    else           { req.type=ORDER_TYPE_SELL;req.price=bid; }
@@ -4930,9 +4949,13 @@ double MM_AdjustLotsForBasketCeiling(const int direction,const double entry,
 //==================================================================
 // STOP PROTECTION (after ladder rungs)
 //==================================================================
-// Move all remaining stops in a direction to at least breakeven (entry).
+// Move all remaining stops in a direction to BE minus a small ATR buffer.
+// Exact-breakeven scratches medium winners (a normal pullback to entry stops
+// the remainder flat); the buffer leaves room so only a real reversal stops it,
+// while still cutting most of the risk after R1.
 void MM_MoveStopsToBreakeven(const int direction)
 {
+   double buf = FalconATR(1)*g_cfg.ladderBEbufATR; if(buf<0) buf=0;
    int cnt=PositionsTotal();
    for(int i=0;i<cnt;i++)
    {
@@ -4944,10 +4967,11 @@ void MM_MoveStopsToBreakeven(const int direction)
       if(dir!=direction) continue;
       double entry=PositionGetDouble(POSITION_PRICE_OPEN);
       double sl   =PositionGetDouble(POSITION_SL);
+      double beSL =(direction>0 ? entry-buf : entry+buf);   // BE with tolerance room
       bool   move=false;
-      if(direction>0 && (sl==0.0 || sl<entry)) move=true;
-      if(direction<0 && (sl==0.0 || sl>entry)) move=true;
-      if(move) EE_ModifySL(ticket,entry);
+      if(direction>0 && (sl==0.0 || sl<beSL)) move=true;    // ratchet up only
+      if(direction<0 && (sl==0.0 || sl>beSL)) move=true;    // ratchet down only
+      if(move) EE_ModifySL(ticket,beSL);
    }
 }
 
@@ -6221,7 +6245,9 @@ void Sym_PlaceEntry(const int dir,const string tag,const double riskCash,const d
    bool slOk = (dir==DIR_LONG ? (sl>0 && entry>sl) : (sl>0 && sl>entry));
    if(!slOk || lots<=0.0) return;
 
-   if(EE_SendMarketOrder(dir>0?+1:-1, lots, sl, "SYM "+tag))
+   // bank the runner at the subsystem destination: composed target -> position TP
+   double tpOrder = (g_cfg.useTradePlan && g_cfg.targetTP && target>0.0) ? target : 0.0;
+   if(EE_SendMarketOrder(dir>0?+1:-1, lots, sl, "SYM "+tag, tpOrder))
    {
       if(dir==DIR_LONG){ sym_lastLongTradeTime=gTime[0]; sym_longCampaignOpen=true; }
       else             { sym_lastShortTradeTime=gTime[0]; sym_shortCampaignOpen=true; }
@@ -6791,13 +6817,14 @@ string VZ_Body(const int tab)
          s+="FRZ (return): "+(frz.active?VZ_Px(frz.targetPrice)+" "+VZ_Dir(frz.dir)+" ownerTF "+IntegerToString(frz.ownerTF):"—")+"\n";
          s+="Recursion   : breaks "+IntegerToString(w.recursionBreaks)+"  transfer "+DoubleToString(w.dominanceTransfer,0)+"%";
          break;
-      case 7: // HTF
-         s+="M1  "+VZ_Dir(h.dir[0])+"   M5  "+VZ_Dir(h.dir[1])+"\n";
-         s+="M15 "+VZ_Dir(h.dir[2])+"   M30 "+VZ_Dir(h.dir[3])+"\n";
-         s+="H1  "+VZ_Dir(h.dir[4])+"   H4  "+VZ_Dir(h.dir[5])+"\n";
+      case 7: // HTF — absolute fractal ladder [0]M1 [1]M5 [2]M15 [3]H1 [4]H4 [5]D1 [6]W1
+         s+="W1  "+VZ_Dir(h.dir[6])+"   D1  "+VZ_Dir(h.dir[5])+"\n";
+         s+="H4  "+VZ_Dir(h.dir[4])+"   H1  "+VZ_Dir(h.dir[3])+"\n";
+         s+="M15 "+VZ_Dir(h.dir[2])+"   M5  "+VZ_Dir(h.dir[1])+"   M1 "+VZ_Dir(h.dir[0])+"\n";
+         s+="Operating TF: "+EnumToString(g_cfg.operatingTF)+"\n";
          s+="Stack Dir   : "+VZ_Dir(h.stackDir)+"\n";
          s+="Alignment   : "+DoubleToString(h.alignment,0)+"%   Conflict "+DoubleToString(h.conflict,0)+"%\n";
-         s+="Owner TF idx: "+IntegerToString(h.ownerTF)+"   Fractal "+(h.fractalAgreement?"AGREE":"split")+"\n";
+         s+="Owner TF idx: "+IntegerToString(h.ownerTF)+" ("+VZ_Dir(g_state.curve.ownerDir)+")   Fractal "+(h.fractalAgreement?"AGREE":"split")+"\n";
          s+="FU Candle   : "+(fuv.active?VZ_Dir(fuv.dir)+" zone "+VZ_Px(fuv.zoneBot)+"-"+VZ_Px(fuv.zoneTop)+"  conf "+DoubleToString(fuv.confidence,0)+"  life "+IntegerToString(fuv.lifecycle):"none");
          break;
       case 8: // RISK — PYRO Campaign Thermodynamics

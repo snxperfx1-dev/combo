@@ -688,7 +688,9 @@ void Sym_PlaceEntry(const int dir,const string tag,const double riskCash,const d
    bool slOk = (dir==DIR_LONG ? (sl>0 && entry>sl) : (sl>0 && sl>entry));
    if(!slOk || lots<=0.0) return;
 
-   if(EE_SendMarketOrder(dir>0?+1:-1, lots, sl, "SYM "+tag))
+   // bank the runner at the subsystem destination: composed target -> position TP
+   double tpOrder = (g_cfg.useTradePlan && g_cfg.targetTP && target>0.0) ? target : 0.0;
+   if(EE_SendMarketOrder(dir>0?+1:-1, lots, sl, "SYM "+tag, tpOrder))
    {
       if(dir==DIR_LONG){ sym_lastLongTradeTime=gTime[0]; sym_longCampaignOpen=true; }
       else             { sym_lastShortTradeTime=gTime[0]; sym_shortCampaignOpen=true; }

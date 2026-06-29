@@ -143,9 +143,13 @@ double MM_AdjustLotsForBasketCeiling(const int direction,const double entry,
 //==================================================================
 // STOP PROTECTION (after ladder rungs)
 //==================================================================
-// Move all remaining stops in a direction to at least breakeven (entry).
+// Move all remaining stops in a direction to BE minus a small ATR buffer.
+// Exact-breakeven scratches medium winners (a normal pullback to entry stops
+// the remainder flat); the buffer leaves room so only a real reversal stops it,
+// while still cutting most of the risk after R1.
 void MM_MoveStopsToBreakeven(const int direction)
 {
+   double buf = FalconATR(1)*g_cfg.ladderBEbufATR; if(buf<0) buf=0;
    int cnt=PositionsTotal();
    for(int i=0;i<cnt;i++)
    {
@@ -157,10 +161,11 @@ void MM_MoveStopsToBreakeven(const int direction)
       if(dir!=direction) continue;
       double entry=PositionGetDouble(POSITION_PRICE_OPEN);
       double sl   =PositionGetDouble(POSITION_SL);
+      double beSL =(direction>0 ? entry-buf : entry+buf);   // BE with tolerance room
       bool   move=false;
-      if(direction>0 && (sl==0.0 || sl<entry)) move=true;
-      if(direction<0 && (sl==0.0 || sl>entry)) move=true;
-      if(move) EE_ModifySL(ticket,entry);
+      if(direction>0 && (sl==0.0 || sl<beSL)) move=true;    // ratchet up only
+      if(direction<0 && (sl==0.0 || sl>beSL)) move=true;    // ratchet down only
+      if(move) EE_ModifySL(ticket,beSL);
    }
 }
 
