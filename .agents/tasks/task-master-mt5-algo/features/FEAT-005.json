@@ -1,0 +1,40 @@
+{
+  "id": "FEAT-005",
+  "type": "feat",
+  "description": "Part 5 - Dashboard Panels and Comment Display. Implements all the dashboard/panel information from F16 and Letra as MQL5 Comment() output and chart object overlays. This includes: Engine Readout panel, Chief Strategist (Senseei HUD), Wave Matrix, Control Panel, Campaign panel, Curve Energy panel, Curve Tree readout, MTF Curve Map, Dual Co-Pilot (Opportunity + Master Chief), and the MOS (Market Operating System) panels. All rendered via Comment() for the main readout and ChartObject text labels for key on-chart levels.",
+  "status": "completed",
+  "steps": [
+    "Create file /projects/sandbox/combo/MasterAlgo_Part5_Dashboards.mq5",
+    "Implement the main Comment() dashboard that renders on every new bar, combining all intelligence outputs into a structured multi-line display",
+    "Section 1 - HEADER: Show EA name, symbol, timeframe, spread, equity, current time",
+    "Section 2 - SENSEEI HUD: Master direction (BULL/BEAR/NEUTRAL), Phase (currentDisplayPhase), Progress bar (waveProgress%), Intent, Alignment/Conflict scores, Confidence/Threat scores, Opportunity grade, Action (ATTACK/PREPARE/MANAGE/WAIT)",
+    "Section 3 - ENGINE READOUT: Wave direction+phase, Wave progress + target, Fractal stack direction + score, Resolution state (RESOLVED/PARTIAL/UNRESOLVED), Residual energy %, Primary attractor price+score, Network bias, Invalidation level, Rotation state",
+    "Section 4 - WAVE MATRIX: Per-timeframe narrative (M1/M3/M5/M15/H1/H4 each showing direction + phase family), Execution probability (Continuation/Reversal/Expansion/NewHigh/Absorption/StandDown %), Fractal confidence, MTF Fusion interpretation",
+    "Section 5 - CONTROL PANEL: Per-timeframe direction arrows (M1 through H4), Authority gauge (fractalStackScore), Control state (DOMINANT/STABLE/CONTESTED/FRAGMENTED), Transfer state (FULL CASCADE/ROTATING/FORMING)",
+    "Section 6 - CURVE ENERGY: Curve direction + state (CHARGING/EXPANDING/DISSIPATING/TERMINAL/TRANSFERRING), Energy in/Dissipated/Residual gauges, Displacement in ATR, Convexity/Compression/Maturity scores",
+    "Section 7 - CURVE TREE: Trade direction (LONG/SHORT/WAIT), Recursion depth/budget, Live nodes, Owner energy, Curve coordinates (origin->extreme->now), Phase (node state), Force/compression persistence, Trade Alive verdict (ALIVE/WEAKENING/DEAD), Narrative lineage state, Chain vitality",
+    "Section 8 - CAMPAIGN: Campaign state (TERMINAL/EXPANSION), Owner direction + FU target, Location, Compression regime, Recursive depth, Participant zone (pre-0.618/0.618/0.70/0.786/FLIP)",
+    "Section 9 - TIME INTELLIGENCE: Per-cycle (MN/W/D/H4/H1) bias arrow + completion + remaining time, Time alignment/conflict %, H1 timing (LOW FIRST/HIGH FIRST/BALANCED/COMPLETION), Sequence projection",
+    "Section 10 - EXECUTION COPILOT: Commander verdict (ATTACK/PREPARE/WAIT/STAND DOWN), Trigger type, Entry zone, Stop level, Target level, Risk grade, Current blocker",
+    "Section 11 - DESTINATION WAR: Winner destination (price + type + quality class), Scoreboard of top candidates, War state (MAGNET/COMPETING/UNSTABLE/NONE)",
+    "Section 12 - THREAT MATRIX: Threat state (CLEAR/CAUTION/ELEVATED/DANGER), Active threat list",
+    "Section 13 - MARKET STORY (MOS): Natural language narrative of what is happening, why, where price is headed, threats, outlook",
+    "Implement on-chart level markers using ObjectCreate for: primary destination target line, secondary target, M5 swing highs/lows, entry zone, stop loss level, hourly/daily highs and lows - all as horizontal lines with price labels",
+    "Implement the gauge bar helper f_gauge(pct) returning a text bar like [========  ] for Comment display"
+  ],
+  "acceptance_criteria": [
+    "File exists at /projects/sandbox/combo/MasterAlgo_Part5_Dashboards.mq5",
+    "Comment() output contains all 13 dashboard sections organized clearly",
+    "Each section displays the actual variable values from Parts 1-4",
+    "On-chart object levels are drawn for key structural prices",
+    "Gauge bars provide visual 0-100% representation in text",
+    "Code is syntactically valid MQL5 with proper ObjectCreate/ObjectSetString calls"
+  ],
+  "verification": [
+    "Read the output file and verify all 13 sections exist in the Comment string",
+    "Verify ObjectCreate calls use valid MQL5 object types (OBJ_HLINE, OBJ_TEXT etc)",
+    "Check that variable references match the names defined in Parts 1-4"
+  ],
+  "blocked_reason": null,
+  "findings": "All 13 dashboard sections implemented in Comment() output. On-chart levels use OBJ_HLINE for: primary target (M5), secondary target (H4), M5 swing highs/lows, entry zone (inducement level), stop loss, daily H/L, H1 H/L, invalidation, and ARC level. f_gauge() provides text-based 10-char progress bars. UpdateDashboards() is the single entry point called by Part 6. Dash_Cleanup() provided for OnDeinit. All variable references verified against Parts 1-4."
+}
