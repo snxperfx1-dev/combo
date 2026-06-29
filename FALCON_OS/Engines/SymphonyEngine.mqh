@@ -79,6 +79,9 @@ bool     sym_shortOuterBreachSeen = false;
 datetime sym_lastLongTradeTime  = 0;
 datetime sym_lastShortTradeTime = 0;
 
+// Bridge: previous canonical phase published into g_state.wave (for prevPhase)
+int      sym_bridgePrevPhase    = PH_TRANSITION;
+
 //==================================================================
 // INIT — reset all Symphony phase state
 //==================================================================
@@ -103,6 +106,7 @@ void SymphonyInit()
    sym_longOuterBreachSeen = false; sym_shortOuterBreachSeen = false;
 
    sym_lastLongTradeTime = 0; sym_lastShortTradeTime = 0;
+   sym_bridgePrevPhase   = PH_TRANSITION;
 }
 
 //==================================================================
@@ -133,6 +137,88 @@ double Sym_ComputeLots(const double riskCash,const double entry,const double sl)
 
    int volDigits=(lotStep>=1.0?0:lotStep>=0.1?1:2);
    return(NormalizeDouble(lots,volDigits));
+}
+
+//==================================================================
+// BRIDGE — SYMPHONY IS THE SINGLE PHASE/DIRECTION SOURCE OF TRUTH
+//------------------------------------------------------------------
+// The Market Engine still OBSERVES geometry/physics (sub-scores, energy,
+// recursion, cycle extremes) — those are descriptors, not a phase engine.
+// But the PHASE ENGINE itself must exist exactly once. This bridge maps
+// Symphony's impulse + Phase 1..4 model onto the canonical FalconWave schema
+// (phase / direction / flip zone / origin / extreme / objective / completion /
+// dominanceTransfer) so EVERY downstream subsystem reasons on the SAME engine
+// Symphony trades:
+//   • Memory     — campaign OWNERSHIP flips with Symphony (phase 3 = return).
+//   • Intelligence — energy/belief/forecast/entry-cycle read Symphony phases.
+//   • Decision   — master DIRECTION = Symphony mode (via campaign owner).
+//   • Execution  — stops/targets/exit phase-logic read Symphony flip/origin.
+//   • Visualization — every tab shows Symphony's phase truth.
+// No second phase truth survives downstream.
+//
+// PHASE MAP (direction-aware):
+//   mode 0 / phase 0 -> PH_TRANSITION
+//   phase 1 (early impulse)        -> PH_EXPANSION
+//   phase 2 (retracing)            -> PH_RETRACEMENT
+//   phase 3 (return into zone)     -> PH_DEMAND_RETURN (long) / PH_SUPPLY_RETURN (short)
+//   phase 4 (breakout/new extreme) -> PH_NEW_HIGH (long) / PH_NEW_LOW (short)
+//==================================================================
+void SymphonyBridgeToWave()
+{
+   FalconWave w = g_state.wave;   // preserve Market-Engine geometry descriptors
+
+   int dir = (sym_mode==1 ? DIR_LONG : sym_mode==-1 ? DIR_SHORT : DIR_NONE);
+   int p   = (dir==DIR_LONG ? sym_phaseLong : dir==DIR_SHORT ? sym_phaseShort : 0);
+
+   int ph;
+   if(dir==DIR_NONE || p<=0) ph = PH_TRANSITION;
+   else if(p==1)             ph = PH_EXPANSION;
+   else if(p==2)             ph = PH_RETRACEMENT;
+   else if(p==3)             ph = (dir==DIR_LONG ? PH_DEMAND_RETURN : PH_SUPPLY_RETURN);
+   else /* p==4 */           ph = (dir==DIR_LONG ? PH_NEW_HIGH      : PH_NEW_LOW);
+
+   // completion derived from the phase ladder (single, consistent mapping)
+   double comp = (p<=0?5.0 : p==1?25.0 : p==2?45.0 : p==3?70.0 : 92.0);
+
+   // flip zone / anchors — inducement zone tightens the band when present
+   double aHi = sym_anchorHigh, aLo = sym_anchorLow;
+   double flipTop = (aHi!=0.0 ? aHi : w.flipTop);
+   double flipBot = (aLo!=0.0 ? aLo : w.flipBot);
+   if(dir==DIR_LONG && (sym_longInducLow!=0.0 || sym_longInducHigh!=0.0))
+   { flipBot = sym_longInducLow; flipTop = sym_longInducHigh; }
+   if(dir==DIR_SHORT && (sym_shortInducLow!=0.0 || sym_shortInducHigh!=0.0))
+   { flipBot = sym_shortInducLow; flipTop = sym_shortInducHigh; }
+
+   double origin   = (dir==DIR_LONG ? aLo : dir==DIR_SHORT ? aHi : w.origin);
+   double extreme  = (dir==DIR_LONG ? aHi : dir==DIR_SHORT ? aLo : w.extreme);
+   double objective= (dir==DIR_LONG  && sym_arcLong >0.0 ? sym_arcLong
+                     : dir==DIR_SHORT && sym_arcShort>0.0 ? sym_arcShort : w.objective);
+
+   // dominanceTransfer drives the campaign OWNERSHIP flip — keyed to Symphony so
+   // ownership/direction flips exactly when Symphony enters the return (phase 3).
+   double dom = (p>=3 ? 60.0 : p==2 ? 30.0 : 0.0);
+
+   // ---- commit the canonical phase-engine fields (override ME FSM result) ----
+   w.prevPhase         = sym_bridgePrevPhase;
+   w.phase             = ph;
+   w.direction         = dir;
+   w.flipTop           = flipTop;
+   w.flipBot           = flipBot;
+   w.origin            = origin;
+   w.extreme           = extreme;
+   w.objective         = objective;
+   w.completion        = comp;
+   w.dominanceTransfer = dom;
+
+   // display mirror
+   w.symMode       = sym_mode;
+   w.symPhaseLong  = sym_phaseLong;
+   w.symPhaseShort = sym_phaseShort;
+
+   g_state.wave = w;
+
+   if(ph != sym_bridgePrevPhase) FalconPublish(EVT_PHASE_CHANGE, ph, FalconPhaseStr(ph));
+   sym_bridgePrevPhase = ph;
 }
 
 //==================================================================
@@ -405,10 +491,10 @@ void SymphonyUpdatePhases()
       }
    }
 
-   // ---- Mirror Symphony state into shared FALCON state (labels/display only) ----
-   g_state.wave.symMode       = sym_mode;
-   g_state.wave.symPhaseLong  = sym_phaseLong;
-   g_state.wave.symPhaseShort = sym_phaseShort;
+   // ---- Symphony is the SINGLE phase/direction source of truth: map its
+   //      impulse+phase model onto the canonical FalconWave so the whole OS
+   //      (memory/intel/decision/execution/viz) reads the SAME phase engine. ----
+   SymphonyBridgeToWave();
 }
 
 //==================================================================

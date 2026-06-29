@@ -71,8 +71,14 @@ void FalconPipeline()
    MarketEngineRun();
    FalconModuleEnd(MOD_MARKET,t0);
 
-   // Symphony phase engine: precision impulse + Phase 1..4 + ARC, computed
-   // from the same shared series right after the Market Layer observes reality.
+   // Symphony phase engine = the SINGLE phase/direction SOURCE OF TRUTH.
+   // Computed from the same shared series right after the Market Layer observes
+   // geometry, it then BRIDGES its impulse + Phase 1..4 model onto the canonical
+   // g_state.wave (phase/direction/flip/origin/objective/completion). Every
+   // downstream layer (Memory ownership, Intelligence, Decision master,
+   // Execution, Visualization) therefore reasons on ONE phase engine — Symphony.
+   // The Market Engine still supplies raw geometry descriptors (sub-scores,
+   // energy, recursion, cycle extremes); only the phase ENGINE is unified here.
    if(g_cfg.useSymphony)
       SymphonyUpdatePhases();
 
