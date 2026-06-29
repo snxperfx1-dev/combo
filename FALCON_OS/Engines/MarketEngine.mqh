@@ -507,12 +507,16 @@ void ME_UpdateFU()
       fu.dir=-1; fu.tip=gHigh[1];
       double bH=MathMax(gOpen[1],gClose[1]);
       fu.mid=bH+(fu.tip-bH)*0.5; fu.active=true; fu.lifecycle=0;
+      fu.candle=gClose[1];
+      fu.zoneTop=fu.tip; fu.zoneBot=bH;          // rejection band: body-top -> wick-tip
    }
    else if(bull)
    {
       fu.dir=1; fu.tip=gLow[1];
       double bL=MathMin(gOpen[1],gClose[1]);
       fu.mid=fu.tip+(bL-fu.tip)*0.5; fu.active=true; fu.lifecycle=0;
+      fu.candle=gClose[1];
+      fu.zoneTop=bL; fu.zoneBot=fu.tip;          // rejection band: wick-tip -> body-bottom
    }
    else if(fu.active) fu.lifecycle++;
 

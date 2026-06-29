@@ -324,6 +324,16 @@ void EE_UpdateExposure(const EE_Market &m)
    g_state.exec.longGrossLots=longLots;
    g_state.exec.shortGrossLots=shortLots;
    g_state.exec.openPnL=pnl;
+
+   // ---- TRADE STATE ----
+   int ts;
+   if(nl>0 && ns>0)      ts=TS_HEDGED;
+   else if(nl>0)         ts=TS_LONG_OPEN;
+   else if(ns>0)         ts=TS_SHORT_OPEN;
+   else                  ts=TS_FLAT;
+   if(ts!=TS_FLAT && g_state.exec.action==ACT_SCALE)  ts=TS_SCALING;
+   if(ts!=TS_FLAT && g_state.exec.action==ACT_DEFEND) ts=TS_DEFENDING;
+   g_state.exec.tradeState=ts;
 }
 
 //==================================================================
@@ -359,6 +369,8 @@ void EE_HandleEntries(const EE_Market &m)
          ee_lastLongTrade=barTime;
          g_state.exec.entry=entry; g_state.exec.stop=sl;
          g_state.exec.target=g_state.wave.objective; g_state.exec.lots=lots; g_state.exec.riskCash=riskCash;
+         double rr=(MathAbs(entry-sl)>1e-10 && g_state.wave.objective!=0)?MathAbs(g_state.wave.objective-entry)/MathAbs(entry-sl):0.0;
+         g_state.exec.reward=rr;
       }
    }
    if(wantSell && ee_lastShortTrade!=barTime)
@@ -371,6 +383,8 @@ void EE_HandleEntries(const EE_Market &m)
          ee_lastShortTrade=barTime;
          g_state.exec.entry=entry; g_state.exec.stop=sl;
          g_state.exec.target=g_state.wave.objective; g_state.exec.lots=lots; g_state.exec.riskCash=riskCash;
+         double rr=(MathAbs(entry-sl)>1e-10 && g_state.wave.objective!=0)?MathAbs(g_state.wave.objective-entry)/MathAbs(entry-sl):0.0;
+         g_state.exec.reward=rr;
       }
    }
 }
@@ -387,6 +401,7 @@ void EE_HandleExits()
    double close1=gClose[1];
 
    bool exitLong=false, exitShort=false;
+   int  exitReason=XS_NONE;
 
    // ARC exhaustion (Symphony)
    bool arcExhaustLong  = (w.direction==DIR_LONG  && cv.arcLong>0.0  && close1>=(cv.arcLong - g_cfg.arcToleranceAtr*atr));
@@ -394,33 +409,34 @@ void EE_HandleExits()
    bool phaseEndLong  = (w.prevPhase>=PH_NEW_HIGH && w.phase<=PH_EXP_PRECONVEXITY && w.direction==DIR_LONG);
    bool phaseEndShort = (w.prevPhase>=PH_NEW_HIGH && w.phase<=PH_EXP_PRECONVEXITY && w.direction==DIR_SHORT);
 
-   if(arcExhaustLong && phaseEndLong)  exitLong=true;
-   if(arcExhaustShort&& phaseEndShort) exitShort=true;
+   if(arcExhaustLong && phaseEndLong)  { exitLong=true;  exitReason=XS_ARC_EXHAUST; }
+   if(arcExhaustShort&& phaseEndShort) { exitShort=true; exitReason=XS_ARC_EXHAUST; }
 
    // resolution complete -> exit the resolved side
    if(g_state.intel.resolutionState==RES_RESOLVED)
    {
-      if(w.direction==DIR_LONG)  exitLong=true;
-      if(w.direction==DIR_SHORT) exitShort=true;
+      if(w.direction==DIR_LONG)  { exitLong=true;  exitReason=XS_RESOLUTION; }
+      if(w.direction==DIR_SHORT) { exitShort=true; exitReason=XS_RESOLUTION; }
    }
 
    // explicit decision EXIT closes the master side; DEFEND closes the losing side
    if(action==ACT_EXIT)
    {
-      if(g_state.exec.master==DIR_LONG)  exitLong=true;
-      if(g_state.exec.master==DIR_SHORT) exitShort=true;
+      if(g_state.exec.master==DIR_LONG)  { exitLong=true;  exitReason=XS_DECISION_EXIT; }
+      if(g_state.exec.master==DIR_SHORT) { exitShort=true; exitReason=XS_DECISION_EXIT; }
    }
    if(action==ACT_DEFEND)
    {
       // defend = close the side fighting against the failure-swing risk
       if(g_state.intel.failureSwingProb>=0.70)
       {
-         if(w.direction==DIR_LONG)  exitLong=true;   // long wave failing -> protect longs
-         if(w.direction==DIR_SHORT) exitShort=true;
+         if(w.direction==DIR_LONG)  { exitLong=true;  exitReason=XS_DEFEND; }   // long wave failing -> protect longs
+         if(w.direction==DIR_SHORT) { exitShort=true; exitReason=XS_DEFEND; }
       }
    }
 
    if(!exitLong && !exitShort) return;
+   g_state.exec.exitState=exitReason;
 
    int total=PositionsTotal();
    for(int i=total-1;i>=0;i--)
@@ -480,7 +496,7 @@ void EE_Trailing()
          if(profit>startDist)
          {
             double newSL=bid-trailDist;
-            if(newSL>entry && (sl==0 || newSL>sl)) EE_ModifySL(ticket,newSL);
+            if(newSL>entry && (sl==0 || newSL>sl)) { if(EE_ModifySL(ticket,newSL)) g_state.exec.exitState=XS_TRAIL_STOP; }
          }
       }
       else // SELL
@@ -489,7 +505,7 @@ void EE_Trailing()
          if(profit>startDist)
          {
             double newSL=ask+trailDist;
-            if(newSL<entry && (sl==0 || newSL<sl)) EE_ModifySL(ticket,newSL);
+            if(newSL<entry && (sl==0 || newSL<sl)) { if(EE_ModifySL(ticket,newSL)) g_state.exec.exitState=XS_TRAIL_STOP; }
          }
       }
    }
@@ -523,6 +539,7 @@ bool EE_DrawdownProtection()
          EE_CloseFull(ticket);
       }
       FalconPublish(EVT_RISK_BREACH, worst, "drawdown flatten");
+      g_state.exec.exitState=XS_DD_FLATTEN;
       return(false);
    }
    if(worst>=g_cfg.maxDrawdownPct)

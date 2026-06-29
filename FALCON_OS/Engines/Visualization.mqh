@@ -67,6 +67,7 @@ string VZ_Body(const int tab)
    FalconWaveMatrix wmx=g_state.waveMatrix;
    FalconFEZ fez=g_state.fez;
    FalconFRZ frz=g_state.frz;
+   FalconFU  fuv=g_state.fu;
 
    switch(tab)
    {
@@ -149,7 +150,8 @@ string VZ_Body(const int tab)
          s+="H1  "+VZ_Dir(h.dir[4])+"   H4  "+VZ_Dir(h.dir[5])+"\n";
          s+="Stack Dir   : "+VZ_Dir(h.stackDir)+"\n";
          s+="Alignment   : "+DoubleToString(h.alignment,0)+"%   Conflict "+DoubleToString(h.conflict,0)+"%\n";
-         s+="Owner TF idx: "+IntegerToString(h.ownerTF)+"   Fractal "+(h.fractalAgreement?"AGREE":"split");
+         s+="Owner TF idx: "+IntegerToString(h.ownerTF)+"   Fractal "+(h.fractalAgreement?"AGREE":"split")+"\n";
+         s+="FU Candle   : "+(fuv.active?VZ_Dir(fuv.dir)+" zone "+VZ_Px(fuv.zoneBot)+"-"+VZ_Px(fuv.zoneTop)+"  conf "+DoubleToString(fuv.confidence,0)+"  life "+IntegerToString(fuv.lifecycle):"none");
          break;
       case 8: // RISK
          s+="Risk OK     : "+(e.riskOk?"YES":"NO")+"\n";
@@ -161,8 +163,9 @@ string VZ_Body(const int tab)
          break;
       case 9: // EXECUTION
          s+="Action      : "+FalconActionStr(e.action)+"\n";
+         s+="Trade State : "+FalconTradeStateStr(e.tradeState)+"   Last exit "+FalconExitStateStr(e.exitState)+"\n";
          s+="Entry/Stop  : "+VZ_Px(e.entry)+" / "+VZ_Px(e.stop)+"\n";
-         s+="Target      : "+VZ_Px(e.target)+"\n";
+         s+="Target      : "+VZ_Px(e.target)+"   R:R "+DoubleToString(e.reward,2)+"\n";
          s+="Lots        : "+DoubleToString(e.lots,2)+"   Risk $ "+DoubleToString(e.riskCash,0)+"\n";
          s+="Open L/S    : "+IntegerToString(e.openLongCount)+" / "+IntegerToString(e.openShortCount)+"\n";
          s+="Open PnL    : "+DoubleToString(e.openPnL,2)+"\n";

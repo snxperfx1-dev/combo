@@ -64,6 +64,29 @@ enum FALCON_ACTION
    ACT_EXIT     = 8    // bank / close
 };
 
+// Live position posture (Execution.TradeState)
+enum FALCON_TRADE_STATE
+{
+   TS_FLAT        = 0,
+   TS_LONG_OPEN   = 1,
+   TS_SHORT_OPEN  = 2,
+   TS_HEDGED      = 3,   // both directions open (multi-campaign)
+   TS_SCALING     = 4,
+   TS_DEFENDING   = 5
+};
+
+// Reason the last exit fired (Execution.ExitState)
+enum FALCON_EXIT_STATE
+{
+   XS_NONE          = 0,
+   XS_ARC_EXHAUST   = 1,
+   XS_RESOLUTION    = 2,
+   XS_DECISION_EXIT = 3,
+   XS_DEFEND        = 4,
+   XS_TRAIL_STOP    = 5,
+   XS_DD_FLATTEN    = 6
+};
+
 //==================================================================
 // SUB-STATE : PHYSICS
 //==================================================================
@@ -200,8 +223,11 @@ struct FalconHTF
 struct FalconFU
 {
    bool   active;
+   double candle;         // FU Candle reference price (the rejection close)
    double tip;
    double mid;
+   double zoneTop;        // FU Zone band
+   double zoneBot;
    int    dir;            // FALCON_DIR
    double confidence;     // wick score
    int    lifecycle;      // bars since formed
@@ -435,7 +461,9 @@ struct FalconExecution
    double target3;
    double lots;
    double riskCash;
-   double reward;
+   double reward;         // reward:risk ratio of the working setup
+   int    tradeState;     // FALCON_TRADE_STATE
+   int    exitState;      // FALCON_EXIT_STATE (reason of last exit)
    // risk engine snapshot
    double var2;
    double var3;
@@ -539,6 +567,33 @@ string FalconActionStr(const int a)
 string FalconDirStr(const int d)
 {
    return(d==DIR_LONG ? "Bullish" : d==DIR_SHORT ? "Bearish" : "Neutral");
+}
+
+string FalconTradeStateStr(const int t)
+{
+   switch(t)
+   {
+      case TS_LONG_OPEN:  return("LONG");
+      case TS_SHORT_OPEN: return("SHORT");
+      case TS_HEDGED:     return("HEDGED");
+      case TS_SCALING:    return("SCALING");
+      case TS_DEFENDING:  return("DEFENDING");
+      default:            return("FLAT");
+   }
+}
+
+string FalconExitStateStr(const int x)
+{
+   switch(x)
+   {
+      case XS_ARC_EXHAUST:   return("ARC exhaust");
+      case XS_RESOLUTION:    return("resolution");
+      case XS_DECISION_EXIT: return("decision exit");
+      case XS_DEFEND:        return("defend");
+      case XS_TRAIL_STOP:    return("trail stop");
+      case XS_DD_FLATTEN:    return("drawdown flatten");
+      default:               return("none");
+   }
 }
 
 string FalconResStr(const int r)
