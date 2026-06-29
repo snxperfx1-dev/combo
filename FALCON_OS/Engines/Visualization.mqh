@@ -81,6 +81,7 @@ string VZ_Body(const int tab)
          s+="Confidence  : "+DoubleToString(x.confidence,0)+"   Threat "+DoubleToString(x.threat,0)+"\n";
          s+="Opportunity : "+x.opportunityGrade+"  ("+DoubleToString(x.opportunity,0)+")\n";
          s+="Exec Prob   : "+DoubleToString(x.executionProbability*100.0,0)+"%   Resolution "+FalconResStr(x.resolutionState)+"\n";
+         s+="Master Chief: "+(x.masterChiefConfirm?"CLEARED":"HOLD")+"  ("+DoubleToString(x.masterChiefScore,0)+")  "+x.masterChiefNote+"\n";
          s+="Story       : "+x.story;
          break;
       case 1: // PHYSICS
@@ -101,6 +102,7 @@ string VZ_Body(const int tab)
          s+="Order Block : "+(ob.activeDir!=DIR_NONE?VZ_Px(ob.activeBot)+"-"+VZ_Px(ob.activeTop)+" "+VZ_Dir(ob.activeDir)+" str "+DoubleToString(ob.activeStrength,0):"—")+"\n";
          s+="Supply/Dmd  : "+(sd.activeZone==DIR_LONG?"IN DEMAND":sd.activeZone==DIR_SHORT?"IN SUPPLY":"—")
             +"  D "+DoubleToString(sd.demandStrength,0)+" / S "+DoubleToString(sd.supplyStrength,0)+"\n";
+         s+="Inducement  : "+(lq.induceActive?VZ_Px(lq.inducePrice)+(lq.induceSwept?" SWEPT":" armed"):"—")+"\n";
          s+="Liquidity   : heat "+DoubleToString(lq.score,0)+"  pressure "+DoubleToString(lq.pressure,0)+(lq.vacuum?"  VACUUM":"");
          break;
       case 3: // NETWORK
@@ -197,8 +199,50 @@ string VZ_Body(const int tab)
 //------------------------------------------------------------------
 // Render the panel as a single multiline chart label.
 //------------------------------------------------------------------
+//------------------------------------------------------------------
+// FLIGHT HUD — plot the live flight plan as horizontal levels on the
+// chart: entry · stop · target · flip-top · flip-bot · inducement.
+// Replaces F16's HUD; reads only shared state.
+//------------------------------------------------------------------
+void VZ_HLine(const string tag,const double price,const color col,const int style)
+{
+   if(price<=0){ ObjectDelete(0,tag); return; }
+   if(ObjectFind(0,tag)<0)
+   {
+      ObjectCreate(0,tag,OBJ_HLINE,0,0,price);
+      ObjectSetInteger(0,tag,OBJPROP_SELECTABLE,false);
+      ObjectSetInteger(0,tag,OBJPROP_BACK,true);
+      ObjectSetInteger(0,tag,OBJPROP_WIDTH,1);
+   }
+   ObjectSetInteger(0,tag,OBJPROP_COLOR,col);
+   ObjectSetInteger(0,tag,OBJPROP_STYLE,style);
+   ObjectSetDouble (0,tag,OBJPROP_PRICE,price);
+}
+
+void VZ_FlightHUD()
+{
+   if(!g_cfg.showHUD)
+   {
+      ObjectDelete(0,VIZ_OBJ+"_entry"); ObjectDelete(0,VIZ_OBJ+"_stop");
+      ObjectDelete(0,VIZ_OBJ+"_tgt");   ObjectDelete(0,VIZ_OBJ+"_ftop");
+      ObjectDelete(0,VIZ_OBJ+"_fbot");  ObjectDelete(0,VIZ_OBJ+"_induc");
+      return;
+   }
+   FalconWave w=g_state.wave;
+   FalconExecution e=g_state.exec;
+   FalconLiquidity lq=g_state.liquidity;
+
+   VZ_HLine(VIZ_OBJ+"_entry", e.entry,        clrDeepSkyBlue, STYLE_SOLID);
+   VZ_HLine(VIZ_OBJ+"_stop",  e.stop,         clrTomato,      STYLE_DOT);
+   VZ_HLine(VIZ_OBJ+"_tgt",   e.target,       clrLime,        STYLE_DASH);
+   VZ_HLine(VIZ_OBJ+"_ftop",  w.flipTop,      clrDimGray,     STYLE_DOT);
+   VZ_HLine(VIZ_OBJ+"_fbot",  w.flipBot,      clrDimGray,     STYLE_DOT);
+   VZ_HLine(VIZ_OBJ+"_induc", lq.inducePrice, clrGold,        STYLE_DASHDOT);
+}
+
 void VisualizationRun()
 {
+   VZ_FlightHUD();   // self-cleans when disabled
    if(!g_cfg.showDashboard) return;
 
    int tab=g_cfg.dashboardTab;
@@ -222,6 +266,9 @@ void VisualizationDeinit()
 {
    Comment("");
    ObjectDelete(0,VIZ_OBJ);
+   ObjectDelete(0,VIZ_OBJ+"_entry"); ObjectDelete(0,VIZ_OBJ+"_stop");
+   ObjectDelete(0,VIZ_OBJ+"_tgt");   ObjectDelete(0,VIZ_OBJ+"_ftop");
+   ObjectDelete(0,VIZ_OBJ+"_fbot");  ObjectDelete(0,VIZ_OBJ+"_induc");
 }
 
 #endif // FALCON_VIZ_MQH

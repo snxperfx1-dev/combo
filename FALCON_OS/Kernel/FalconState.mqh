@@ -149,6 +149,12 @@ struct FalconLiquidity
    bool   falseChoch;
    bool   acceptance;
    bool   vacuum;
+   // explicit Inducement Engine (LETRA) outputs
+   double inducePrice;    // the lure level inside the working range
+   double induceTop;      // inducement zone band
+   double induceBot;
+   bool   induceActive;
+   bool   induceSwept;    // price has taken the inducement level
 };
 
 //==================================================================
@@ -443,6 +449,10 @@ struct FalconIntelligence
    bool   validated;         // did reality confirm the prior prediction?
    double validationScore;   // 0..100 rolling hit rate
    string finalDecision;     // mirrors the Decision Engine verdict label
+   // Master Chief — holistic final confirmation above Senseei
+   bool   masterChiefConfirm; // true when all layers agree to commit
+   double masterChiefScore;   // 0..100 holistic conviction
+   string masterChiefNote;
    // continuous execution probability (phases are OUTPUTS, this drives decisions)
    double executionProbability; // 0..1
 };

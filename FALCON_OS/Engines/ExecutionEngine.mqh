@@ -44,11 +44,15 @@ double ee_liqLevels[32]; int ee_liqCount=0;
 double ee_w_rd=0.35, ee_w_dVar2=0.25, ee_w_gamma=0.20, ee_w_liq=0.10, ee_w_sag=0.10;
 datetime ee_lastBarTime=0, ee_lastLongTrade=0, ee_lastShortTrade=0;
 bool   ee_lastRiskOk=true;
+// Institutional Exit Engine state (Symphony outer-band sweep tracking)
+bool   ee_longOuterBreach=false, ee_shortOuterBreach=false;
+double ee_lastWaveOrigin=0; int ee_lastWaveDir=0;
 
 void ExecutionEngineInit()
 {
    ee_lastBarTime=0; ee_lastLongTrade=0; ee_lastShortTrade=0; ee_lastRiskOk=true;
    ee_liqCount=0;
+   ee_longOuterBreach=false; ee_shortOuterBreach=false; ee_lastWaveOrigin=0; ee_lastWaveDir=0;
 }
 
 //==================================================================
@@ -390,6 +394,42 @@ void EE_HandleEntries(const EE_Market &m)
 }
 
 //==================================================================
+// INSTITUTIONAL EXIT ENGINE — track per-wave outer-band sweeps so the
+// composite exit can require the institutional pattern (Symphony):
+//   ARC exhaust + outer-band sweep seen + close back inside inner band
+//   + phase trend-end. Reset whenever a fresh wave spawns.
+//==================================================================
+void EE_UpdateInstitutional()
+{
+   FalconWave w=g_state.wave;
+   double atr=g_state.physics.atr;
+   double close1=gClose[1];
+
+   // reset on a new wave (origin or direction changed)
+   if(w.origin!=ee_lastWaveOrigin || w.direction!=ee_lastWaveDir)
+   {
+      ee_longOuterBreach=false; ee_shortOuterBreach=false;
+      ee_lastWaveOrigin=w.origin; ee_lastWaveDir=w.direction;
+   }
+
+   // inner band = inducement zone (or flip band); outer band = inner ± outerBandAtrMult
+   FalconLiquidity lq=g_state.liquidity;
+   double innerTopL = (lq.induceTop!=0? lq.induceTop : (w.flipTop!=0? w.flipTop:0));
+   double innerBotS = (lq.induceBot!=0? lq.induceBot : (w.flipBot!=0? w.flipBot:0));
+
+   if(w.direction==DIR_LONG && innerTopL>0)
+   {
+      double outerTopL=innerTopL + g_cfg.outerBandAtrMult*atr;
+      if(close1>outerTopL) ee_longOuterBreach=true;
+   }
+   if(w.direction==DIR_SHORT && innerBotS>0)
+   {
+      double outerBotS=innerBotS - g_cfg.outerBandAtrMult*atr;
+      if(close1<outerBotS) ee_shortOuterBreach=true;
+   }
+}
+
+//==================================================================
 // EXITS — ARC + institutional + phase composite + decision EXIT/DEFEND
 //==================================================================
 void EE_HandleExits()
@@ -411,6 +451,22 @@ void EE_HandleExits()
 
    if(arcExhaustLong && phaseEndLong)  { exitLong=true;  exitReason=XS_ARC_EXHAUST; }
    if(arcExhaustShort&& phaseEndShort) { exitShort=true; exitReason=XS_ARC_EXHAUST; }
+
+   // INSTITUTIONAL pattern gate: if an inner band exists, require the outer-band
+   // sweep to have occurred AND price to have closed back inside it (Symphony).
+   FalconLiquidity lq=g_state.liquidity;
+   double innerTopL = (lq.induceTop!=0? lq.induceTop : w.flipTop);
+   double innerBotS = (lq.induceBot!=0? lq.induceBot : w.flipBot);
+   if(exitLong && innerTopL>0)
+   {
+      bool instOK = (ee_longOuterBreach && close1<innerTopL);
+      if(!instOK) exitLong=false;   // not yet an institutional reversal
+   }
+   if(exitShort && innerBotS>0)
+   {
+      bool instOK = (ee_shortOuterBreach && close1>innerBotS);
+      if(!instOK) exitShort=false;
+   }
 
    // resolution complete -> exit the resolved side
    if(g_state.intel.resolutionState==RES_RESOLVED)
@@ -591,7 +647,8 @@ void ExecutionEngineRun()
    // ---- TRAILING (manage open winners) ----
    EE_Trailing();
 
-   // ---- EXITS first (free up risk), then ENTRIES ----
+   // ---- INSTITUTIONAL band tracking, then EXITS, then ENTRIES ----
+   EE_UpdateInstitutional();
    EE_HandleExits();
    EE_HandleEntries(m);
 

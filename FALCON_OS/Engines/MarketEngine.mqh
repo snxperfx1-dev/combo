@@ -283,6 +283,47 @@ void ME_UpdateLiquidity()
 }
 
 //==================================================================
+// 3B. INDUCEMENT ENGINE  (LETRA f_findInducPrice — the lure level
+//     inside the working range that price is induced to take before
+//     the real move). Explicit engine writing the inducement zone.
+//==================================================================
+void ME_UpdateInducement()
+{
+   FalconLiquidity lq = g_state.liquidity;
+   double atr   = g_state.physics.atr;
+   double top   = me_ft, bot = me_fb;
+   double close1= gClose[1];
+
+   lq.inducePrice=0; lq.induceTop=0; lq.induceBot=0; lq.induceActive=false; lq.induceSwept=false;
+
+   if(top!=0 && bot!=0 && top>bot)
+   {
+      // nearest interior bar fully inside the flip range -> its midpoint is the lure
+      double best=0; int bestDist=-1;
+      int lookback=g_cfg.inducLookback;
+      int maxBars=FalconBars();
+      for(int s=2;s<2+lookback && s<maxBars;s++)
+      {
+         if(gHigh[s]<top && gLow[s]>bot)
+         {
+            int dist=s;
+            if(bestDist<0 || dist<bestDist){ bestDist=dist; best=(gHigh[s]+gLow[s])*0.5; }
+         }
+      }
+      if(bestDist>=0)
+      {
+         lq.inducePrice=best;
+         lq.induceTop=best+atr*g_cfg.inducZoneWidth;
+         lq.induceBot=best-atr*g_cfg.inducZoneWidth;
+         lq.induceActive=true;
+         // swept when price has traded through the lure in the wave direction
+         lq.induceSwept = (me_dir==1 ? gLow[1]<=lq.induceBot : me_dir==-1 ? gHigh[1]>=lq.induceTop : false);
+      }
+   }
+   g_state.liquidity=lq;
+}
+
+//==================================================================
 // 4. WAVE MACHINE  (verbatim port of f_se spawn + 0..14 phase FSM)
 //==================================================================
 void ME_UpdateWave()
@@ -694,6 +735,7 @@ void MarketEngineRun()
    ME_UpdateStructure();
    ME_UpdateLiquidity();
    ME_UpdateWave();
+   ME_UpdateInducement();
    ME_UpdateConvexity();
    ME_UpdateFU();
    ME_UpdateOrderBlocks();

@@ -86,6 +86,38 @@ int DE_CampaignAI(int action,const int master,const double threat)
    return(action);
 }
 
+//------------------------------------------------------------------
+// MASTER CHIEF — the final holistic confirmation above Senseei. It
+// does not re-derive direction; it CONFIRMS the committed shot by
+// checking that the deep layers genuinely agree (curve owner + network
+// + prediction validation + reward). If conviction is too low it
+// downgrades a live BUY/SELL to ATTACK (armed, but hold fire).
+//------------------------------------------------------------------
+int DE_MasterChief(int action,const int master)
+{
+   FalconIntelligence x=g_state.intel;
+   bool ownerAgree = (g_state.curve.ownerDir==master && master!=DIR_NONE);
+   bool netAgree   = (g_state.network.bias==master);
+   bool valOk      = (x.validationScore>=45.0);
+   bool execOk     = (x.executionProbability>=g_cfg.execProbArm*0.9);
+
+   double score = (ownerAgree?30.0:0.0)+(netAgree?20.0:0.0)
+                 + x.confidence*0.25 + x.validationScore*0.15
+                 + (100.0-x.threat)*0.10;
+   g_state.intel.masterChiefScore = FalconClamp(score,0,100);
+
+   bool commitOk = (ownerAgree && netAgree && valOk && execOk && score>=60.0);
+   g_state.intel.masterChiefConfirm = commitOk;
+
+   if((action==ACT_BUY||action==ACT_SELL) && !commitOk)
+   {
+      g_state.intel.masterChiefNote = "hold fire — "+(!ownerAgree?"owner split":!netAgree?"network split":!valOk?"unvalidated":"low conviction");
+      return(ACT_ATTACK);   // stay armed, do not pull the trigger
+   }
+   g_state.intel.masterChiefNote = commitOk ? "cleared to engage" : "standby";
+   return(action);
+}
+
 //==================================================================
 // MASTER ENTRY — Senseei meta-intelligence + verdict
 //==================================================================
@@ -149,8 +181,10 @@ void DecisionEngineRun()
                                     x.executionProbability,resCode);
    action     = DE_CampaignAI(action,master,threat);
 
-   x.finalDecision = FalconActionStr(action);
-   g_state.intel   = x;
+   // commit the meta scores first so Master Chief reads/writes the shared intel
+   g_state.intel = x;
+   action        = DE_MasterChief(action,master);   // may downgrade BUY/SELL -> ATTACK
+   g_state.intel.finalDecision = FalconActionStr(action);
 
    g_state.exec.action = action;
    g_state.exec.master = master;
