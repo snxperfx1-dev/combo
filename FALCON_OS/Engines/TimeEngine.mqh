@@ -164,6 +164,16 @@ void TimeEngineRun()
    t.permit = (t.timeQuality >= g_cfg.timeQualityFloor);
    t.label  = (t.timeQuality>=78 ? "PRIME" : t.timeQuality>=g_cfg.timeQualityFloor ? "ACTIVE" : t.timeQuality>=22 ? "QUIET" : "DEAD");
 
+   // ---- SCHEDULER (planning layer) — execution timing windows ----
+   int opMin = (int)(PeriodSeconds(g_cfg.operatingTF)/60); if(opMin<=0) opMin=(int)(PeriodSeconds(_Period)/60); if(opMin<=0) opMin=5;
+   int minsToHour = 60 - g.min; if(minsToHour<=0) minsToHour=60;
+   t.barsToNextTurn = (int)MathMax(0, minsToHour/opMin);
+   // best window: inside a killzone, or just before an hourly turn (timing edges)
+   t.bestEntryWindow = t.permit && (t.killzone || t.barsToNextTurn<=3);
+   t.nextEvent = (t.killzone ? ("killzone "+t.killzoneName)
+                : t.barsToNextTurn<=3 ? "hour turn imminent"
+                : ("hour turn in "+IntegerToString(t.barsToNextTurn)+" bars"));
+
    g_state.timeIntel=t;
 }
 

@@ -249,6 +249,12 @@ struct FalconWave
    int    symMode;        // -1 short, 1 long, 0 none
    int    symPhaseLong;   // 0..4
    int    symPhaseShort;  // 0..4
+   // ---- FORECAST (planning layer — what the wave EXPECTS next) ----
+   int    expectedNextPhase;  // FALCON_PHASE the wave is heading into
+   double expectedReturnZone; // price the planner stages an entry at (retrace target)
+   double forecastProb;       // 0..100 confidence in the forecast
+   int    expectedBars;       // est. bars until the next phase
+   double remainingCapacity;  // 0..100 room left in the current leg
 };
 
 //==================================================================
@@ -399,6 +405,11 @@ struct FalconCurve
    double narrative;      // narrative-lineage strength (0..100, >50 strengthening)
    int    supportVotes;   // converging (support) pullback votes
    int    degradeVotes;   // diverging (degrade) pullback votes
+   // ---- FORECAST (planning layer — future inheritance of the curve) ----
+   bool   childExpected;     // a recursion child is likely to spawn
+   int    expectedSpawnBars; // est. bars until the next child
+   bool   transferLikely;    // ownership about to transfer to a higher TF
+   bool   waitForChild;      // don't trade this curve — wait for the child/transfer
 };
 
 //==================================================================
@@ -438,6 +449,10 @@ struct FalconTime
    int    temporalBias;       // FALCON_DIR temporal lean (e.g. London expands Asia range)
    bool   permit;             // soft temporal permission (timeQuality >= floor)
    string label;              // PRIME / ACTIVE / QUIET / DEAD
+   // ---- SCHEDULER (planning layer — execution timing windows) ----
+   int    barsToNextTurn;     // est. bars to the next hourly/session turn
+   bool   bestEntryWindow;    // inside the high-quality execution window now
+   string nextEvent;          // human-readable next scheduled event
 };
 
 //==================================================================

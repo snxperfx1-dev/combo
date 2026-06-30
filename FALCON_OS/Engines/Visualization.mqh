@@ -369,6 +369,16 @@ string VZ_Body(const int tab)
       case 15: // PLANS — the Trade Planning Layer queue (FALCON OS 9.0)
       {
          s+="PLANNER     : "+(g_cfg.usePlanner?"ON":"off")+"   live plans "+IntegerToString(g_state.planCount)+"\n";
+         s+="── FORECAST (what the engines expect next) ──\n";
+         s+="Wave next   : "+FalconPhaseStr(w.expectedNextPhase)+"  ret "+VZ_Px(w.expectedReturnZone)
+            +"  p"+DoubleToString(w.forecastProb,0)+"%  ~"+IntegerToString(w.expectedBars)+"b"
+            +"  cap "+DoubleToString(w.remainingCapacity,0)+"%\n";
+         s+="Curve       : "+(cu.childExpected?("child~"+IntegerToString(cu.expectedSpawnBars)+"b"):"no-child")
+            +"  "+(cu.transferLikely?"transfer-likely":"owner-holds")
+            +(cu.waitForChild?"  [WAIT-CHILD]":"")+"\n";
+         s+="Schedule    : next turn ~"+IntegerToString(g_state.timeIntel.barsToNextTurn)+"b"
+            +"  "+(g_state.timeIntel.bestEntryWindow?"WINDOW-OPEN":"window-wait")
+            +(g_state.timeIntel.nextEvent!=""?("  ("+g_state.timeIntel.nextEvent+")"):"")+"\n";
          s+="─────────────────────────────────────\n";
          int shown=0;
          for(int i=0;i<FALCON_MAX_PLANS;i++)

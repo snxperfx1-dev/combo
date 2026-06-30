@@ -309,6 +309,14 @@ void CurveTreeRun()
    int kids=0; for(int i=0;i<ct_count;i++) if(ct_tree[i].alive && ct_tree[i].depth>0) kids++;
    g_state.curve.emergentNodes   = kids;
    g_state.curve.childCount      = kids;
+
+   // ---- FORECAST (planning layer) — future inheritance of the curve ----
+   double comp = g_state.physics.compression;
+   bool   budgetLeft = (treeDepth < budgetDepth);
+   g_state.curve.childExpected     = (budgetLeft && comp >= 50.0);
+   g_state.curve.expectedSpawnBars = (int)FalconClamp(20.0 - comp/8.0, 3, 20);
+   g_state.curve.transferLikely    = recursionComplete || (ownFE>=0 && ownFE < ownMinE*1.5) || (compForce <= 35.0);
+   g_state.curve.waitForChild      = g_state.curve.transferLikely && g_state.curve.childExpected;
 }
 
 #endif // FALCON_CURVE_TREE_MQH

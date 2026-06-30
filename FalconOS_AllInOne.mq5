@@ -5,7 +5,7 @@
 //|   Risk: PYRO thermal + TALON curve-convergent structural grip.   |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "6.02"
+#property version   "6.10"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -263,6 +263,12 @@ struct FalconWave
    int    symMode;        // -1 short, 1 long, 0 none
    int    symPhaseLong;   // 0..4
    int    symPhaseShort;  // 0..4
+   // ---- FORECAST (planning layer — what the wave EXPECTS next) ----
+   int    expectedNextPhase;  // FALCON_PHASE the wave is heading into
+   double expectedReturnZone; // price the planner stages an entry at (retrace target)
+   double forecastProb;       // 0..100 confidence in the forecast
+   int    expectedBars;       // est. bars until the next phase
+   double remainingCapacity;  // 0..100 room left in the current leg
 };
 
 //==================================================================
@@ -413,6 +419,11 @@ struct FalconCurve
    double narrative;      // narrative-lineage strength (0..100, >50 strengthening)
    int    supportVotes;   // converging (support) pullback votes
    int    degradeVotes;   // diverging (degrade) pullback votes
+   // ---- FORECAST (planning layer — future inheritance of the curve) ----
+   bool   childExpected;     // a recursion child is likely to spawn
+   int    expectedSpawnBars; // est. bars until the next child
+   bool   transferLikely;    // ownership about to transfer to a higher TF
+   bool   waitForChild;      // don't trade this curve — wait for the child/transfer
 };
 
 //==================================================================
@@ -452,6 +463,10 @@ struct FalconTime
    int    temporalBias;       // FALCON_DIR temporal lean (e.g. London expands Asia range)
    bool   permit;             // soft temporal permission (timeQuality >= floor)
    string label;              // PRIME / ACTIVE / QUIET / DEAD
+   // ---- SCHEDULER (planning layer — execution timing windows) ----
+   int    barsToNextTurn;     // est. bars to the next hourly/session turn
+   bool   bestEntryWindow;    // inside the high-quality execution window now
+   string nextEvent;          // human-readable next scheduled event
 };
 
 //==================================================================
@@ -2795,6 +2810,30 @@ void ME_UpdateWave()
    w.absorptionScore   = FalconClamp(absScore,0,100);
    w.retracementScore  = FalconClamp(retrFrac*100.0,0,100);
 
+   // ---- FORECAST (planning layer) — what this wave expects next ------------
+   double leg = MathAbs(w.extreme - w.origin);
+   w.remainingCapacity = FalconClamp(100.0 - w.completion, 0, 100);
+   if(w.completion < 60.0)
+   {
+      // still expanding -> a retracement is next; stage the return zone at the
+      // 50% retrace of the current leg (the demand/supply price will pull back to)
+      w.expectedNextPhase  = PH_RETRACEMENT;
+      w.expectedReturnZone = (w.direction==DIR_LONG ? w.extreme - leg*0.5
+                            : w.direction==DIR_SHORT ? w.extreme + leg*0.5 : 0.0);
+      w.forecastProb       = FalconClamp(w.strength*0.5 + w.remainingCapacity*0.5, 0, 100);
+   }
+   else
+   {
+      // mature -> a return/continuation off the zone is next
+      w.expectedNextPhase  = (w.direction==DIR_LONG ? PH_DEMAND_RETURN
+                            : w.direction==DIR_SHORT ? PH_SUPPLY_RETURN : PH_TRANSITION);
+      w.expectedReturnZone = (w.flipBot>0 && w.direction==DIR_LONG ? w.flipBot
+                            : w.flipTop>0 && w.direction==DIR_SHORT ? w.flipTop
+                            : (w.direction==DIR_LONG ? w.extreme - leg*0.382 : w.extreme + leg*0.382));
+      w.forecastProb       = FalconClamp(w.confidence*0.5 + (100.0-w.completion)*0.5, 0, 100);
+   }
+   w.expectedBars = (w.completion>5.0 ? (int)MathMin(50.0, MathMax(1.0, w.age*(100.0-w.completion)/w.completion)) : 14);
+
    g_state.wave = w;
 
    if(phase != prevPhase) FalconPublish(EVT_PHASE_CHANGE, phase, FalconPhaseStr(phase));
@@ -4032,6 +4071,14 @@ void CurveTreeRun()
    int kids=0; for(int i=0;i<ct_count;i++) if(ct_tree[i].alive && ct_tree[i].depth>0) kids++;
    g_state.curve.emergentNodes   = kids;
    g_state.curve.childCount      = kids;
+
+   // ---- FORECAST (planning layer) — future inheritance of the curve ----
+   double comp = g_state.physics.compression;
+   bool   budgetLeft = (treeDepth < budgetDepth);
+   g_state.curve.childExpected     = (budgetLeft && comp >= 50.0);
+   g_state.curve.expectedSpawnBars = (int)FalconClamp(20.0 - comp/8.0, 3, 20);
+   g_state.curve.transferLikely    = recursionComplete || (ownFE>=0 && ownFE < ownMinE*1.5) || (compForce <= 35.0);
+   g_state.curve.waitForChild      = g_state.curve.transferLikely && g_state.curve.childExpected;
 }
 
 #endif // FALCON_CURVE_TREE_MQH
@@ -4199,6 +4246,16 @@ void TimeEngineRun()
 
    t.permit = (t.timeQuality >= g_cfg.timeQualityFloor);
    t.label  = (t.timeQuality>=78 ? "PRIME" : t.timeQuality>=g_cfg.timeQualityFloor ? "ACTIVE" : t.timeQuality>=22 ? "QUIET" : "DEAD");
+
+   // ---- SCHEDULER (planning layer) — execution timing windows ----
+   int opMin = (int)(PeriodSeconds(g_cfg.operatingTF)/60); if(opMin<=0) opMin=(int)(PeriodSeconds(_Period)/60); if(opMin<=0) opMin=5;
+   int minsToHour = 60 - g.min; if(minsToHour<=0) minsToHour=60;
+   t.barsToNextTurn = (int)MathMax(0, minsToHour/opMin);
+   // best window: inside a killzone, or just before an hourly turn (timing edges)
+   t.bestEntryWindow = t.permit && (t.killzone || t.barsToNextTurn<=3);
+   t.nextEvent = (t.killzone ? ("killzone "+t.killzoneName)
+                : t.barsToNextTurn<=3 ? "hour turn imminent"
+                : ("hour turn in "+IntegerToString(t.barsToNextTurn)+" bars"));
 
    g_state.timeIntel=t;
 }
@@ -9239,7 +9296,14 @@ void Plan_Refresh(const int idx,const int dir,const double price,const double at
    // LOCATION
    double zt,zb; string zs; Planner_EntryZone(dir,price,atr,zt,zb,zs);
    p.ownerTF=ot;
-   if(zt<=0.0 || zb<=0.0){ p.zoneSrc="(no zone)"; p.state=PLAN_WAITING; g_state.plans[idx]=p; return; }
+   if(zt<=0.0 || zb<=0.0)
+   {
+      // STAGE-AHEAD: no live zone yet -> stage the entry at the wave's FORECAST
+      // return zone, so the plan exists BEFORE price arrives (plan-before-it-exists).
+      double rz=g_state.wave.expectedReturnZone;
+      if(rz>0.0){ zt=rz+atr*0.25; zb=rz-atr*0.25; zs="forecast"; }
+      else { p.zoneSrc="(no zone)"; p.state=PLAN_WAITING; g_state.plans[idx]=p; return; }
+   }
    p.zoneTop=zt; p.zoneBot=zb; p.zoneSrc=zs;
    p.fuAnchor=(g_state.fu.active && g_state.fu.dir==dir)? g_state.fu.mid : 0.0;
 
@@ -9256,7 +9320,10 @@ void Plan_Refresh(const int idx,const int dir,const double price,const double at
 
    // TRIGGERS / DEPENDENCIES
    p.atZone   = (price>=zb && price<=zt);
-   p.inWindow = (!g_cfg.useTimeIntel || g_state.timeIntel.permit);
+   // SCHEDULER: when time intel is on, only the best execution window opens the
+   // gate (kill-zone or just before an hourly turn) — true scheduling, not just
+   // "London is open".
+   p.inWindow = (!g_cfg.useTimeIntel || g_state.timeIntel.bestEntryWindow);
    p.needSweep= g_cfg.planNeedSweep;
    p.sweepDone= (!p.needSweep) || g_state.liquidity.induceSwept ||
                 (dir==DIR_LONG ? g_state.liquidity.sweepBull : g_state.liquidity.sweepBear);
@@ -9268,23 +9335,64 @@ void Plan_Refresh(const int idx,const int dir,const double price,const double at
                (g_state.convexity.geometryCapacity >= g_cfg.minEntryRoomPct) &&
                (g_state.wave.completion < g_cfg.maxEntryComplete);
 
-   // CONVICTION / RANK
-   double conv = g_state.htf.alignment*0.40 + g_state.waveMatrix.agreement*0.30 + g_state.curve.ownerNodeEnergy*0.30;
-   p.confidence=FalconClamp(conv,0,100);
-   p.execProb =g_state.intel.executionProbability;
-   p.priority =(int)FalconClamp(p.confidence*0.70 + ot*4.0 + (p.rr>=g_cfg.minRR?10.0:0.0),0,100);
+   // CONVICTION / RANK — composed, then VALIDATED by the Intelligence layer
+   // (referee consensus + execution probability). The planner builds; the
+   // intelligence layer scores — it does not generate the plan.
+   double conv = g_state.htf.alignment*0.30 + g_state.waveMatrix.agreement*0.25
+               + g_state.curve.ownerNodeEnergy*0.25 + g_state.wave.forecastProb*0.20;
+   bool refAgree = (g_state.referee.consensusDir==dir);     // comparative referee agrees
+   if(refAgree)        conv += 10.0;                        // consensus validation
+   if(p.fuAnchor>0.0)  conv += 5.0;                         // FU execution anchor present
+   p.confidence = FalconClamp(conv,0,100);
+   p.execProb   = g_state.intel.executionProbability;       // 0..1
+   double refBest = (g_state.referee.bestAccuracy>0.0 ? g_state.referee.bestAccuracy : 50.0);
+   p.priority = (int)FalconClamp(
+                   p.confidence*0.50
+                 + ot*4.0                                   // higher-TF owner = higher priority
+                 + (p.rr>=g_cfg.minRR?10.0:0.0)
+                 + p.execProb*100.0*0.15                    // intelligence execution probability
+                 + refBest*0.10                             // best engine's demonstrated accuracy
+                 + (refAgree?10.0:0.0), 0, 100);
 
    // EXPIRY
    if(g_barCounter - p.createdBar > g_cfg.planExpiryBars){ p.state=PLAN_EXPIRED; g_state.plans[idx]=p; return; }
 
    // STATE MACHINE
-   if(p.rr < g_cfg.minRR || p.confidence < g_cfg.planMinConf)            p.state=PLAN_WAITING;
-   else if(!p.atZone)                                                    p.state=PLAN_WAITING;
-   else if(!p.inWindow)                                                  p.state=PLAN_ARMED;
-   else if(p.sweepDone && p.structDone && p.hasRoom)                     p.state=PLAN_TRIGGERED;
-   else                                                                  p.state=PLAN_ARMED;
+   bool waitChild = g_state.curve.waitForChild;     // curve tree says: wait for the child/transfer
+   if(waitChild)                                                        p.state=PLAN_DORMANT;
+   else if(p.rr < g_cfg.minRR || p.confidence < g_cfg.planMinConf)      p.state=PLAN_WAITING;
+   else if(!p.atZone)                                                   p.state=PLAN_WAITING;
+   else if(!p.inWindow)                                                 p.state=PLAN_ARMED;
+   else if(p.sweepDone && p.structDone && p.hasRoom)                    p.state=PLAN_TRIGGERED;
+   else                                                                 p.state=PLAN_ARMED;
 
    g_state.plans[idx]=p;
+}
+
+//------------------------------------------------------------------
+// propose-or-refresh a plan of a given type+direction; cancel a type.
+//------------------------------------------------------------------
+void Plan_Ensure(const int type,const int dir,const double price,const double atr,const int ot,const string note)
+{
+   if(dir==DIR_NONE) return;
+   int idx=Plan_Find(type,dir);
+   if(idx<0)
+   {
+      idx=Plan_Alloc();
+      if(idx<0) return;
+      FalconPlan np; ZeroMemory(np);
+      np.id=++g_planSeq; np.active=true; np.type=type; np.dir=dir;
+      np.state=PLAN_WAITING; np.createdBar=g_barCounter; np.ownerTF=ot; np.note=note;
+      g_state.plans[idx]=np;
+   }
+   Plan_Refresh(idx,dir,price,atr,ot);
+}
+void Plan_CancelType(const int type)
+{
+   for(int i=0;i<FALCON_MAX_PLANS;i++)
+      if(g_state.plans[i].active && g_state.plans[i].type==type &&
+         g_state.plans[i].state!=PLAN_EXECUTED && g_state.plans[i].state!=PLAN_EXPIRED && g_state.plans[i].state!=PLAN_CANCELLED)
+         g_state.plans[i].state=PLAN_CANCELLED;
 }
 
 //==================================================================
@@ -9303,32 +9411,34 @@ void PlannerRun()
    if(dir==DIR_NONE) dir=g_state.curve.ownerDir;
    if(dir==DIR_NONE) dir=g_state.htf.stackDir;
 
-   // 1) cancel plans whose direction the market has handed away
+   // 1) expire on timer; cancel a CONTINUATION plan only when ownership flips
    for(int i=0;i<FALCON_MAX_PLANS;i++)
    {
       if(!g_state.plans[i].active) continue;
-      if(g_state.plans[i].state==PLAN_EXECUTED || g_state.plans[i].state==PLAN_EXPIRED || g_state.plans[i].state==PLAN_CANCELLED) continue;
-      if(dir!=DIR_NONE && dir!=g_state.plans[i].dir){ g_state.plans[i].state=PLAN_CANCELLED; }
+      int st=g_state.plans[i].state;
+      if(st==PLAN_EXECUTED || st==PLAN_EXPIRED || st==PLAN_CANCELLED) continue;
+      if(g_barCounter - g_state.plans[i].createdBar > g_cfg.planExpiryBars){ g_state.plans[i].state=PLAN_EXPIRED; continue; }
+      if(g_state.plans[i].type==PT_CONTINUATION && dir!=DIR_NONE && dir!=g_state.plans[i].dir)
+         g_state.plans[i].state=PLAN_CANCELLED;
    }
 
-   // 2) ensure a continuation plan exists for the owner direction
-   if(dir!=DIR_NONE)
-   {
-      int idx=Plan_Find(PT_CONTINUATION,dir);
-      if(idx<0)
-      {
-         idx=Plan_Alloc();
-         if(idx>=0)
-         {
-            FalconPlan np; ZeroMemory(np);
-            np.id=++g_planSeq; np.active=true; np.type=PT_CONTINUATION; np.dir=dir;
-            np.state=PLAN_WAITING; np.createdBar=g_barCounter; np.ownerTF=ot;
-            np.note="owner continuation";
-            g_state.plans[idx]=np;
-         }
-      }
-      if(idx>=0) Plan_Refresh(idx,dir,price,atr,ot);
-   }
+   // 2) CONTINUATION — trade WITH the owner toward its destination
+   if(dir!=DIR_NONE) Plan_Ensure(PT_CONTINUATION, dir, price, atr, ot, "owner continuation");
+
+   // 3) RETURN — countertrend return into the higher-TF destination when the
+   //    owner leg is MATURE (price extended -> expect a return to the FRZ)
+   if(dir!=DIR_NONE && g_state.wave.completion>=70.0 && g_state.frz.active && g_state.frz.targetPrice>0.0)
+      Plan_Ensure(PT_RETURN, -dir, price, atr, ot, "countertrend return");
+   else
+      Plan_CancelType(PT_RETURN);
+
+   // 4) REVERSAL — ownership transfer: curve says transfer likely + an opposing
+   //    change-of-character has printed (a new owner is taking control)
+   int choch=g_state.structure.choch;
+   if(g_state.curve.transferLikely && choch!=DIR_NONE && choch!=dir)
+      Plan_Ensure(PT_REVERSAL, choch, price, atr, ot, "ownership reversal");
+   else
+      Plan_CancelType(PT_REVERSAL);
 
    // 3) count live plans
    int c=0;
@@ -9763,6 +9873,16 @@ string VZ_Body(const int tab)
       case 15: // PLANS — the Trade Planning Layer queue (FALCON OS 9.0)
       {
          s+="PLANNER     : "+(g_cfg.usePlanner?"ON":"off")+"   live plans "+IntegerToString(g_state.planCount)+"\n";
+         s+="── FORECAST (what the engines expect next) ──\n";
+         s+="Wave next   : "+FalconPhaseStr(w.expectedNextPhase)+"  ret "+VZ_Px(w.expectedReturnZone)
+            +"  p"+DoubleToString(w.forecastProb,0)+"%  ~"+IntegerToString(w.expectedBars)+"b"
+            +"  cap "+DoubleToString(w.remainingCapacity,0)+"%\n";
+         s+="Curve       : "+(cu.childExpected?("child~"+IntegerToString(cu.expectedSpawnBars)+"b"):"no-child")
+            +"  "+(cu.transferLikely?"transfer-likely":"owner-holds")
+            +(cu.waitForChild?"  [WAIT-CHILD]":"")+"\n";
+         s+="Schedule    : next turn ~"+IntegerToString(g_state.timeIntel.barsToNextTurn)+"b"
+            +"  "+(g_state.timeIntel.bestEntryWindow?"WINDOW-OPEN":"window-wait")
+            +(g_state.timeIntel.nextEvent!=""?("  ("+g_state.timeIntel.nextEvent+")"):"")+"\n";
          s+="─────────────────────────────────────\n";
          int shown=0;
          for(int i=0;i<FALCON_MAX_PLANS;i++)

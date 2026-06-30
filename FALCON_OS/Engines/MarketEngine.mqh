@@ -563,6 +563,30 @@ void ME_UpdateWave()
    w.absorptionScore   = FalconClamp(absScore,0,100);
    w.retracementScore  = FalconClamp(retrFrac*100.0,0,100);
 
+   // ---- FORECAST (planning layer) — what this wave expects next ------------
+   double leg = MathAbs(w.extreme - w.origin);
+   w.remainingCapacity = FalconClamp(100.0 - w.completion, 0, 100);
+   if(w.completion < 60.0)
+   {
+      // still expanding -> a retracement is next; stage the return zone at the
+      // 50% retrace of the current leg (the demand/supply price will pull back to)
+      w.expectedNextPhase  = PH_RETRACEMENT;
+      w.expectedReturnZone = (w.direction==DIR_LONG ? w.extreme - leg*0.5
+                            : w.direction==DIR_SHORT ? w.extreme + leg*0.5 : 0.0);
+      w.forecastProb       = FalconClamp(w.strength*0.5 + w.remainingCapacity*0.5, 0, 100);
+   }
+   else
+   {
+      // mature -> a return/continuation off the zone is next
+      w.expectedNextPhase  = (w.direction==DIR_LONG ? PH_DEMAND_RETURN
+                            : w.direction==DIR_SHORT ? PH_SUPPLY_RETURN : PH_TRANSITION);
+      w.expectedReturnZone = (w.flipBot>0 && w.direction==DIR_LONG ? w.flipBot
+                            : w.flipTop>0 && w.direction==DIR_SHORT ? w.flipTop
+                            : (w.direction==DIR_LONG ? w.extreme - leg*0.382 : w.extreme + leg*0.382));
+      w.forecastProb       = FalconClamp(w.confidence*0.5 + (100.0-w.completion)*0.5, 0, 100);
+   }
+   w.expectedBars = (w.completion>5.0 ? (int)MathMin(50.0, MathMax(1.0, w.age*(100.0-w.completion)/w.completion)) : 14);
+
    g_state.wave = w;
 
    if(phase != prevPhase) FalconPublish(EVT_PHASE_CHANGE, phase, FalconPhaseStr(phase));
