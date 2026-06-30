@@ -41,6 +41,7 @@ string VZ_TabName(const int t)
       case 9: return("EXECUTION");
       case 10:return("PERFORMANCE");
       case 12:return("LEARNING");
+      case 13:return("ENGINES");
       default:return("DIAGNOSTICS");
    }
 }
@@ -284,6 +285,42 @@ string VZ_Body(const int tab)
          if(rshown==0) s+="  (no resolved shadow trades yet)";
          break;
       }
+      case 13: // ENGINES — comparative multi-engine wave cycles (A/B/C)
+      {
+         WaveReferee rf=g_state.referee;
+         WaveCycle L=g_state.cycles[ENG_LETRA];
+         WaveCycle F=g_state.cycles[ENG_F16];
+         WaveCycle Y=g_state.cycles[ENG_SYMPHONY];
+         s+="AUTHORITY   : "+FalconEngineStr(g_cfg.entryEngine)+" -> drives "+rf.selectedName
+            +(g_cfg.runAllCycles?"":"  (compare OFF)")+"\n";
+         s+="                 LETRA       F16        SYMPHONY\n";
+         s+=StringFormat("dir         : %-11s %-10s %-10s\n", VZ_Dir(L.direction),VZ_Dir(F.direction),VZ_Dir(Y.direction));
+         s+=StringFormat("stage       : %-11s %-10s %-10s\n", FalconStageStr(L.stage),FalconStageStr(F.stage),FalconStageStr(Y.stage));
+         s+=StringFormat("phase       : %-11s %-10s %-10s\n",
+              StringSubstr(L.phaseLabel,0,10),StringSubstr(F.phaseLabel,0,10),StringSubstr(Y.phaseLabel,0,10));
+         s+=StringFormat("maturity    : %-11.0f %-10.0f %-10.0f\n", L.maturity,F.maturity,Y.maturity);
+         s+=StringFormat("confidence  : %-11.0f %-10.0f %-10.0f\n", L.confidence,F.confidence,Y.confidence);
+         s+=StringFormat("objective   : %-11s %-10s %-10s\n", VZ_Px(L.objective),VZ_Px(F.objective),VZ_Px(Y.objective));
+         s+=StringFormat("entry now   : %-11s %-10s %-10s\n",
+              (L.entryEdge?("P"+IntegerToString(L.entryKind)+" "+VZ_Dir(L.entryDir)):"-"),
+              (F.entryEdge?("P"+IntegerToString(F.entryKind)+" "+VZ_Dir(F.entryDir)):"-"),
+              (Y.entryEdge?("P"+IntegerToString(Y.entryKind)+" "+VZ_Dir(Y.entryDir)):"-"));
+         s+="── DEMONSTRATED EDGE (referee) ──────\n";
+         s+=StringFormat("dir acc%%    : %-11s %-10s %-10s\n",
+              StringFormat("%.0f(%d)",L.accuracy,L.samples),
+              StringFormat("%.0f(%d)",F.accuracy,F.samples),
+              StringFormat("%.0f(%d)",Y.accuracy,Y.samples));
+         s+=StringFormat("obj acc%%    : %-11.0f %-10.0f %-10.0f\n", L.objAccuracy,F.objAccuracy,Y.objAccuracy);
+         s+=StringFormat("lead (bars) : %-11.1f %-10.1f %-10.1f\n", L.avgLeadBars,F.avgLeadBars,Y.avgLeadBars);
+         s+="── REFEREE VERDICT ──────────────────\n";
+         s+="consensus   : "+VZ_Dir(rf.consensusDir)+"  "+FalconStageStr(rf.consensusStage)
+            +"  conf "+DoubleToString(rf.consensusConf,0)+"\n";
+         s+="deviation   : stage "+DoubleToString(rf.deviationStage,0)+"   objective "+DoubleToString(rf.deviationObjATR,1)+" ATR\n";
+         s+="best engine : "+FalconEngineStr(rf.bestEngine)+"  acc "+DoubleToString(rf.bestAccuracy,0)
+            +"%   leader "+FalconEngineStr(rf.leader)+"\n";
+         s+="money mgr   : "+((g_cfg.useProfitLadder||g_cfg.counterDirBlock||g_cfg.maxBasketRiskPct>0)?"on":"DISABLED");
+         break;
+      }
       default: // DIAGNOSTICS
          for(int m=0;m<MOD_COUNT;m++)
             s+=StringFormat("%-14s %s  avg %.0fus  runs %d\n",
@@ -381,8 +418,8 @@ void FalconVizOnChartEvent(const int id,const long &lparam,const double &dparam,
 {
    if(id!=CHARTEVENT_KEYDOWN) return;
    int prev=g_cfg.dashboardTab;
-   if(lparam==84 || lparam==39)       g_cfg.dashboardTab = (g_cfg.dashboardTab+1)%13;  // 'T' / RIGHT
-   else if(lparam==37)                g_cfg.dashboardTab = (g_cfg.dashboardTab+12)%13;  // LEFT
+   if(lparam==84 || lparam==39)       g_cfg.dashboardTab = (g_cfg.dashboardTab+1)%14;  // 'T' / RIGHT
+   else if(lparam==37)                g_cfg.dashboardTab = (g_cfg.dashboardTab+13)%14;  // LEFT
    if(g_cfg.dashboardTab!=prev) VisualizationRun();
 }
 

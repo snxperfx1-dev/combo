@@ -5,7 +5,7 @@
 //|   Risk: PYRO thermal + TALON curve-convergent structural grip.   |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "4.60"
+#property version   "5.00"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -142,10 +142,18 @@ input double  InpMaxEntryComplete = 85.0;// Block NEW entries when wave completi
 input double  InpMinEntryRoomPct  = 25.0;// Block NEW entries when geometry room to target < this
 input double  InpAttentionATR     = 1.0; // Entry attention: price must be within this many ATR of the active node (0=off)
 
+input string  __sep_cycles      = "════════ MULTI-ENGINE WAVE CYCLES (A/B/C) ════════"; // ──
+input bool    InpRunAllCycles    = true;       // Run LETRA + F16 + Symphony wave cycles simultaneously (comparative)
+input FALCON_ENGINE InpEntryEngine = ENG_SYMPHONY; // Which engine's phase cycle DRIVES entries + the canonical phase
+input bool    InpRefereeLearn    = true;       // Score each engine's demonstrated accuracy (Wave Intelligence referee)
+input int     InpCycleEvalBars   = 20;         // Bars to resolve each engine's directional prediction
+input double  InpCycleEvalATR    = 1.2;        // Favorable move (ATR) that scores a prediction a WIN
+input int     InpBestMinSamples  = 12;         // Min resolved predictions before BEST/learned selection trusts an engine
+
 input string  __sep_money      = "════════ MONEY MANAGER (Symphony v3.0) ════════"; // ──
-input bool    InpUseProfitLadder= true;  // Use v3.0 live-PnL profit ladder (default manager)
-input bool    InpCounterDirBlock= true;  // Block new entries against a net-profitable opposite book
-input double  InpMaxBasketRiskPct= 3.0;  // Max per-direction basket dollar-risk-at-SL (% equity); 0=off
+input bool    InpUseProfitLadder= false; // Use v3.0 live-PnL profit ladder (DISABLED — raw cycle comparison)
+input bool    InpCounterDirBlock= false; // Block new entries against a net-profitable opposite book (DISABLED)
+input double  InpMaxBasketRiskPct= 0.0;  // Max per-direction basket dollar-risk-at-SL (% equity); 0=off (DISABLED)
 input double  InpLadderR1        = 0.7;  // Rung 1 trigger (PnL >= R1 x basket risk) -> bank + breakeven
 input double  InpLadderR2        = 1.5;  // Rung 2 trigger -> bank + trail
 input double  InpLadderR3        = 2.5;  // Rung 3 trigger -> bank + trail runner
@@ -213,6 +221,10 @@ struct FalconConfig
    // time intelligence (TIE — Engine 8.0)
    bool   useTimeIntel, timeGateEntries;
    double timeQualityFloor;
+   // multi-engine wave cycles (comparative A/B/C)
+   bool   runAllCycles, refereeLearn;
+   int    entryEngine, cycleEvalBars, bestMinSamples;
+   double cycleEvalATR;
    // decision
    int    minConf;  double maxThreat, maxConflict, execProbArm;
    bool   requireConfluence;
@@ -308,6 +320,13 @@ void FalconConfigInit()
    g_cfg.useTimeIntel     = InpUseTimeIntel;
    g_cfg.timeGateEntries  = InpTimeGateEntries;
    g_cfg.timeQualityFloor = InpTimeQualityFloor;
+
+   g_cfg.runAllCycles     = InpRunAllCycles;
+   g_cfg.entryEngine      = (int)InpEntryEngine;
+   g_cfg.refereeLearn     = InpRefereeLearn;
+   g_cfg.cycleEvalBars    = InpCycleEvalBars;
+   g_cfg.cycleEvalATR     = InpCycleEvalATR;
+   g_cfg.bestMinSamples   = InpBestMinSamples;
 
    g_cfg.minConf          = InpMinConf;
    g_cfg.maxThreat        = InpMaxThreat;
@@ -1136,6 +1155,103 @@ struct FalconRisk
 };
 
 //==================================================================
+// SUB-STATE : MULTI-ENGINE WAVE CYCLES (the comparative framework)
+//   Don't replace the phase engine — run THREE wave-cycle engines on
+//   the SAME shared observations and let the market decide which has
+//   the highest predictive power:
+//     ENG_LETRA    — the per-TF fixed-structure lifecycle FSM
+//     ENG_F16      — the recursive curve-tree node ownership lens
+//     ENG_SYMPHONY — the impulse + retracement-fraction phase model
+//   Each emits a NORMALIZED forecast (phase · stage · direction ·
+//   maturity · objective · invalidation · confidence · next event).
+//   A Wave Intelligence referee then scores each engine's demonstrated
+//   accuracy and forms a consensus / picks the best. Phases remain
+//   OUTPUTS — the referee never branches on a label, only on evidence.
+//==================================================================
+enum FALCON_ENGINE
+{
+   ENG_LETRA     = 0,
+   ENG_F16       = 1,
+   ENG_SYMPHONY  = 2,
+   ENG_CONSENSUS = 3,   // selector only (not a column)
+   ENG_BEST      = 4    // selector only — follow the best demonstrated edge
+};
+#define FALCON_NCYCLES 3   // LETRA / F16 / SYMPHONY columns
+
+// normalized lifecycle stage shared across all engines for comparison
+#define CYC_NONE      0
+#define CYC_EXPANSION 1
+#define CYC_RETRACE   2
+#define CYC_RETURN    3   // demand/supply return into zone  -> P3 entry analog
+#define CYC_BREAKOUT  4   // new extreme / continuation       -> P4 entry analog
+
+struct WaveCycle
+{
+   int    engineId;
+   int    phase;          // canonical PH_ (label)
+   string phaseLabel;
+   int    stage;          // normalized CYC_* lifecycle stage
+   int    prevStage;
+   double maturity;       // 0..100 wave completion
+   int    direction;      // DIR_*
+   double objective;      // expected target price
+   double invalidation;   // price that invalidates the read
+   double confidence;     // 0..100 engine self-confidence
+   string nextEvent;      // expected next event (human readable)
+   // entry trigger (this engine's own P3/P4 analog)
+   bool   entryArmed;     // stage is a return/breakout
+   bool   entryEdge;      // transitioned INTO a return/breakout this bar
+   int    entryKind;      // 3 (return) or 4 (breakout)
+   int    entryDir;       // DIR_* of the armed entry
+   // referee-filled demonstrated performance (rolling)
+   double accuracy;       // directional accuracy %% (EWMA)
+   double objAccuracy;    // objective-reach accuracy %%
+   double avgLeadBars;    // mean early-detection lead vs the field
+   int    samples;        // resolved predictions
+   int    wins;
+};
+
+struct WaveReferee
+{
+   int    selectedEngine; // engine currently DRIVING (resolved from InpEntryEngine/BEST)
+   string selectedName;
+   int    consensusDir;   // DIR_* agreed by >=2 engines (else NONE)
+   int    consensusStage;
+   double consensusConf;
+   double deviationStage; // disagreement in stage (0..4)
+   double deviationObjATR;// disagreement in objective (ATR units)
+   int    bestEngine;     // highest demonstrated directional accuracy
+   double bestAccuracy;
+   int    leader;         // engine that most often leads the others (early warning)
+   string note;
+};
+
+string FalconEngineStr(const int e)
+{
+   switch(e)
+   {
+      case ENG_LETRA:     return("LETRA");
+      case ENG_F16:       return("F16");
+      case ENG_SYMPHONY:  return("SYMPHONY");
+      case ENG_CONSENSUS: return("CONSENSUS");
+      case ENG_BEST:      return("BEST");
+      default:            return("?");
+   }
+}
+
+string FalconStageStr(const int s)
+{
+   switch(s)
+   {
+      case CYC_EXPANSION: return("Expansion");
+      case CYC_RETRACE:   return("Retracement");
+      case CYC_RETURN:    return("Return");
+      case CYC_BREAKOUT:  return("Breakout");
+      default:            return("—");
+   }
+}
+
+//==================================================================
 // MASTER STATE
 //==================================================================
 struct FalconMarketState
@@ -1170,6 +1286,8 @@ struct FalconMarketState
    FalconParticipants participants;
    FalconCurveLocator curveLocator;
    FalconTime         timeIntel;
+   WaveCycle          cycles[FALCON_NCYCLES];  // [0]LETRA [1]F16 [2]SYMPHONY
+   WaveReferee        referee;
    FalconSelfAwareness self;
    FalconIntelligence intel;
    FalconEntryCycle   entryCycle;
@@ -3987,6 +4105,407 @@ void CurveLocatorRun()
 }
 
 #endif // FALCON_CURVE_LOCATOR_MQH
+//+------------------------------------------------------------------+
+
+//  ===== Engines/WaveCycleIntel.mqh =====
+//+------------------------------------------------------------------+
+//|  FALCON OS — Intelligence : WaveCycleIntel.mqh                  |
+//|                                                                  |
+//|  THE COMPARATIVE WAVE FRAMEWORK (S12 Wave Intelligence becomes   |
+//|  the REFEREE). Don't replace the phase engine — run THREE wave-  |
+//|  cycle engines on the SAME shared observations and let the market |
+//|  decide which has the highest predictive power:                  |
+//|                                                                  |
+//|        MARKET ENGINE  (shared observations once / bar)           |
+//|              │                                                   |
+//|     ┌────────┼────────┐                                          |
+//|   LETRA    F16      SYMPHONY                                     |
+//|   Eng 1A   Eng 8/F72 Phase Engine                               |
+//|     └────────┼────────┘                                          |
+//|        Wave Intelligence (referee: compare / validate / score)   |
+//|              │                                                   |
+//|        Decision & Execution                                      |
+//|                                                                  |
+//|  Each engine emits a NORMALIZED forecast (phase · stage · dir ·  |
+//|  maturity · objective · invalidation · confidence · next event)  |
+//|  into g_state.cycles[]. The referee (Part C, below) tracks each   |
+//|  engine's demonstrated accuracy and forms a consensus / best.    |
+//|                                                                  |
+//|  THIS FILE reads g_state only (LETRA + F16 lenses + referee).    |
+//|  The Symphony cycle is computed inside SymphonyEngine.mqh where   |
+//|  the sym_* phase state lives. Include AFTER CurveLocator.mqh.     |
+//+------------------------------------------------------------------+
+#ifndef FALCON_WAVE_CYCLE_INTEL_MQH
+#define FALCON_WAVE_CYCLE_INTEL_MQH
+
+
+//==================================================================
+// NORMALIZATION HELPERS — shared across all three engines so they are
+// judged on the SAME yardstick.
+//==================================================================
+// Fill the entry-trigger fields from the just-computed stage + the
+// previous bar's stage (edge detection). A return (CYC_RETURN) is the
+// P3 analog; a breakout (CYC_BREAKOUT) is the P4 analog.
+void Cycle_FillEntry(WaveCycle &cy,const int prevStage)
+{
+   cy.prevStage  = prevStage;
+   cy.entryArmed = (cy.stage==CYC_RETURN || cy.stage==CYC_BREAKOUT) && cy.direction!=DIR_NONE;
+   cy.entryEdge  = cy.entryArmed && (prevStage != cy.stage);
+   cy.entryKind  = (cy.stage==CYC_BREAKOUT ? 4 : cy.stage==CYC_RETURN ? 3 : 0);
+   cy.entryDir   = cy.entryArmed ? cy.direction : DIR_NONE;
+}
+
+// carry referee-learned performance forward (compute steps rebuild the
+// descriptive fields each bar but must NOT wipe accumulated accuracy)
+void Cycle_CarryPerf(WaveCycle &cy,const WaveCycle &prev)
+{
+   cy.accuracy    = prev.accuracy;
+   cy.objAccuracy = prev.objAccuracy;
+   cy.avgLeadBars = prev.avgLeadBars;
+   cy.samples     = prev.samples;
+   cy.wins        = prev.wins;
+}
+
+//==================================================================
+// ENGINE 1 — LETRA wave cycle (the per-TF fixed-structure lifecycle).
+//   Reads the NATIVE LETRA wave FSM (g_state.wave) BEFORE any phase
+//   authority overwrites it. me_pst lifecycle 0..14 -> normalized
+//   stage + canonical phase.
+//==================================================================
+void CycleLetra_Compute()
+{
+   WaveCycle cy; ZeroMemory(cy);
+   Cycle_CarryPerf(cy, g_state.cycles[ENG_LETRA]);
+   int prevStage = g_state.cycles[ENG_LETRA].stage;
+
+   FalconWave w = g_state.wave;   // native LETRA at this point in the pipeline
+   int pst = w.phase;             // 0..14 lifecycle
+   int dir = w.direction;
+
+   cy.engineId  = ENG_LETRA;
+   cy.direction = dir;
+   cy.maturity  = w.completion;
+   cy.objective = w.objective;
+   cy.invalidation = w.origin;
+   cy.confidence = FalconClamp(w.confidence*0.6 + w.strength*0.4, 0, 100);
+
+   int stage, ph; string nxt;
+   switch(pst)
+   {
+      case 1:  stage=CYC_EXPANSION; ph=PH_EXPANSION;    nxt="decay -> retrace"; break;
+      case 2:  stage=CYC_RETRACE;   ph=PH_RETRACEMENT;  nxt="counter-impulse / transfer"; break;
+      case 3:  stage=CYC_RETURN;    ph=(dir==DIR_LONG?PH_DEMAND_RETURN:PH_SUPPLY_RETURN); nxt="confirm BOS continuation"; break;
+      case 4:  stage=CYC_BREAKOUT;  ph=(dir==DIR_LONG?PH_NEW_HIGH:PH_NEW_LOW);  nxt="extend to objective"; break;
+      case 5:  case 6: stage=CYC_BREAKOUT; ph=(dir==DIR_LONG?PH_NEW_HIGH:PH_NEW_LOW); nxt="post-extreme recursion"; break;
+      case 7:  stage=CYC_RETRACE;   ph=PH_RETRACEMENT;  nxt="transfer of ownership"; break;
+      case 8:  stage=CYC_RETRACE;   ph=PH_TRANSITION;   nxt="return to flip zone"; break;
+      case 9:  stage=CYC_RETURN;    ph=(dir==DIR_LONG?PH_DEMAND_RETURN:PH_SUPPLY_RETURN); nxt="impulse from flip"; break;
+      case 10: stage=CYC_BREAKOUT;  ph=(dir==DIR_LONG?PH_NEW_HIGH:PH_NEW_LOW);  nxt="continuation to target"; break;
+      case 11: stage=CYC_RETRACE;   ph=PH_LIQUIDATION;  nxt="opposing BOS / reversal risk"; break;
+      case 12: stage=CYC_RETRACE;   ph=PH_LIQUIDATION;  nxt="liquidity sweep"; break;
+      case 13: case 14: stage=CYC_RETURN; ph=(dir==DIR_LONG?PH_DEMAND_RETURN:PH_SUPPLY_RETURN); nxt="terminal reversal confirm"; break;
+      default: stage=CYC_NONE;      ph=PH_TRANSITION;   nxt="awaiting impulse"; break;
+   }
+   cy.stage      = stage;
+   cy.phase      = ph;
+   cy.phaseLabel = FalconPhaseStr(ph);
+   cy.nextEvent  = nxt;
+   Cycle_FillEntry(cy, prevStage);
+
+   g_state.cycles[ENG_LETRA] = cy;
+}
+
+//==================================================================
+// ENGINE 2 — F16 wave cycle (the recursive curve-tree node lens).
+//   Phases EMERGE from the owning node (Principle 1). Reads the F72
+//   tree summary in g_state.curve (populated by CurveTree.mqh).
+//==================================================================
+bool CY_Contains(const string s,const string sub){ return(StringFind(s,sub)>=0); }
+
+void CycleF16_Compute()
+{
+   WaveCycle cy; ZeroMemory(cy);
+   Cycle_CarryPerf(cy, g_state.cycles[ENG_F16]);
+   int prevStage = g_state.cycles[ENG_F16].stage;
+
+   FalconCurve cu = g_state.curve;
+   int dir   = cu.ownerNodeDir!=DIR_NONE ? cu.ownerNodeDir : cu.ownerDir;
+   string st = cu.ownerNodeState;
+   double org= cu.ownerNodeOrigin;
+   double ext= cu.ownerNodeExtreme;
+
+   cy.engineId  = ENG_F16;
+   cy.direction = dir;
+   cy.maturity  = FalconClamp(cu.ownerNodeEnergy, 0, 100);
+   cy.invalidation = org;
+   // owner-curve destination: project the leg beyond its extreme
+   double leg = (org!=0.0 && ext!=0.0) ? MathAbs(ext-org) : 0.0;
+   cy.objective = (ext!=0.0 && leg>0.0) ? (dir==DIR_LONG ? ext+leg*0.5 : ext-leg*0.5)
+                                        : g_state.wave.objective;
+   cy.confidence= FalconClamp(cu.ownerNodeEnergy*0.55 + cu.narrative*0.30 + (cu.recursionComplete?0:15.0), 0, 100);
+
+   int stage, ph; string nxt;
+   if(CY_Contains(st,"New High"))      { stage=CYC_BREAKOUT; ph=PH_NEW_HIGH;  nxt="extend / recursion budget"; }
+   else if(CY_Contains(st,"New Low"))  { stage=CYC_BREAKOUT; ph=PH_NEW_LOW;   nxt="extend / recursion budget"; }
+   else if(CY_Contains(st,"Climax"))   { stage=CYC_BREAKOUT; ph=(dir==DIR_LONG?PH_NEW_HIGH:PH_NEW_LOW); nxt="exhaustion / transfer"; }
+   else if(CY_Contains(st,"Origin"))   { stage=CYC_RETURN;   ph=(dir==DIR_LONG?PH_DEMAND_RETURN:PH_SUPPLY_RETURN); nxt="impulse off node origin"; }
+   else if(CY_Contains(st,"recursive")){ stage=CYC_RETURN;   ph=(dir==DIR_LONG?PH_DEMAND_RETURN:PH_SUPPLY_RETURN); nxt="child curve resolves"; }
+   else if(CY_Contains(st,"Retracement")){ stage=CYC_RETRACE; ph=PH_RETRACEMENT; nxt="return to demand/supply"; }
+   else if(CY_Contains(st,"Induction")){ stage=CYC_EXPANSION; ph=PH_EXP_INDUCTION; nxt="liquidity engineered"; }
+   else if(CY_Contains(st,"Liquidity")){ stage=CYC_EXPANSION; ph=PH_EXP_LIQUIDITY; nxt="sweep then continue"; }
+   else if(CY_Contains(st,"Expansion")){ stage=CYC_EXPANSION; ph=PH_EXPANSION;  nxt="convexity develops"; }
+   else                                { stage=CYC_NONE;     ph=PH_TRANSITION;  nxt="awaiting owner node"; }
+
+   cy.stage      = stage;
+   cy.phase      = ph;
+   cy.phaseLabel = (st!="" && st!="—") ? st : FalconPhaseStr(ph);
+   cy.nextEvent  = nxt;
+   Cycle_FillEntry(cy, prevStage);
+
+   g_state.cycles[ENG_F16] = cy;
+}
+
+//==================================================================
+// ════════ S12J — WAVE INTELLIGENCE REFEREE (Engine Comparison) ════
+//   Rather than ONE truth, the referee asks "who has been right
+//   recently?" It opens a SHADOW PREDICTION whenever an engine casts a
+//   directional entry edge, resolves it after cycleEvalBars (or when a
+//   +/- cycleEvalATR excursion settles it), and rolls each engine's
+//   demonstrated directional + objective accuracy (EWMA). It also forms
+//   the consensus, measures disagreement (wave deviation), and flags
+//   the best / leading engine — turning FALCON into a self-evaluating
+//   research platform. Phases stay OUTPUTS: the referee scores evidence.
+//==================================================================
+struct CyclePrediction
+{
+   bool   active;
+   int    engineId;
+   int    dir;
+   double entryPx;
+   double objective;
+   double atr;
+   int    openBar;
+   double mfe;     // best favorable excursion (price units)
+   double mae;     // worst adverse excursion
+};
+#define CY_MAX_PRED 48
+CyclePrediction cy_pred[CY_MAX_PRED];
+int             cy_predCount = 0;
+
+// per-engine running stats (live; mirrored into g_state.cycles each bar)
+double cy_acc[FALCON_NCYCLES];      // EWMA directional accuracy %%
+double cy_objAcc[FALCON_NCYCLES];   // EWMA objective-reach %%
+double cy_lead[FALCON_NCYCLES];     // EWMA early-detection lead (bars)
+int    cy_samples[FALCON_NCYCLES];
+int    cy_wins[FALCON_NCYCLES];
+int    cy_lastDirBar[FALCON_NCYCLES]; // bar each engine last FLIPPED direction
+int    cy_lastDir[FALCON_NCYCLES];
+int    cy_leadCount[FALCON_NCYCLES];  // times this engine led a shared flip
+
+void WaveRefereeInit()
+{
+   cy_predCount=0;
+   for(int i=0;i<CY_MAX_PRED;i++){ ZeroMemory(cy_pred[i]); cy_pred[i].active=false; }
+   for(int i=0;i<FALCON_NCYCLES;i++)
+   {
+      cy_acc[i]=50.0; cy_objAcc[i]=50.0; cy_lead[i]=0.0;
+      cy_samples[i]=0; cy_wins[i]=0;
+      cy_lastDirBar[i]=0; cy_lastDir[i]=DIR_NONE; cy_leadCount[i]=0;
+   }
+   ZeroMemory(g_state.referee);
+}
+
+//------------------------------------------------------------------
+// open a shadow prediction for an engine's directional entry edge
+//------------------------------------------------------------------
+void CY_OpenPrediction(const int eng,const int dir,const double objective)
+{
+   if(dir==DIR_NONE) return;
+   double atr = g_state.physics.atr; if(atr<=0.0) atr=FalconATR(1); if(atr<=0.0) return;
+   // dedupe: one active prediction per engine+direction
+   for(int i=0;i<cy_predCount;i++)
+      if(cy_pred[i].active && cy_pred[i].engineId==eng && cy_pred[i].dir==dir) return;
+
+   if(cy_predCount>=CY_MAX_PRED)
+   {
+      // shift oldest out
+      for(int i=1;i<cy_predCount;i++) cy_pred[i-1]=cy_pred[i];
+      cy_predCount--;
+   }
+   CyclePrediction p; ZeroMemory(p);
+   p.active=true; p.engineId=eng; p.dir=dir; p.entryPx=gClose[1];
+   p.objective=objective; p.atr=atr; p.openBar=g_barCounter; p.mfe=0.0; p.mae=0.0;
+   cy_pred[cy_predCount++]=p;
+}
+
+//------------------------------------------------------------------
+// resolve a prediction: WIN if it ran +cycleEvalATR favorably (or hit
+// objective) before -cycleEvalATR adverse; LOSS otherwise. Updates EWMA.
+//------------------------------------------------------------------
+void CY_ScorePrediction(const int idx,const bool win,const bool objHit)
+{
+   int e = cy_pred[idx].engineId;
+   if(e<0||e>=FALCON_NCYCLES) return;
+   double a = g_cfg.refereeLearn ? 0.12 : 0.0;   // EWMA weight
+   cy_acc[e]    = cy_acc[e]*(1.0-a)    + (win?100.0:0.0)*a;
+   cy_objAcc[e] = cy_objAcc[e]*(1.0-a) + (objHit?100.0:0.0)*a;
+   cy_samples[e]++;
+   if(win) cy_wins[e]++;
+   cy_pred[idx].active=false;
+}
+
+//------------------------------------------------------------------
+// advance + resolve all open predictions on the new bar
+//------------------------------------------------------------------
+void CY_AdvancePredictions()
+{
+   double hi=gHigh[1], lo=gLow[1];
+   for(int i=0;i<cy_predCount;i++)
+   {
+      if(!cy_pred[i].active) continue;
+      double favTarget = cy_pred[i].atr*g_cfg.cycleEvalATR;
+      double fav = (cy_pred[i].dir==DIR_LONG ? hi-cy_pred[i].entryPx : cy_pred[i].entryPx-lo);
+      double adv = (cy_pred[i].dir==DIR_LONG ? cy_pred[i].entryPx-lo : hi-cy_pred[i].entryPx);
+      if(fav>cy_pred[i].mfe) cy_pred[i].mfe=fav;
+      if(adv>cy_pred[i].mae) cy_pred[i].mae=adv;
+
+      bool objHit = (cy_pred[i].objective!=0.0 &&
+                     (cy_pred[i].dir==DIR_LONG ? hi>=cy_pred[i].objective : lo<=cy_pred[i].objective));
+      // settle: favorable target reached -> win; adverse target first -> loss
+      if(cy_pred[i].mfe>=favTarget || objHit){ CY_ScorePrediction(i,true,objHit); continue; }
+      if(cy_pred[i].mae>=favTarget){ CY_ScorePrediction(i,false,false); continue; }
+      // timeout: judge on net excursion at the horizon
+      if(g_barCounter-cy_pred[i].openBar >= g_cfg.cycleEvalBars)
+      { CY_ScorePrediction(i, cy_pred[i].mfe>cy_pred[i].mae, false); }
+   }
+   // compact resolved
+   int w=0;
+   for(int i=0;i<cy_predCount;i++) if(cy_pred[i].active) cy_pred[w++]=cy_pred[i];
+   cy_predCount=w;
+}
+
+//------------------------------------------------------------------
+// early-detection lead: when engines agree on a NEW direction, the one
+// that flipped first earns lead bars over the laggards.
+//------------------------------------------------------------------
+void CY_TrackLead()
+{
+   for(int e=0;e<FALCON_NCYCLES;e++)
+   {
+      int d=g_state.cycles[e].direction;
+      if(d!=DIR_NONE && d!=cy_lastDir[e]){ cy_lastDir[e]=d; cy_lastDirBar[e]=g_barCounter; }
+   }
+   // find the consensus direction and who reached it earliest
+   for(int e=0;e<FALCON_NCYCLES;e++)
+   {
+      int d=cy_lastDir[e]; if(d==DIR_NONE) continue;
+      int agree=0, earliest=g_barCounter+1, leadEng=e;
+      for(int k=0;k<FALCON_NCYCLES;k++)
+         if(cy_lastDir[k]==d){ agree++; if(cy_lastDirBar[k]<earliest){ earliest=cy_lastDirBar[k]; leadEng=k; } }
+      if(agree>=2 && leadEng==e)
+      {
+         // lead = how many bars ahead of the latest agreeing engine
+         int latest=0;
+         for(int k=0;k<FALCON_NCYCLES;k++) if(cy_lastDir[k]==d && cy_lastDirBar[k]>latest) latest=cy_lastDirBar[k];
+         double lb=(double)(latest-cy_lastDirBar[e]);
+         if(lb>0){ cy_lead[e]=cy_lead[e]*0.8+lb*0.2; cy_leadCount[e]++; }
+      }
+   }
+}
+
+//==================================================================
+// MASTER ENTRY — the referee. Runs AFTER all three cycles are computed.
+//==================================================================
+void WaveRefereeRun()
+{
+   // 1) score open predictions on this freshly-closed bar
+   CY_AdvancePredictions();
+
+   // 2) open new shadow predictions for any engine casting an entry edge
+   for(int e=0;e<FALCON_NCYCLES;e++)
+      if(g_state.cycles[e].entryEdge && g_state.cycles[e].entryDir!=DIR_NONE)
+         CY_OpenPrediction(e, g_state.cycles[e].entryDir, g_state.cycles[e].objective);
+
+   // 3) early-detection lead tracking
+   CY_TrackLead();
+
+   // 4) publish per-engine stats back into the cycle structs
+   for(int e=0;e<FALCON_NCYCLES;e++)
+   {
+      g_state.cycles[e].accuracy    = cy_acc[e];
+      g_state.cycles[e].objAccuracy = cy_objAcc[e];
+      g_state.cycles[e].avgLeadBars = cy_lead[e];
+      g_state.cycles[e].samples     = cy_samples[e];
+      g_state.cycles[e].wins        = cy_wins[e];
+   }
+
+   // 5) CONSENSUS — direction agreed by >=2 engines (weight by demonstrated
+   //    accuracy so a proven engine breaks ties).
+   WaveReferee r; ZeroMemory(r);
+   double bull=0.0, bear=0.0;
+   for(int e=0;e<FALCON_NCYCLES;e++)
+   {
+      double wgt = FalconClamp(g_state.cycles[e].accuracy/100.0,0.1,1.0);
+      if(g_state.cycles[e].direction==DIR_LONG)  bull+=wgt;
+      if(g_state.cycles[e].direction==DIR_SHORT) bear+=wgt;
+   }
+   int agreeL=0, agreeS=0;
+   for(int e=0;e<FALCON_NCYCLES;e++)
+   {
+      if(g_state.cycles[e].direction==DIR_LONG)  agreeL++;
+      if(g_state.cycles[e].direction==DIR_SHORT) agreeS++;
+   }
+   if(agreeL>=2 && bull>bear)      r.consensusDir=DIR_LONG;
+   else if(agreeS>=2 && bear>bull) r.consensusDir=DIR_SHORT;
+   else                            r.consensusDir=DIR_NONE;
+
+   // consensus stage + confidence = average over engines that match consensus
+   int    cnt=0; double confSum=0.0, stageSum=0.0;
+   for(int e=0;e<FALCON_NCYCLES;e++)
+      if(r.consensusDir!=DIR_NONE && g_state.cycles[e].direction==r.consensusDir)
+      { confSum+=g_state.cycles[e].confidence; stageSum+=g_state.cycles[e].stage; cnt++; }
+   r.consensusConf  = (cnt>0?confSum/cnt:0.0);
+   r.consensusStage = (cnt>0?(int)MathRound(stageSum/cnt):CYC_NONE);
+
+   // 6) WAVE DEVIATION — disagreement across engines (stage + objective).
+   int sMin=9, sMax=-1; double oMin=DBL_MAX, oMax=-DBL_MAX; int oCnt=0;
+   for(int e=0;e<FALCON_NCYCLES;e++)
+   {
+      int s=g_state.cycles[e].stage;
+      if(s<sMin) sMin=s; if(s>sMax) sMax=s;
+      double o=g_state.cycles[e].objective;
+      if(o!=0.0){ if(o<oMin) oMin=o; if(o>oMax) oMax=o; oCnt++; }
+   }
+   r.deviationStage  = (sMax>=0? (double)(sMax-sMin):0.0);
+   double atr=g_state.physics.atr; if(atr<=0.0) atr=FalconATR(1); if(atr<=0.0) atr=1.0;
+   r.deviationObjATR = (oCnt>=2? (oMax-oMin)/atr : 0.0);
+
+   // 7) BEST + LEADER engines (need a minimum sample before trusting).
+   r.bestEngine=ENG_SYMPHONY; r.bestAccuracy=-1.0; r.leader=ENG_SYMPHONY;
+   int bestLead=-1;
+   for(int e=0;e<FALCON_NCYCLES;e++)
+   {
+      if(cy_samples[e]>=g_cfg.bestMinSamples && cy_acc[e]>r.bestAccuracy)
+      { r.bestAccuracy=cy_acc[e]; r.bestEngine=e; }
+      if(cy_leadCount[e]>bestLead){ bestLead=cy_leadCount[e]; r.leader=e; }
+   }
+   if(r.bestAccuracy<0.0){ r.bestEngine=ENG_SYMPHONY; r.bestAccuracy=cy_acc[ENG_SYMPHONY]; }
+
+   // 8) RESOLVE the engine that DRIVES this bar (selector).
+   int sel;
+   if(g_cfg.entryEngine==ENG_BEST)           sel=r.bestEngine;
+   else if(g_cfg.entryEngine==ENG_CONSENSUS) sel=ENG_CONSENSUS;   // handled specially downstream
+   else                                      sel=g_cfg.entryEngine;
+   r.selectedEngine=sel;
+   r.selectedName  =FalconEngineStr(g_cfg.entryEngine==ENG_BEST?r.bestEngine:g_cfg.entryEngine);
+   r.note = StringFormat("L%.0f%% F%.0f%% S%.0f%%  dev:st%.0f obj%.1fATR",
+              cy_acc[ENG_LETRA], cy_acc[ENG_F16], cy_acc[ENG_SYMPHONY],
+              r.deviationStage, r.deviationObjATR);
+
+   g_state.referee=r;
+}
+
+#endif // FALCON_WAVE_CYCLE_INTEL_MQH
 //+------------------------------------------------------------------+
 
 //  ===== Engines/IntelligenceEngine.mqh =====
@@ -6940,7 +7459,7 @@ void SymphonyBridgeToWave()
 //   g_cfg (pivotLen / impulseAtrMult / retrMin / retrMax /
 //   inducLookback / inducZoneWidth).
 //==================================================================
-void SymphonyUpdatePhases()
+void SymphonyComputePhases()
 {
    int barsAvail = FalconBars();
    int pivotLen  = g_cfg.pivotLen;
@@ -7210,11 +7729,173 @@ void SymphonyUpdatePhases()
          }
       }
    }
+}
 
-   // ---- Symphony is the SINGLE phase/direction source of truth: map its
-   //      impulse+phase model onto the canonical FalconWave so the whole OS
-   //      (memory/intel/decision/execution/viz) reads the SAME phase engine. ----
-   SymphonyBridgeToWave();
+//==================================================================
+// ENGINE 3 — SYMPHONY wave cycle (the impulse + retracement-fraction
+//   phase model). Normalizes sym_* into the shared WaveCycle so the
+//   referee can score it against LETRA and F16 on the same yardstick.
+//   Lives here because it reads the sym_* phase state. Reuses the
+//   normalization helpers from WaveCycleIntel.mqh (included earlier).
+//==================================================================
+void CycleSymphony_Compute()
+{
+   WaveCycle cy; ZeroMemory(cy);
+   Cycle_CarryPerf(cy, g_state.cycles[ENG_SYMPHONY]);
+   int prevStage = g_state.cycles[ENG_SYMPHONY].stage;
+
+   int dir = (sym_mode==1 ? DIR_LONG : sym_mode==-1 ? DIR_SHORT : DIR_NONE);
+   int p   = (dir==DIR_LONG ? sym_phaseLong : dir==DIR_SHORT ? sym_phaseShort : 0);
+
+   cy.engineId  = ENG_SYMPHONY;
+   cy.direction = dir;
+   cy.maturity  = (p<=0?5.0 : p==1?25.0 : p==2?45.0 : p==3?70.0 : 92.0);
+   cy.objective = (dir==DIR_LONG  && sym_arcLong >0.0 ? sym_arcLong
+                  : dir==DIR_SHORT && sym_arcShort>0.0 ? sym_arcShort
+                  : dir==DIR_LONG ? Sym_DestLong() : dir==DIR_SHORT ? Sym_DestShort() : 0.0);
+   cy.invalidation = (dir==DIR_LONG ? sym_anchorLow : dir==DIR_SHORT ? sym_anchorHigh : 0.0);
+   bool hasZone = (dir==DIR_LONG ? (sym_longInducLow!=0.0||sym_longInducHigh!=0.0)
+                                 : (sym_shortInducLow!=0.0||sym_shortInducHigh!=0.0));
+   cy.confidence = FalconClamp(50.0 + (hasZone?15.0:0.0) + (p==4?15.0:p==3?10.0:0.0), 0, 100);
+
+   int stage, ph; string nxt;
+   if(dir==DIR_NONE || p<=0){ stage=CYC_NONE; ph=PH_TRANSITION; nxt="awaiting impulse"; }
+   else if(p==1){ stage=CYC_EXPANSION; ph=PH_EXPANSION;   nxt="retrace into zone"; }
+   else if(p==2){ stage=CYC_RETRACE;   ph=PH_RETRACEMENT; nxt="return to flip / inducement"; }
+   else if(p==3){ stage=CYC_RETURN;    ph=(dir==DIR_LONG?PH_DEMAND_RETURN:PH_SUPPLY_RETURN); nxt="breakout to new extreme"; }
+   else        { stage=CYC_BREAKOUT;   ph=(dir==DIR_LONG?PH_NEW_HIGH:PH_NEW_LOW); nxt="extend to ARC target"; }
+
+   cy.stage      = stage;
+   cy.phase      = ph;
+   cy.phaseLabel = FalconPhaseStr(ph);
+   cy.nextEvent  = nxt;
+   Cycle_FillEntry(cy, prevStage);
+
+   g_state.cycles[ENG_SYMPHONY] = cy;
+}
+
+//==================================================================
+// GENERIC CYCLE → WAVE BRIDGE — write any engine's normalized cycle
+//   into the canonical g_state.wave (the phase the rest of the OS
+//   reads). Preserves the Market Engine geometry sub-scores; overrides
+//   only the phase-engine fields. Used for the F16 / consensus / best
+//   authority paths (the Symphony path keeps its richer dedicated bridge).
+//==================================================================
+void Cycle_BridgeToWave(const WaveCycle &cy)
+{
+   FalconWave w = g_state.wave;   // keep geometry descriptors
+   w.prevPhase = w.phase;
+   w.phase     = cy.phase;
+   w.direction = cy.direction;
+   if(cy.objective!=0.0)    w.objective  = cy.objective;
+   if(cy.invalidation!=0.0) w.origin     = cy.invalidation;
+   w.completion= cy.maturity;
+   w.confidence= cy.confidence;
+   // ownership transfer proxy keyed to the engine's lifecycle stage
+   w.dominanceTransfer = (cy.stage>=CYC_RETURN ? 60.0 : cy.stage==CYC_RETRACE ? 30.0 : 0.0);
+   g_state.wave = w;
+   if(w.phase != w.prevPhase) FalconPublish(EVT_PHASE_CHANGE, w.phase, FalconPhaseStr(w.phase));
+}
+
+//==================================================================
+// PHASE AUTHORITY — write the SELECTED engine's interpretation into the
+//   canonical wave. This is the configurable replacement for the old
+//   "Symphony is always the truth" bridge. Don't replace the phase
+//   engine — pick which one DRIVES, and let the referee compare them.
+//     • ENG_SYMPHONY : the dedicated Symphony bridge (default, unchanged)
+//     • ENG_LETRA    : keep the native LETRA wave (no-op)
+//     • ENG_F16      : bridge the F16 curve-tree cycle
+//     • ENG_CONSENSUS: bridge the consensus (engine matching consensusDir)
+//     • ENG_BEST     : bridge whichever engine the referee ranks best
+//==================================================================
+void PhaseAuthorityApply()
+{
+   int eng = g_cfg.entryEngine;
+
+   // safety: if the comparative cycles are not being computed, the only valid
+   // authority is Symphony's dedicated bridge (its phases are still computed).
+   if(!g_cfg.runAllCycles){ if(g_cfg.useSymphony) SymphonyBridgeToWave(); return; }
+
+   if(eng==ENG_SYMPHONY){ if(g_cfg.useSymphony) SymphonyBridgeToWave(); return; }
+   if(eng==ENG_LETRA)   { return; }   // native LETRA wave already in g_state.wave
+   if(eng==ENG_F16)     { Cycle_BridgeToWave(g_state.cycles[ENG_F16]); return; }
+
+   if(eng==ENG_BEST)
+   {
+      int b = g_state.referee.bestEngine;
+      if(b==ENG_SYMPHONY){ if(g_cfg.useSymphony) SymphonyBridgeToWave(); }
+      else if(b>=0 && b<FALCON_NCYCLES) Cycle_BridgeToWave(g_state.cycles[b]);
+      return;
+   }
+
+   if(eng==ENG_CONSENSUS)
+   {
+      int cd = g_state.referee.consensusDir;
+      if(cd==DIR_NONE) return;   // no agreement -> leave native LETRA wave
+      // bridge the consensus-aligned engine with the highest demonstrated edge
+      int pick=-1; double best=-1.0;
+      for(int e=0;e<FALCON_NCYCLES;e++)
+         if(g_state.cycles[e].direction==cd && g_state.cycles[e].accuracy>best)
+         { best=g_state.cycles[e].accuracy; pick=e; }
+      if(pick==ENG_SYMPHONY){ if(g_cfg.useSymphony) SymphonyBridgeToWave(); }
+      else if(pick>=0) Cycle_BridgeToWave(g_state.cycles[pick]);
+      return;
+   }
+}
+
+//==================================================================
+// EFFECTIVE ENTRY ENGINE — resolve the engine that drives ENTRIES this
+// bar (BEST -> referee.bestEngine). CONSENSUS is handled separately.
+//==================================================================
+int Sym_EffectiveEngine()
+{
+   if(g_cfg.entryEngine==ENG_BEST) return(g_state.referee.bestEngine);
+   return(g_cfg.entryEngine);
+}
+
+//==================================================================
+// RAW ENTRY EDGES — the SELECTED engine's P3 (return) / P4 (breakout)
+// edges this bar, BEFORE the shared gates. Lets the entry engine run
+// off LETRA, F16, Symphony, CONSENSUS or BEST identically.
+//==================================================================
+void Sym_RawEntryEdges(bool &eL3,bool &eL4,bool &eS3,bool &eS4)
+{
+   eL3=false; eL4=false; eS3=false; eS4=false;
+
+   // CONSENSUS — any consensus-aligned engine casting an entry edge.
+   if(g_cfg.entryEngine==ENG_CONSENSUS)
+   {
+      int cd=g_state.referee.consensusDir;
+      if(cd==DIR_NONE) return;
+      for(int e=0;e<FALCON_NCYCLES;e++)
+      {
+         if(!g_state.cycles[e].entryEdge || g_state.cycles[e].entryDir!=cd) continue;
+         int k=g_state.cycles[e].entryKind;
+         if(cd==DIR_LONG){ if(k==3) eL3=true; else if(k==4) eL4=true; }
+         else            { if(k==3) eS3=true; else if(k==4) eS4=true; }
+      }
+      return;
+   }
+
+   int eff=Sym_EffectiveEngine();
+
+   // SYMPHONY authority — native impulse phase edges (unchanged behaviour).
+   if(eff==ENG_SYMPHONY)
+   {
+      eL3=(sym_mode==1  && sym_phaseLong ==3 && sym_prevPhaseLong !=3);
+      eL4=(sym_mode==1  && sym_phaseLong ==4 && sym_prevPhaseLong !=4);
+      eS3=(sym_mode==-1 && sym_phaseShort==3 && sym_prevPhaseShort!=3);
+      eS4=(sym_mode==-1 && sym_phaseShort==4 && sym_prevPhaseShort!=4);
+      return;
+   }
+
+   // LETRA / F16 cycle authority — normalized return/breakout edges.
+   WaveCycle cy=g_state.cycles[eff];
+   if(cy.entryEdge)
+   {
+      if(cy.entryDir==DIR_LONG)      { if(cy.entryKind==3) eL3=true; else if(cy.entryKind==4) eL4=true; }
+      else if(cy.entryDir==DIR_SHORT){ if(cy.entryKind==3) eS3=true; else if(cy.entryKind==4) eS4=true; }
+   }
 }
 
 //==================================================================
@@ -7447,39 +8128,49 @@ void SymphonyExecuteTrading()
    bool longLocked  = (sym_exitedLongAnchor  != 0.0);
    bool shortLocked = (sym_exitedShortAnchor != 0.0);
 
-   // EDGE-TRIGGERED entries: fire only on the bar the phase TRANSITIONS into 3/4,
-   // never on every bar it stays there. (Level-triggering re-opened a new stacked
-   // position on every bar of a multi-bar retrace -> the dense entry clusters /
-   // chop.) Controlled pyramiding still happens: each fresh retest cycles phase
-   // back to 3 and arms one more stack.
-   bool L3 = (sym_mode==1  && sym_phaseLong ==3 && sym_prevPhaseLong !=3 && !longLocked  && !MM_CounterDirBlocked(DIR_LONG)  && SymphonyFactsConfirm(DIR_LONG)  && SymphonyBrainConfirms(DIR_LONG));
-   bool L4 = (sym_mode==1  && sym_phaseLong ==4 && sym_prevPhaseLong !=4 && !longLocked  && !MM_CounterDirBlocked(DIR_LONG)  && SymphonyFactsConfirm(DIR_LONG)  && SymphonyBrainConfirms(DIR_LONG));
-   bool S3 = (sym_mode==-1 && sym_phaseShort==3 && sym_prevPhaseShort!=3 && !shortLocked && !MM_CounterDirBlocked(DIR_SHORT) && SymphonyFactsConfirm(DIR_SHORT) && SymphonyBrainConfirms(DIR_SHORT));
-   bool S4 = (sym_mode==-1 && sym_phaseShort==4 && sym_prevPhaseShort!=4 && !shortLocked && !MM_CounterDirBlocked(DIR_SHORT) && SymphonyFactsConfirm(DIR_SHORT) && SymphonyBrainConfirms(DIR_SHORT));
+   // The Symphony per-impulse lockout only makes sense under Symphony authority
+   // (it is keyed to sym anchors). Other engines rely on edge-triggering +
+   // per-bar dedupe to avoid churn.
+   bool symAuth = (g_cfg.entryEngine!=ENG_CONSENSUS && Sym_EffectiveEngine()==ENG_SYMPHONY);
+   if(!symAuth){ longLocked=false; shortLocked=false; }
+
+   // EDGE-TRIGGERED entries from the SELECTED engine's wave cycle (LETRA / F16 /
+   // Symphony / Consensus / Best). Each fires only on the bar the engine
+   // TRANSITIONS into a return (P3) or breakout (P4), then clears the SAME
+   // subsystem gates (facts / brain / counter-dir).
+   bool eL3,eL4,eS3,eS4;
+   Sym_RawEntryEdges(eL3,eL4,eS3,eS4);
+
+   bool L3 = (eL3 && !longLocked  && !MM_CounterDirBlocked(DIR_LONG)  && SymphonyFactsConfirm(DIR_LONG)  && SymphonyBrainConfirms(DIR_LONG));
+   bool L4 = (eL4 && !longLocked  && !MM_CounterDirBlocked(DIR_LONG)  && SymphonyFactsConfirm(DIR_LONG)  && SymphonyBrainConfirms(DIR_LONG));
+   bool S3 = (eS3 && !shortLocked && !MM_CounterDirBlocked(DIR_SHORT) && SymphonyFactsConfirm(DIR_SHORT) && SymphonyBrainConfirms(DIR_SHORT));
+   bool S4 = (eS4 && !shortLocked && !MM_CounterDirBlocked(DIR_SHORT) && SymphonyFactsConfirm(DIR_SHORT) && SymphonyBrainConfirms(DIR_SHORT));
+
+   string engTag = FalconEngineStr(g_cfg.entryEngine==ENG_BEST?g_state.referee.bestEngine:g_cfg.entryEngine);
 
    double impL = sym_anchorHigh - sym_anchorLow;
    double impS = sym_anchorHigh - sym_anchorLow;
 
    // LONG P3
    if(L3 && sym_lastLongTradeTime!=barTime)
-      Sym_PlaceEntry(DIR_LONG,"P3 Long",riskCash,atrNow);
+      Sym_PlaceEntry(DIR_LONG,engTag+" P3 Long",riskCash,atrNow);
 
    // LONG P4
-   if(L4 && sym_lastLongTradeTime!=barTime && impL>0)
+   if(L4 && sym_lastLongTradeTime!=barTime && (!symAuth || impL>0))
    {
-      bool breakout = (closeNow>sym_anchorHigh || closeNow>gHigh[shiftNow+1] + 0.20*atrNow);
-      if(breakout) Sym_PlaceEntry(DIR_LONG,"P4 Long",riskCash,atrNow);
+      bool breakout = (!symAuth) || (closeNow>sym_anchorHigh || closeNow>gHigh[shiftNow+1] + 0.20*atrNow);
+      if(breakout) Sym_PlaceEntry(DIR_LONG,engTag+" P4 Long",riskCash,atrNow);
    }
 
    // SHORT P3
    if(S3 && sym_lastShortTradeTime!=barTime)
-      Sym_PlaceEntry(DIR_SHORT,"P3 Short",riskCash,atrNow);
+      Sym_PlaceEntry(DIR_SHORT,engTag+" P3 Short",riskCash,atrNow);
 
    // SHORT P4
-   if(S4 && sym_lastShortTradeTime!=barTime && impS>0)
+   if(S4 && sym_lastShortTradeTime!=barTime && (!symAuth || impS>0))
    {
-      bool breakout = (closeNow<sym_anchorLow || closeNow<gLow[shiftNow+1] - 0.20*atrNow);
-      if(breakout) Sym_PlaceEntry(DIR_SHORT,"P4 Short",riskCash,atrNow);
+      bool breakout = (!symAuth) || (closeNow<sym_anchorLow || closeNow<gLow[shiftNow+1] - 0.20*atrNow);
+      if(breakout) Sym_PlaceEntry(DIR_SHORT,engTag+" P4 Short",riskCash,atrNow);
    }
 }
 
@@ -7863,6 +8554,7 @@ string VZ_TabName(const int t)
       case 9: return("EXECUTION");
       case 10:return("PERFORMANCE");
       case 12:return("LEARNING");
+      case 13:return("ENGINES");
       default:return("DIAGNOSTICS");
    }
 }
@@ -8106,6 +8798,42 @@ string VZ_Body(const int tab)
          if(rshown==0) s+="  (no resolved shadow trades yet)";
          break;
       }
+      case 13: // ENGINES — comparative multi-engine wave cycles (A/B/C)
+      {
+         WaveReferee rf=g_state.referee;
+         WaveCycle L=g_state.cycles[ENG_LETRA];
+         WaveCycle F=g_state.cycles[ENG_F16];
+         WaveCycle Y=g_state.cycles[ENG_SYMPHONY];
+         s+="AUTHORITY   : "+FalconEngineStr(g_cfg.entryEngine)+" -> drives "+rf.selectedName
+            +(g_cfg.runAllCycles?"":"  (compare OFF)")+"\n";
+         s+="                 LETRA       F16        SYMPHONY\n";
+         s+=StringFormat("dir         : %-11s %-10s %-10s\n", VZ_Dir(L.direction),VZ_Dir(F.direction),VZ_Dir(Y.direction));
+         s+=StringFormat("stage       : %-11s %-10s %-10s\n", FalconStageStr(L.stage),FalconStageStr(F.stage),FalconStageStr(Y.stage));
+         s+=StringFormat("phase       : %-11s %-10s %-10s\n",
+              StringSubstr(L.phaseLabel,0,10),StringSubstr(F.phaseLabel,0,10),StringSubstr(Y.phaseLabel,0,10));
+         s+=StringFormat("maturity    : %-11.0f %-10.0f %-10.0f\n", L.maturity,F.maturity,Y.maturity);
+         s+=StringFormat("confidence  : %-11.0f %-10.0f %-10.0f\n", L.confidence,F.confidence,Y.confidence);
+         s+=StringFormat("objective   : %-11s %-10s %-10s\n", VZ_Px(L.objective),VZ_Px(F.objective),VZ_Px(Y.objective));
+         s+=StringFormat("entry now   : %-11s %-10s %-10s\n",
+              (L.entryEdge?("P"+IntegerToString(L.entryKind)+" "+VZ_Dir(L.entryDir)):"-"),
+              (F.entryEdge?("P"+IntegerToString(F.entryKind)+" "+VZ_Dir(F.entryDir)):"-"),
+              (Y.entryEdge?("P"+IntegerToString(Y.entryKind)+" "+VZ_Dir(Y.entryDir)):"-"));
+         s+="── DEMONSTRATED EDGE (referee) ──────\n";
+         s+=StringFormat("dir acc%%    : %-11s %-10s %-10s\n",
+              StringFormat("%.0f(%d)",L.accuracy,L.samples),
+              StringFormat("%.0f(%d)",F.accuracy,F.samples),
+              StringFormat("%.0f(%d)",Y.accuracy,Y.samples));
+         s+=StringFormat("obj acc%%    : %-11.0f %-10.0f %-10.0f\n", L.objAccuracy,F.objAccuracy,Y.objAccuracy);
+         s+=StringFormat("lead (bars) : %-11.1f %-10.1f %-10.1f\n", L.avgLeadBars,F.avgLeadBars,Y.avgLeadBars);
+         s+="── REFEREE VERDICT ──────────────────\n";
+         s+="consensus   : "+VZ_Dir(rf.consensusDir)+"  "+FalconStageStr(rf.consensusStage)
+            +"  conf "+DoubleToString(rf.consensusConf,0)+"\n";
+         s+="deviation   : stage "+DoubleToString(rf.deviationStage,0)+"   objective "+DoubleToString(rf.deviationObjATR,1)+" ATR\n";
+         s+="best engine : "+FalconEngineStr(rf.bestEngine)+"  acc "+DoubleToString(rf.bestAccuracy,0)
+            +"%   leader "+FalconEngineStr(rf.leader)+"\n";
+         s+="money mgr   : "+((g_cfg.useProfitLadder||g_cfg.counterDirBlock||g_cfg.maxBasketRiskPct>0)?"on":"DISABLED");
+         break;
+      }
       default: // DIAGNOSTICS
          for(int m=0;m<MOD_COUNT;m++)
             s+=StringFormat("%-14s %s  avg %.0fus  runs %d\n",
@@ -8203,8 +8931,8 @@ void FalconVizOnChartEvent(const int id,const long &lparam,const double &dparam,
 {
    if(id!=CHARTEVENT_KEYDOWN) return;
    int prev=g_cfg.dashboardTab;
-   if(lparam==84 || lparam==39)       g_cfg.dashboardTab = (g_cfg.dashboardTab+1)%13;  // 'T' / RIGHT
-   else if(lparam==37)                g_cfg.dashboardTab = (g_cfg.dashboardTab+12)%13;  // LEFT
+   if(lparam==84 || lparam==39)       g_cfg.dashboardTab = (g_cfg.dashboardTab+1)%14;  // 'T' / RIGHT
+   else if(lparam==37)                g_cfg.dashboardTab = (g_cfg.dashboardTab+13)%14;  // LEFT
    if(g_cfg.dashboardTab!=prev) VisualizationRun();
 }
 
@@ -8269,16 +8997,24 @@ void FalconPipeline()
    MarketEngineRun();
    FalconModuleEnd(MOD_MARKET,t0);
 
-   // Symphony phase engine = the SINGLE phase/direction SOURCE OF TRUTH.
-   // Computed from the same shared series right after the Market Layer observes
-   // geometry, it then BRIDGES its impulse + Phase 1..4 model onto the canonical
-   // g_state.wave (phase/direction/flip/origin/objective/completion). Every
-   // downstream layer (Memory ownership, Intelligence, Decision master,
-   // Execution, Visualization) therefore reasons on ONE phase engine — Symphony.
-   // The Market Engine still supplies raw geometry descriptors (sub-scores,
-   // energy, recursion, cycle extremes); only the phase ENGINE is unified here.
+   // MULTI-ENGINE WAVE CYCLES — run THREE phase cycles on the SAME shared
+   // observations and let the market decide which has the highest predictive
+   // power (don't replace the phase engine — compare them). LETRA is captured
+   // HERE from the still-native g_state.wave, before any authority overwrites it.
+   if(g_cfg.runAllCycles) CycleLetra_Compute();   // ENG_LETRA — per-TF structural FSM lens
    if(g_cfg.useSymphony)
-      SymphonyUpdatePhases();
+   {
+      SymphonyComputePhases();                    // compute sym_* (NO bridge yet)
+      if(g_cfg.runAllCycles) CycleSymphony_Compute(); // ENG_SYMPHONY — impulse/retracement lens
+   }
+
+   // PHASE AUTHORITY — write the SELECTED engine's read into the canonical
+   // g_state.wave BEFORE the Memory layer consumes it, so ownership/intel/
+   // decision all reason on the chosen engine (default Symphony = unchanged).
+   // The F16 lens uses the curve tree built last bar (a 1-bar lag) because the
+   // tree must rebuild AFTER Memory; entries (execution layer) use the fresh
+   // F16 cycle computed below.
+   PhaseAuthorityApply();
 
    // ── MEMORY LAYER ──────────────────────────────────────────────
    // Network → Curve Tree → Wave Matrix → FEZ → FRZ → Campaign →
@@ -8286,8 +9022,10 @@ void FalconPipeline()
    FalconModuleStart(MOD_MEMORY,t0);
    MemoryEngineRun();
    CurveTreeRun();      // F72 recursive curve tree — enrich ownership/recursion after memory resolves the owner TF
+   if(g_cfg.runAllCycles) CycleF16_Compute();   // ENG_F16 — recursive curve-tree node lens (fresh, after the tree rebuilds)
    TimeEngineRun();     // TIE — 5-cycle temporal stack (session/killzone/time-quality)
    CurveLocatorRun();   // always-on "you are here" on the curve (multi-TF, persistent)
+   WaveRefereeRun();    // S12J referee — score each engine, form consensus / best, measure deviation
    FalconModuleEnd(MOD_MEMORY,t0);
 
    // ── INTELLIGENCE LAYER ────────────────────────────────────────
@@ -8368,6 +9106,7 @@ int OnInit()
    CurveTreeInit();
    TimeEngineInit();
    CurveLocatorInit();
+   WaveRefereeInit();
    AdaptiveInit();
    SelfAwarenessInit();
    MissTradeInit();
