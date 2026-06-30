@@ -1016,28 +1016,26 @@ void TG_Manage()
 double Sym_StructuralStop(const int dir,const double entry,const double atr)
 {
    double buf = atr*0.25;
+   int len  = g_cfg.stopPivotLen;     // SMALL pivot -> recent MINOR structure (tight stop)
+   int look = g_cfg.stopLookback;     // SHORT window -> don't reach far back for a wide swing
 
-   // 1) Symphony impulse anchor — the structural origin of the live impulse
-   if(dir==DIR_LONG  && sym_anchorLow >0.0 && sym_anchorLow <entry) return(sym_anchorLow  - buf);
-   if(dir==DIR_SHORT && sym_anchorHigh>0.0 && sym_anchorHigh>entry) return(sym_anchorHigh + buf);
-
-   // 2) nearest recent structural swing on the correct side
-   int len = g_cfg.pivotLen;
+   // nearest recent minor swing on the correct side (closest c = most recent)
    if(dir==DIR_LONG)
    {
-      for(int c=len+1;c<80;c++)
+      for(int c=len+1;c<look;c++)
          if(FalconIsPivotLow(c,len) && gLow[c]<entry) return(gLow[c]-buf);
    }
    else
    {
-      for(int c=len+1;c<80;c++)
+      for(int c=len+1;c<look;c++)
          if(FalconIsPivotHigh(c,len) && gHigh[c]>entry) return(gHigh[c]+buf);
    }
 
-   // 3) NO structure found -> return 0 so the caller SKIPS the trade.
-   //    (No ATR-from-entry fallback: a trade only ever fires with a stop
-   //    placed beyond real structure.)
-   return(0.0);
+   // No recent minor swing -> fall back to the Symphony impulse anchor IF it is
+   // on the correct side (classic behaviour), else skip the trade.
+   if(dir==DIR_LONG  && sym_anchorLow >0.0 && sym_anchorLow <entry) return(sym_anchorLow  - buf);
+   if(dir==DIR_SHORT && sym_anchorHigh>0.0 && sym_anchorHigh>entry) return(sym_anchorHigh + buf);
+   return(0.0);   // no structure within reach -> skip (no wide/ATR fallback)
 }
 
 void Sym_PlaceEntry(const int dir,const string tag,const double riskCash,const double atrNow,const bool raw=false)

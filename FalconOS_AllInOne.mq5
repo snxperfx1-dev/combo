@@ -5,7 +5,7 @@
 //|   Risk: PYRO thermal + TALON curve-convergent structural grip.   |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "5.22"
+#property version   "5.23"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -1219,7 +1219,9 @@ input double  InpArcPartialFrac    = 0.33;// Fraction banked when price REACHES 
 input double  InpArcPartialMinATR  = 1.5; // Min favorable excursion (ATR) before any ARC partial is allowed
 
 input string  __sep_bands      = "════════ TRADE COMPOSITION / RANGE BANDS ════════"; // ──
-input double  InpMaxStructStopATR = 4.0;  // Skip entries whose structural stop is WIDER than this (ATR); 0=off — caps unmanageably-wide trades
+input int     InpStopPivotLen     = 3;    // Pivot length for the STRUCTURAL stop swing (small = tighter, recent structure)
+input int     InpStopLookback     = 25;   // Max bars back to find the structural-stop swing (short = tight stops)
+input double  InpMaxStructStopATR = 2.5;  // Skip entries whose structural stop is WIDER than this (ATR); 0=off
 input double  InpBandWideATR       = 2.0; // Stop distance (ATR) at/above which a trade is WIDE-range (gets partial + BE management)
 input double  InpBandPartialR      = 1.5; // WIDE trades: bank a partial and move stop to BE at this R
 input double  InpBandPartialFrac   = 0.5; // Fraction of a WIDE trade banked at BandPartialR (0=just move to BE)
@@ -1301,6 +1303,7 @@ struct FalconConfig
    bool   useTalon;  int talonStructLen;
    bool   captureAtDone;  double captureCurvePos;
    double maxStructStopATR, bandWideATR, bandPartialR, bandPartialFrac;
+   int    stopPivotLen, stopLookback;
    double talonBufATR, talonBaseATR, talonConvSpanATR, talonMinTighten, talonBeATR;
    double talonGiveback, talonLockArmATR;
    double arcPartialFrac, arcPartialMinATR;
@@ -1483,6 +1486,8 @@ void FalconConfigInit()
    g_cfg.captureAtDone    = InpCaptureAtDone;
    g_cfg.captureCurvePos  = InpCaptureCurvePos;
    g_cfg.maxStructStopATR = InpMaxStructStopATR;
+   g_cfg.stopPivotLen     = InpStopPivotLen;
+   g_cfg.stopLookback     = InpStopLookback;
    g_cfg.bandWideATR      = InpBandWideATR;
    g_cfg.bandPartialR     = InpBandPartialR;
    g_cfg.bandPartialFrac  = InpBandPartialFrac;
@@ -8310,28 +8315,26 @@ void TG_Manage()
 double Sym_StructuralStop(const int dir,const double entry,const double atr)
 {
    double buf = atr*0.25;
+   int len  = g_cfg.stopPivotLen;     // SMALL pivot -> recent MINOR structure (tight stop)
+   int look = g_cfg.stopLookback;     // SHORT window -> don't reach far back for a wide swing
 
-   // 1) Symphony impulse anchor — the structural origin of the live impulse
-   if(dir==DIR_LONG  && sym_anchorLow >0.0 && sym_anchorLow <entry) return(sym_anchorLow  - buf);
-   if(dir==DIR_SHORT && sym_anchorHigh>0.0 && sym_anchorHigh>entry) return(sym_anchorHigh + buf);
-
-   // 2) nearest recent structural swing on the correct side
-   int len = g_cfg.pivotLen;
+   // nearest recent minor swing on the correct side (closest c = most recent)
    if(dir==DIR_LONG)
    {
-      for(int c=len+1;c<80;c++)
+      for(int c=len+1;c<look;c++)
          if(FalconIsPivotLow(c,len) && gLow[c]<entry) return(gLow[c]-buf);
    }
    else
    {
-      for(int c=len+1;c<80;c++)
+      for(int c=len+1;c<look;c++)
          if(FalconIsPivotHigh(c,len) && gHigh[c]>entry) return(gHigh[c]+buf);
    }
 
-   // 3) NO structure found -> return 0 so the caller SKIPS the trade.
-   //    (No ATR-from-entry fallback: a trade only ever fires with a stop
-   //    placed beyond real structure.)
-   return(0.0);
+   // No recent minor swing -> fall back to the Symphony impulse anchor IF it is
+   // on the correct side (classic behaviour), else skip the trade.
+   if(dir==DIR_LONG  && sym_anchorLow >0.0 && sym_anchorLow <entry) return(sym_anchorLow  - buf);
+   if(dir==DIR_SHORT && sym_anchorHigh>0.0 && sym_anchorHigh>entry) return(sym_anchorHigh + buf);
+   return(0.0);   // no structure within reach -> skip (no wide/ATR fallback)
 }
 
 void Sym_PlaceEntry(const int dir,const string tag,const double riskCash,const double atrNow,const bool raw=false)
