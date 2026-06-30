@@ -893,7 +893,120 @@ bool SymphonyBrainConfirms(const int dir)
 //   Otherwise falls back to Symphony's anchor ± 0.25 ATR stop.
 //==================================================================
 //==================================================================
-// STRUCTURAL STOP — Symphony-style: place the stop just BEYOND the
+// TRADE COMPOSITION / RANGE BANDS — model & categorize every entry by
+// its geometry (entry · stop · stop-distance · target · target-distance
+// · R · range band), then MANAGE each band appropriately. Two trades at
+// the same R behave differently by absolute range: a 40->120pt trade is
+// a wide swing that must be de-risked into the move; a 20->60pt trade is
+// a tight intraday push that can ride to target. WIDE trades bank a
+// partial + move to BE at BandPartialR; tighter trades ride to capture.
+//==================================================================
+#define TG_SCALP  0
+#define TG_NORMAL 1
+#define TG_WIDE   2
+
+struct TradeGeom
+{
+   ulong  ticket;
+   int    dir;
+   double entry;
+   double sl;
+   double stopDist;     // |entry-sl| in price
+   double target;
+   double tgtDist;      // |target-entry| in price
+   double rr;           // tgtDist / stopDist
+   double stopATR;      // stopDist / ATR  (the range scale)
+   int    band;         // TG_SCALP / TG_NORMAL / TG_WIDE
+   bool   partialDone;
+};
+TradeGeom tg_book[128];
+int       tg_count = 0;
+
+string TG_BandStr(const int b){ return(b==TG_WIDE?"WIDE":b==TG_NORMAL?"NORMAL":"SCALP"); }
+
+int TG_Band(const double stopATR)
+{
+   if(stopATR < g_cfg.bandWideATR*0.5) return(TG_SCALP);
+   if(stopATR < g_cfg.bandWideATR)     return(TG_NORMAL);
+   return(TG_WIDE);
+}
+
+int TG_Find(const ulong ticket)
+{
+   for(int i=0;i<tg_count;i++) if(tg_book[i].ticket==ticket) return(i);
+   return(-1);
+}
+
+void TG_Record(const ulong ticket,const int dir,const double entry,const double sl,const double target,const double atr)
+{
+   if(ticket==0 || atr<=0.0) return;
+   int idx=TG_Find(ticket);
+   if(idx<0)
+   {
+      if(tg_count>=128){ for(int i=1;i<tg_count;i++) tg_book[i-1]=tg_book[i]; tg_count--; }
+      idx=tg_count++;
+   }
+   double stopDist=MathAbs(entry-sl);
+   double tgtDist =MathAbs(target-entry);
+   tg_book[idx].ticket=ticket; tg_book[idx].dir=dir; tg_book[idx].entry=entry; tg_book[idx].sl=sl;
+   tg_book[idx].stopDist=stopDist; tg_book[idx].target=target; tg_book[idx].tgtDist=tgtDist;
+   tg_book[idx].rr=(stopDist>0.0?tgtDist/stopDist:0.0);
+   tg_book[idx].stopATR=(atr>0.0?stopDist/atr:0.0);
+   tg_book[idx].band=TG_Band(tg_book[idx].stopATR);
+   tg_book[idx].partialDone=false;
+
+   // surface the live trade composition for the dashboard
+   g_state.exec.tradeBand   = tg_book[idx].band;
+   g_state.exec.stopDistPts = stopDist;
+   g_state.exec.tgtDistPts  = tgtDist;
+}
+
+//------------------------------------------------------------------
+// BAND MANAGER — WIDE-range trades get de-risked into the move:
+// bank a partial + move stop to BE once they reach BandPartialR.
+// (Tight/normal trades are left to the capture-at-done / TP exit.)
+//------------------------------------------------------------------
+void TG_Manage()
+{
+   double atr=g_state.physics.atr; if(atr<=0.0) atr=FalconATR(1); if(atr<=0.0) return;
+   double step =SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP);
+   double minLot=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);
+
+   int total=PositionsTotal();
+   for(int i=total-1;i>=0;i--)
+   {
+      ulong ticket=PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
+      if(PositionGetInteger(POSITION_MAGIC)!=g_cfg.magic) continue;
+
+      int idx=TG_Find(ticket);
+      if(idx<0) continue;
+      if(tg_book[idx].band!=TG_WIDE || tg_book[idx].partialDone) continue;
+
+      double entry=tg_book[idx].entry, risk=tg_book[idx].stopDist;
+      if(risk<=0.0) continue;
+      long type=PositionGetInteger(POSITION_TYPE);
+      double px=(type==POSITION_TYPE_BUY?SymbolInfoDouble(_Symbol,SYMBOL_BID):SymbolInfoDouble(_Symbol,SYMBOL_ASK));
+      double rNow=(type==POSITION_TYPE_BUY?(px-entry):(entry-px))/risk;
+      if(rNow < g_cfg.bandPartialR) continue;
+
+      // bank a partial (de-risk the wide swing)
+      if(g_cfg.bandPartialFrac>0.0)
+      {
+         double lots=PositionGetDouble(POSITION_VOLUME);
+         double cut =MathFloor((lots*g_cfg.bandPartialFrac)/step)*step;
+         if(cut>=minLot && cut<lots) EE_ClosePartial(ticket,cut);
+      }
+      // move the remainder to breakeven (+small buffer)
+      double be=(type==POSITION_TYPE_BUY?entry+atr*0.05:entry-atr*0.05);
+      EE_ModifySL(ticket,be);
+      tg_book[idx].partialDone=true;
+      FalconPublish(EVT_EXIT_FIRED,(type==POSITION_TYPE_BUY?1:-1),"WIDE band partial+BE");
+   }
+}
+
+
 // structure (impulse anchor / swing), not a fixed ATR off entry.
 //   LONG  : structural swing LOW  - 0.25 ATR
 //   SHORT : structural swing HIGH + 0.25 ATR
@@ -948,6 +1061,7 @@ void Sym_PlaceEntry(const int dir,const string tag,const double riskCash,const d
       if(sl<=0.0) return;                              // no structure -> skip the trade (no ATR fallback)
       double stopDist = MathAbs(entry - sl);
       if(stopDist <= 0.0) return;
+      if(g_cfg.maxStructStopATR>0.0 && stopDist > g_cfg.maxStructStopATR*atrNow) return;  // structural stop too WIDE -> skip (unmanageable range)
       if(g_cfg.maxStopATR>0.0 && stopDist > g_cfg.maxStopATR*atrNow) return;  // structure too far -> skip
       double t = stopDist * g_cfg.minRR;
       target = (dir==DIR_LONG ? entry + t : entry - t);
@@ -979,6 +1093,7 @@ void Sym_PlaceEntry(const int dir,const string tag,const double riskCash,const d
       if(dir==DIR_LONG){ sym_lastLongTradeTime=gTime[0]; sym_longCampaignOpen=true; }
       else             { sym_lastShortTradeTime=gTime[0]; sym_shortCampaignOpen=true; }
       TJ_RecordEntry(ee_lastTicket,dir,tag,entry,sl,lots);
+      TG_Record(ee_lastTicket,dir,entry,sl,target,atrNow);   // model + categorize this entry's geometry/range band
       AD_RecordEntry(ee_lastTicket, adBucket, lots*MathAbs(entry-sl)*g_cfg.contractValue, g_state.intel.executionProbability);
       g_state.exec.entry=entry; g_state.exec.stop=sl; g_state.exec.lots=lots; g_state.exec.riskCash=riskCash;
       g_state.exec.target=target; g_state.exec.target2=t2; g_state.exec.reward=rr;
@@ -1496,6 +1611,7 @@ void SymphonyTradeManage()
       SymphonyArcPartial();
    }
    SymphonyCaptureExit();   // bank profit when the curve reaches its destination (no trailing)
+   TG_Manage();             // WIDE-range trades: bank partial + move to BE once well in profit
    SymphonyManageExits();   // composite ARC + institutional + phase reversal exit (suppressed in raw/free)
    SymphonyExecuteTrading();// Phase 3/4 entries
 }

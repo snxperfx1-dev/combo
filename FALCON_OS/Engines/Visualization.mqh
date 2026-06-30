@@ -336,6 +336,8 @@ string VZ_Body(const int tab)
          s+="── EXECUTION ─────────────────────────\n";
          s+="Act "+FalconActionStr(e.action)+"  "+FalconTradeStateStr(e.tradeState)+"  open L/S "+IntegerToString(e.openLongCount)+"/"+IntegerToString(e.openShortCount)+"\n";
          s+="E/SL/TP "+VZ_Px(e.entry)+" / "+VZ_Px(e.stop)+" / "+VZ_Px(e.target)+"  R:R "+DoubleToString(e.reward,2)+"\n";
+         s+="GEOM    : "+TG_BandStr(e.tradeBand)+"  stop "+VZ_Px(e.stopDistPts)+"  tgt "+VZ_Px(e.tgtDistPts)
+            +"  ("+DoubleToString((g_state.physics.atr>0?e.stopDistPts/g_state.physics.atr:0),1)+" ATR)\n";
          s+="TALON L "+(e.gripLong>0?VZ_Px(e.gripLong)+" "+FalconTalonStr(e.talonStageLong):"—")
             +"  S "+(e.gripShort>0?VZ_Px(e.gripShort)+" "+FalconTalonStr(e.talonStageShort):"—")+"\n";
          s+="Lots "+DoubleToString(e.lots,2)+"  Risk$ "+DoubleToString(e.riskCash,0)+"  PnL "+DoubleToString(e.openPnL,2)

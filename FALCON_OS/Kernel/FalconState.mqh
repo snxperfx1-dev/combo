@@ -637,6 +637,10 @@ struct FalconExecution
    double gripShort;       // active short-campaign stop level (0=none)
    int    talonStageLong;  // FALCON_TALON
    int    talonStageShort; // FALCON_TALON
+   // trade composition (range band of the live/last entry) — display
+   int    tradeBand;       // TG_SCALP / TG_NORMAL / TG_WIDE
+   double stopDistPts;     // entry->stop distance (price)
+   double tgtDistPts;      // entry->target distance (price)
 };
 
 //==================================================================
