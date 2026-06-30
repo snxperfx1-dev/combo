@@ -894,6 +894,7 @@ void Sym_PlaceEntry(const int dir,const string tag,const double riskCash,const d
       target = (dir==DIR_LONG ? entry + t : entry - t);
       t2     = target;
       rr     = (s>0.0 ? t/s : 0.0);
+      if(rr < g_cfg.minRR) return;                 // enforce min R:R even on raw/free entries
       lots   = Sym_SizeLots(dir, riskCash*adMult*saMult, entry, sl);
    }
    else if(g_cfg.useTradePlan)
@@ -995,6 +996,12 @@ void SymphonyExecuteTrading()
       if(g_state.exec.openShortCount>0){ L3=false; L4=false; }
       if(g_state.exec.openLongCount >0){ S3=false; S4=false; }
    }
+
+   // MAX CONCURRENT POSITIONS — hard cap across all directions. Once the cap is
+   // reached, no new entries fire (existing positions still manage their exits).
+   if(g_cfg.maxOpenPositions>0 &&
+      (g_state.exec.openLongCount+g_state.exec.openShortCount) >= g_cfg.maxOpenPositions)
+   { L3=false; L4=false; S3=false; S4=false; }
 
    double impL = sym_anchorHigh - sym_anchorLow;
    double impS = sym_anchorHigh - sym_anchorLow;

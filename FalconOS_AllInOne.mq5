@@ -5,7 +5,7 @@
 //|   Risk: PYRO thermal + TALON curve-convergent structural grip.   |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "5.07"
+#property version   "5.10"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -1137,6 +1137,7 @@ input string  __sep_execution   = "════════ EXECUTION / RISK ═
 input bool    InpEnableTrading  = true;  // Allow live order sending
 input double  InpRiskPercent    = 0.5;   // Risk % per trade
 input double  InpMaxLots        = 1.0;   // Hard cap on lots per entry (safety)
+input int     InpMaxOpenPositions = 0;   // Max concurrent open positions across ALL directions (0=off)
 input bool    InpBlockIfBreach  = true;  // Block new entries after a risk breach (cooldown)
 input bool    InpSessionFilter  = false; // Restrict to London/US windows (off for full backtests)
 input double  InpContractValue  = 100.0; // Value per lot per price unit
@@ -1258,6 +1259,7 @@ struct FalconConfig
    bool   enableTrading, blockIfBreach, sessionFilter;
    double riskPercent, contractValue;
    double maxLots;
+   int    maxOpenPositions;
    bool   trailEnable, ddProtect;
    double trailStartATR, trailDistATR, maxDrawdownPct, ddFlattenPct;
    double maxEntryComplete, minEntryRoomPct;
@@ -1385,6 +1387,7 @@ void FalconConfigInit()
    g_cfg.sessionFilter    = InpSessionFilter;
    g_cfg.riskPercent      = InpRiskPercent;
    g_cfg.maxLots          = InpMaxLots;
+   g_cfg.maxOpenPositions = InpMaxOpenPositions;
    g_cfg.contractValue    = InpContractValue;
    g_cfg.trailEnable      = InpTrailEnable;
    g_cfg.trailStartATR    = InpTrailStartATR;
@@ -8109,6 +8112,7 @@ void Sym_PlaceEntry(const int dir,const string tag,const double riskCash,const d
       target = (dir==DIR_LONG ? entry + t : entry - t);
       t2     = target;
       rr     = (s>0.0 ? t/s : 0.0);
+      if(rr < g_cfg.minRR) return;                 // enforce min R:R even on raw/free entries
       lots   = Sym_SizeLots(dir, riskCash*adMult*saMult, entry, sl);
    }
    else if(g_cfg.useTradePlan)
@@ -8210,6 +8214,12 @@ void SymphonyExecuteTrading()
       if(g_state.exec.openShortCount>0){ L3=false; L4=false; }
       if(g_state.exec.openLongCount >0){ S3=false; S4=false; }
    }
+
+   // MAX CONCURRENT POSITIONS — hard cap across all directions. Once the cap is
+   // reached, no new entries fire (existing positions still manage their exits).
+   if(g_cfg.maxOpenPositions>0 &&
+      (g_state.exec.openLongCount+g_state.exec.openShortCount) >= g_cfg.maxOpenPositions)
+   { L3=false; L4=false; S3=false; S4=false; }
 
    double impL = sym_anchorHigh - sym_anchorLow;
    double impS = sym_anchorHigh - sym_anchorLow;

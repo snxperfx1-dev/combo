@@ -115,6 +115,7 @@ input string  __sep_execution   = "════════ EXECUTION / RISK ═
 input bool    InpEnableTrading  = true;  // Allow live order sending
 input double  InpRiskPercent    = 0.5;   // Risk % per trade
 input double  InpMaxLots        = 1.0;   // Hard cap on lots per entry (safety)
+input int     InpMaxOpenPositions = 0;   // Max concurrent open positions across ALL directions (0=off)
 input bool    InpBlockIfBreach  = true;  // Block new entries after a risk breach (cooldown)
 input bool    InpSessionFilter  = false; // Restrict to London/US windows (off for full backtests)
 input double  InpContractValue  = 100.0; // Value per lot per price unit
@@ -236,6 +237,7 @@ struct FalconConfig
    bool   enableTrading, blockIfBreach, sessionFilter;
    double riskPercent, contractValue;
    double maxLots;
+   int    maxOpenPositions;
    bool   trailEnable, ddProtect;
    double trailStartATR, trailDistATR, maxDrawdownPct, ddFlattenPct;
    double maxEntryComplete, minEntryRoomPct;
@@ -363,6 +365,7 @@ void FalconConfigInit()
    g_cfg.sessionFilter    = InpSessionFilter;
    g_cfg.riskPercent      = InpRiskPercent;
    g_cfg.maxLots          = InpMaxLots;
+   g_cfg.maxOpenPositions = InpMaxOpenPositions;
    g_cfg.contractValue    = InpContractValue;
    g_cfg.trailEnable      = InpTrailEnable;
    g_cfg.trailStartATR    = InpTrailStartATR;
