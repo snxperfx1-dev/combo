@@ -91,7 +91,8 @@ input string  __sep_self        = "════════ SELF-AWARENESS (meta
 input bool    InpUseSelfAware     = true; // The OS watches its own form/calibration/health -> global risk throttle + stand-down
 input double  InpSelfMinThrottle  = 0.25; // Lowest size multiplier when self-confidence is low (1.0 = full)
 input double  InpSelfFullConf     = 50.0; // At/above this self-confidence, size is FULL (no throttle); below it ramps down
-input int     InpSelfLossHalt     = 6;    // Consecutive losses that trigger a self stand-down (health=false)
+input int     InpSelfLossHalt     = 6;    // Consecutive losses that trigger a self stand-down (then auto-resumes after a cooldown)
+input int     InpSelfHaltBars     = 24;   // Cooldown bars the stand-down lasts before resetting the streak and resuming
 input string  __sep_miss       = "════════ MISSED-TRADE LEARNING (regret) ════════"; // ──
 input bool    InpUseMissLearn    = true;  // Track blocked signals as shadow trades; override a soft filter that keeps missing winners
 input int     InpMissMinN        = 8;     // Min resolved shadow trades per reason before override can activate
@@ -191,7 +192,7 @@ struct FalconConfig
    bool   useAdaptive;  int adaptMinTrades;
    double adaptVetoR, adaptSizeK, adaptAlpha;  bool adaptPersist;
    bool   useSelfAware;  double selfMinThrottle;  int selfLossHalt;
-   double selfFullConf;
+   double selfFullConf;  int selfHaltBars;
    bool   useMissLearn;  int missMinN, missMaxBars;  double missOverrideR;
    // execution
    bool   enableTrading, blockIfBreach, sessionFilter;
@@ -291,6 +292,7 @@ void FalconConfigInit()
    g_cfg.selfMinThrottle  = InpSelfMinThrottle;
    g_cfg.selfFullConf     = InpSelfFullConf;
    g_cfg.selfLossHalt     = InpSelfLossHalt;
+   g_cfg.selfHaltBars     = InpSelfHaltBars;
    g_cfg.useMissLearn     = InpUseMissLearn;
    g_cfg.missMinN         = InpMissMinN;
    g_cfg.missOverrideR    = InpMissOverrideR;

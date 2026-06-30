@@ -5,7 +5,7 @@
 //|   Risk: PYRO thermal + TALON curve-convergent structural grip.   |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "4.52"
+#property version   "4.53"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -105,7 +105,8 @@ input string  __sep_self        = "════════ SELF-AWARENESS (meta
 input bool    InpUseSelfAware     = true; // The OS watches its own form/calibration/health -> global risk throttle + stand-down
 input double  InpSelfMinThrottle  = 0.25; // Lowest size multiplier when self-confidence is low (1.0 = full)
 input double  InpSelfFullConf     = 50.0; // At/above this self-confidence, size is FULL (no throttle); below it ramps down
-input int     InpSelfLossHalt     = 6;    // Consecutive losses that trigger a self stand-down (health=false)
+input int     InpSelfLossHalt     = 6;    // Consecutive losses that trigger a self stand-down (then auto-resumes after a cooldown)
+input int     InpSelfHaltBars     = 24;   // Cooldown bars the stand-down lasts before resetting the streak and resuming
 input string  __sep_miss       = "════════ MISSED-TRADE LEARNING (regret) ════════"; // ──
 input bool    InpUseMissLearn    = true;  // Track blocked signals as shadow trades; override a soft filter that keeps missing winners
 input int     InpMissMinN        = 8;     // Min resolved shadow trades per reason before override can activate
@@ -205,7 +206,7 @@ struct FalconConfig
    bool   useAdaptive;  int adaptMinTrades;
    double adaptVetoR, adaptSizeK, adaptAlpha;  bool adaptPersist;
    bool   useSelfAware;  double selfMinThrottle;  int selfLossHalt;
-   double selfFullConf;
+   double selfFullConf;  int selfHaltBars;
    bool   useMissLearn;  int missMinN, missMaxBars;  double missOverrideR;
    // execution
    bool   enableTrading, blockIfBreach, sessionFilter;
@@ -305,6 +306,7 @@ void FalconConfigInit()
    g_cfg.selfMinThrottle  = InpSelfMinThrottle;
    g_cfg.selfFullConf     = InpSelfFullConf;
    g_cfg.selfLossHalt     = InpSelfLossHalt;
+   g_cfg.selfHaltBars     = InpSelfHaltBars;
    g_cfg.useMissLearn     = InpUseMissLearn;
    g_cfg.missMinN         = InpMissMinN;
    g_cfg.missOverrideR    = InpMissOverrideR;
@@ -6096,12 +6098,14 @@ void AdaptiveDeinit(){ AD_Save(); }
 double sa_equityPeak = 0.0;
 double sa_equityPrev = 0.0;
 double sa_slope      = 0.0;
+int    sa_cooldown   = 0;   // loss-cluster cooldown bars remaining
 
 void SelfAwarenessInit()
 {
    sa_equityPeak = AccountInfoDouble(ACCOUNT_EQUITY);
    sa_equityPrev = sa_equityPeak;
    sa_slope      = 0.0;
+   sa_cooldown   = 0;
 }
 
 void SelfAwarenessRun()
@@ -6148,7 +6152,18 @@ void SelfAwarenessRun()
    if(atr<=0.0)                                   { s.health=false; s.healthNote="no ATR/data"; }
    else if(g_cfg.useCurveLocator && g_state.curveLocator.conf < 20.0) { s.health=false; s.healthNote="lost on curve"; }
    else if(ddPct >= g_cfg.maxDrawdownPct)         { s.health=false; s.healthNote="drawdown halt"; }
-   else if(ad_lossStreak >= g_cfg.selfLossHalt)   { s.health=false; s.healthNote="loss cluster"; }
+
+   // LOSS-CLUSTER -> TIMED COOLDOWN (not a permanent halt). A hard block would
+   // deadlock: no trades -> no win -> the streak never resets. So we pause for
+   // selfHaltBars bars, then RESET the streak and resume (cautious via `form`).
+   if(ad_lossStreak >= g_cfg.selfLossHalt && sa_cooldown==0)
+      sa_cooldown = g_cfg.selfHaltBars;
+   if(sa_cooldown>0)
+   {
+      sa_cooldown--;
+      s.health=false; s.healthNote="cooldown "+IntegerToString(sa_cooldown);
+      if(sa_cooldown<=0) ad_lossStreak=0;   // expire -> fresh start, resume next bar
+   }
 
    // SYNTHESIS — one self-confidence, then a bounded throttle.
    s.selfConfidence = FalconClamp(0.30*s.calibration + 0.35*s.form + 0.20*s.regimeFit

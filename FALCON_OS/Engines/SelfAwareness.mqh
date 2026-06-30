@@ -27,12 +27,14 @@
 double sa_equityPeak = 0.0;
 double sa_equityPrev = 0.0;
 double sa_slope      = 0.0;
+int    sa_cooldown   = 0;   // loss-cluster cooldown bars remaining
 
 void SelfAwarenessInit()
 {
    sa_equityPeak = AccountInfoDouble(ACCOUNT_EQUITY);
    sa_equityPrev = sa_equityPeak;
    sa_slope      = 0.0;
+   sa_cooldown   = 0;
 }
 
 void SelfAwarenessRun()
@@ -79,7 +81,18 @@ void SelfAwarenessRun()
    if(atr<=0.0)                                   { s.health=false; s.healthNote="no ATR/data"; }
    else if(g_cfg.useCurveLocator && g_state.curveLocator.conf < 20.0) { s.health=false; s.healthNote="lost on curve"; }
    else if(ddPct >= g_cfg.maxDrawdownPct)         { s.health=false; s.healthNote="drawdown halt"; }
-   else if(ad_lossStreak >= g_cfg.selfLossHalt)   { s.health=false; s.healthNote="loss cluster"; }
+
+   // LOSS-CLUSTER -> TIMED COOLDOWN (not a permanent halt). A hard block would
+   // deadlock: no trades -> no win -> the streak never resets. So we pause for
+   // selfHaltBars bars, then RESET the streak and resume (cautious via `form`).
+   if(ad_lossStreak >= g_cfg.selfLossHalt && sa_cooldown==0)
+      sa_cooldown = g_cfg.selfHaltBars;
+   if(sa_cooldown>0)
+   {
+      sa_cooldown--;
+      s.health=false; s.healthNote="cooldown "+IntegerToString(sa_cooldown);
+      if(sa_cooldown<=0) ad_lossStreak=0;   // expire -> fresh start, resume next bar
+   }
 
    // SYNTHESIS — one self-confidence, then a bounded throttle.
    s.selfConfidence = FalconClamp(0.30*s.calibration + 0.35*s.form + 0.20*s.regimeFit
