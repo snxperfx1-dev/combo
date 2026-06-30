@@ -656,6 +656,22 @@ int Sym_EffectiveEngine()
 }
 
 //==================================================================
+// Is the EA in RAW/FREE entry mode? (non-Symphony engine, or Symphony in
+// FREE RUN). In this mode trades are owned by TALON + the position TP/SL +
+// PYRO catastrophe stop — Symphony's discretionary ARC/phase exits and the
+// ARC partial are SUPPRESSED, because they are keyed to sym_mode/sym_phase
+// and would close trades the authority engine (e.g. LETRA) wants to hold
+// (and Symphony's phase rotates constantly in free-run -> premature kills).
+//==================================================================
+bool SymRawActive()
+{
+   bool symAuth  = (g_cfg.entryEngine!=ENG_CONSENSUS && Sym_EffectiveEngine()==ENG_SYMPHONY);
+   bool freeMode = (g_cfg.cycleFreeRun && g_cfg.runAllCycles);
+   bool rawLike  = (!symAuth || freeMode);
+   return(g_cfg.cycleRawEntries && rawLike);
+}
+
+//==================================================================
 // RAW ENTRY EDGES — the SELECTED engine's P3 (return) / P4 (breakout)
 // edges this bar, BEFORE the shared gates. Lets the entry engine run
 // off LETRA, F16, Symphony, CONSENSUS or BEST identically.
@@ -688,7 +704,10 @@ void Sym_RawEntryEdges(bool &eL3,bool &eL4,bool &eS3,bool &eS4)
    // normalized cycle, so it works identically for Symphony as for LETRA.
    if(g_cfg.cycleFreeRun && g_cfg.runAllCycles)
    {
-      bool freshEdge = (cy.stage!=cy.prevStage) && cy.stage>=CYC_EXPANSION && cy.direction!=DIR_NONE;
+      // don't enter on reversal/sweep phases (liquidation) — those are
+      // "reversal risk", a common source of incorrect counter-trend entries.
+      bool freshEdge = (cy.stage!=cy.prevStage) && cy.stage>=CYC_EXPANSION
+                       && cy.direction!=DIR_NONE && cy.phase!=PH_LIQUIDATION;
       if(freshEdge && cy.direction==DIR_LONG)       { if(cy.stage==CYC_BREAKOUT) eL4=true; else eL3=true; }
       else if(freshEdge && cy.direction==DIR_SHORT) { if(cy.stage==CYC_BREAKOUT) eS4=true; else eS3=true; }
       return;
@@ -1039,6 +1058,11 @@ void SymphonyManageExits()
    int barsAvail = FalconBars();
    if(barsAvail <= (2*g_cfg.pivotLen + 5)) return;
 
+   // RAW/FREE mode: TALON + position TP/SL + PYRO own the exit. Symphony's
+   // ARC/phase exit is keyed to sym_mode/sym_phase and would kill the authority
+   // engine's trades early (and fire constantly in free-run). Skip it.
+   if(SymRawActive()) return;
+
    int    shiftNow = 1;
    double closeNow = gClose[shiftNow];
    double atrNow   = FalconATR(shiftNow);
@@ -1327,6 +1351,12 @@ void SymphonyArcPartial()
 {
    double frac = g_cfg.arcPartialFrac;
    if(frac<=0.0) return;                       // disabled => let it all run
+
+   // RAW/FREE mode: the ARC destination (Sym_DestLong/Short) is Symphony's
+   // impulse target, not the authority engine's — banking against it would
+   // clip a LETRA/free trade at the wrong level. The raw position TP banks at
+   // target instead, and TALON trails the rest. Skip the ARC partial here.
+   if(SymRawActive()) return;
 
    double atr = FalconATR(1); if(atr<=0.0) atr=FalconATR(0);
    if(atr<=0.0) return;
