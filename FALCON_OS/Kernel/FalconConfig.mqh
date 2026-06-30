@@ -199,6 +199,7 @@ input double  InpArcPartialMinATR  = 1.5; // Min favorable excursion (ATR) befor
 
 input string  __sep_planner     = "════════ TRADE PLANNING LAYER (FALCON OS 9.0) ════════"; // ──
 input bool    InpUsePlanner      = true;  // LIVE: Trade Planning Layer drives entries — engines compose plans, Decision executes ready ones
+input bool    InpPlannerExclusive= false; // true: planner OWNS entries (Symphony silent). false: BOTH run (shared guards prevent double-stacking)
 input int     InpPlanExpiryBars  = 40;    // Bars a plan waits for its triggers before it expires
 input bool    InpPlanNeedSweep   = false; // Require a liquidity sweep to complete before a plan can trigger
 input bool    InpPlanNeedStruct  = true;  // Require structural confirmation (BOS/CHoCH not against) before a plan can trigger
@@ -295,6 +296,7 @@ struct FalconConfig
    int    stopPivotLen, stopLookback;
    // trade planning layer (FALCON OS 9.0)
    bool   usePlanner, planNeedSweep, planNeedStruct;
+   bool   plannerExclusive;
    int    planExpiryBars;
    double planMinConf;
    double talonBufATR, talonBaseATR, talonConvSpanATR, talonMinTighten, talonBeATR;
@@ -487,6 +489,7 @@ void FalconConfigInit()
    g_cfg.stopPivotLen     = InpStopPivotLen;
    g_cfg.stopLookback     = InpStopLookback;
    g_cfg.usePlanner       = InpUsePlanner;
+   g_cfg.plannerExclusive = InpPlannerExclusive;
    g_cfg.planExpiryBars   = InpPlanExpiryBars;
    g_cfg.planNeedSweep    = InpPlanNeedSweep;
    g_cfg.planNeedStruct   = InpPlanNeedStruct;

@@ -1139,9 +1139,11 @@ void SymphonyExecuteTrading()
    int barsAvail = FalconBars();
    if(barsAvail < 3) return;
 
-   // When the Trade Planning Layer is active it OWNS entries (Symphony still
-   // manages exits via SymphonyTradeManage). Don't double-trade.
-   if(g_cfg.usePlanner) return;
+   // The planner can run ALONGSIDE Symphony's phase entries (both share the
+   // portfolio guards — one-per-owner-curve / cooldown / max-positions — so they
+   // can't double-stack the same move). Set InpPlannerExclusive=true to silence
+   // Symphony's entries and let the planner own entries alone.
+   if(g_cfg.usePlanner && g_cfg.plannerExclusive) return;
 
    int      shiftNow = 1;
    double   closeNow = gClose[shiftNow];

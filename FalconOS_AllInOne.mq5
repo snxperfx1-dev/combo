@@ -5,7 +5,7 @@
 //|   Risk: PYRO thermal + TALON curve-convergent structural grip.   |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "6.01"
+#property version   "6.02"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -1301,6 +1301,7 @@ input double  InpArcPartialMinATR  = 1.5; // Min favorable excursion (ATR) befor
 
 input string  __sep_planner     = "════════ TRADE PLANNING LAYER (FALCON OS 9.0) ════════"; // ──
 input bool    InpUsePlanner      = true;  // LIVE: Trade Planning Layer drives entries — engines compose plans, Decision executes ready ones
+input bool    InpPlannerExclusive= false; // true: planner OWNS entries (Symphony silent). false: BOTH run (shared guards prevent double-stacking)
 input int     InpPlanExpiryBars  = 40;    // Bars a plan waits for its triggers before it expires
 input bool    InpPlanNeedSweep   = false; // Require a liquidity sweep to complete before a plan can trigger
 input bool    InpPlanNeedStruct  = true;  // Require structural confirmation (BOS/CHoCH not against) before a plan can trigger
@@ -1397,6 +1398,7 @@ struct FalconConfig
    int    stopPivotLen, stopLookback;
    // trade planning layer (FALCON OS 9.0)
    bool   usePlanner, planNeedSweep, planNeedStruct;
+   bool   plannerExclusive;
    int    planExpiryBars;
    double planMinConf;
    double talonBufATR, talonBaseATR, talonConvSpanATR, talonMinTighten, talonBeATR;
@@ -1589,6 +1591,7 @@ void FalconConfigInit()
    g_cfg.stopPivotLen     = InpStopPivotLen;
    g_cfg.stopLookback     = InpStopLookback;
    g_cfg.usePlanner       = InpUsePlanner;
+   g_cfg.plannerExclusive = InpPlannerExclusive;
    g_cfg.planExpiryBars   = InpPlanExpiryBars;
    g_cfg.planNeedSweep    = InpPlanNeedSweep;
    g_cfg.planNeedStruct   = InpPlanNeedStruct;
@@ -8544,9 +8547,11 @@ void SymphonyExecuteTrading()
    int barsAvail = FalconBars();
    if(barsAvail < 3) return;
 
-   // When the Trade Planning Layer is active it OWNS entries (Symphony still
-   // manages exits via SymphonyTradeManage). Don't double-trade.
-   if(g_cfg.usePlanner) return;
+   // The planner can run ALONGSIDE Symphony's phase entries (both share the
+   // portfolio guards — one-per-owner-curve / cooldown / max-positions — so they
+   // can't double-stack the same move). Set InpPlannerExclusive=true to silence
+   // Symphony's entries and let the planner own entries alone.
+   if(g_cfg.usePlanner && g_cfg.plannerExclusive) return;
 
    int      shiftNow = 1;
    double   closeNow = gClose[shiftNow];
