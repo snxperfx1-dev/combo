@@ -575,15 +575,127 @@ void CycleSymphony_Compute()
 }
 
 //==================================================================
-// BACK-COMPAT WRAPPER — compute phases then bridge to the canonical
-// wave (preserves the original single-authority behaviour). The
-// multi-engine pipeline (Part D) calls SymphonyComputePhases() and
-// routes the bridge through the configurable PhaseAuthorityApply().
+// GENERIC CYCLE → WAVE BRIDGE — write any engine's normalized cycle
+//   into the canonical g_state.wave (the phase the rest of the OS
+//   reads). Preserves the Market Engine geometry sub-scores; overrides
+//   only the phase-engine fields. Used for the F16 / consensus / best
+//   authority paths (the Symphony path keeps its richer dedicated bridge).
 //==================================================================
-void SymphonyUpdatePhases()
+void Cycle_BridgeToWave(const WaveCycle &cy)
 {
-   SymphonyComputePhases();
-   SymphonyBridgeToWave();
+   FalconWave w = g_state.wave;   // keep geometry descriptors
+   w.prevPhase = w.phase;
+   w.phase     = cy.phase;
+   w.direction = cy.direction;
+   if(cy.objective!=0.0)    w.objective  = cy.objective;
+   if(cy.invalidation!=0.0) w.origin     = cy.invalidation;
+   w.completion= cy.maturity;
+   w.confidence= cy.confidence;
+   // ownership transfer proxy keyed to the engine's lifecycle stage
+   w.dominanceTransfer = (cy.stage>=CYC_RETURN ? 60.0 : cy.stage==CYC_RETRACE ? 30.0 : 0.0);
+   g_state.wave = w;
+   if(w.phase != w.prevPhase) FalconPublish(EVT_PHASE_CHANGE, w.phase, FalconPhaseStr(w.phase));
+}
+
+//==================================================================
+// PHASE AUTHORITY — write the SELECTED engine's interpretation into the
+//   canonical wave. This is the configurable replacement for the old
+//   "Symphony is always the truth" bridge. Don't replace the phase
+//   engine — pick which one DRIVES, and let the referee compare them.
+//     • ENG_SYMPHONY : the dedicated Symphony bridge (default, unchanged)
+//     • ENG_LETRA    : keep the native LETRA wave (no-op)
+//     • ENG_F16      : bridge the F16 curve-tree cycle
+//     • ENG_CONSENSUS: bridge the consensus (engine matching consensusDir)
+//     • ENG_BEST     : bridge whichever engine the referee ranks best
+//==================================================================
+void PhaseAuthorityApply()
+{
+   int eng = g_cfg.entryEngine;
+
+   // safety: if the comparative cycles are not being computed, the only valid
+   // authority is Symphony's dedicated bridge (its phases are still computed).
+   if(!g_cfg.runAllCycles){ if(g_cfg.useSymphony) SymphonyBridgeToWave(); return; }
+
+   if(eng==ENG_SYMPHONY){ if(g_cfg.useSymphony) SymphonyBridgeToWave(); return; }
+   if(eng==ENG_LETRA)   { return; }   // native LETRA wave already in g_state.wave
+   if(eng==ENG_F16)     { Cycle_BridgeToWave(g_state.cycles[ENG_F16]); return; }
+
+   if(eng==ENG_BEST)
+   {
+      int b = g_state.referee.bestEngine;
+      if(b==ENG_SYMPHONY){ if(g_cfg.useSymphony) SymphonyBridgeToWave(); }
+      else if(b>=0 && b<FALCON_NCYCLES) Cycle_BridgeToWave(g_state.cycles[b]);
+      return;
+   }
+
+   if(eng==ENG_CONSENSUS)
+   {
+      int cd = g_state.referee.consensusDir;
+      if(cd==DIR_NONE) return;   // no agreement -> leave native LETRA wave
+      // bridge the consensus-aligned engine with the highest demonstrated edge
+      int pick=-1; double best=-1.0;
+      for(int e=0;e<FALCON_NCYCLES;e++)
+         if(g_state.cycles[e].direction==cd && g_state.cycles[e].accuracy>best)
+         { best=g_state.cycles[e].accuracy; pick=e; }
+      if(pick==ENG_SYMPHONY){ if(g_cfg.useSymphony) SymphonyBridgeToWave(); }
+      else if(pick>=0) Cycle_BridgeToWave(g_state.cycles[pick]);
+      return;
+   }
+}
+
+//==================================================================
+// EFFECTIVE ENTRY ENGINE — resolve the engine that drives ENTRIES this
+// bar (BEST -> referee.bestEngine). CONSENSUS is handled separately.
+//==================================================================
+int Sym_EffectiveEngine()
+{
+   if(g_cfg.entryEngine==ENG_BEST) return(g_state.referee.bestEngine);
+   return(g_cfg.entryEngine);
+}
+
+//==================================================================
+// RAW ENTRY EDGES — the SELECTED engine's P3 (return) / P4 (breakout)
+// edges this bar, BEFORE the shared gates. Lets the entry engine run
+// off LETRA, F16, Symphony, CONSENSUS or BEST identically.
+//==================================================================
+void Sym_RawEntryEdges(bool &eL3,bool &eL4,bool &eS3,bool &eS4)
+{
+   eL3=false; eL4=false; eS3=false; eS4=false;
+
+   // CONSENSUS — any consensus-aligned engine casting an entry edge.
+   if(g_cfg.entryEngine==ENG_CONSENSUS)
+   {
+      int cd=g_state.referee.consensusDir;
+      if(cd==DIR_NONE) return;
+      for(int e=0;e<FALCON_NCYCLES;e++)
+      {
+         if(!g_state.cycles[e].entryEdge || g_state.cycles[e].entryDir!=cd) continue;
+         int k=g_state.cycles[e].entryKind;
+         if(cd==DIR_LONG){ if(k==3) eL3=true; else if(k==4) eL4=true; }
+         else            { if(k==3) eS3=true; else if(k==4) eS4=true; }
+      }
+      return;
+   }
+
+   int eff=Sym_EffectiveEngine();
+
+   // SYMPHONY authority — native impulse phase edges (unchanged behaviour).
+   if(eff==ENG_SYMPHONY)
+   {
+      eL3=(sym_mode==1  && sym_phaseLong ==3 && sym_prevPhaseLong !=3);
+      eL4=(sym_mode==1  && sym_phaseLong ==4 && sym_prevPhaseLong !=4);
+      eS3=(sym_mode==-1 && sym_phaseShort==3 && sym_prevPhaseShort!=3);
+      eS4=(sym_mode==-1 && sym_phaseShort==4 && sym_prevPhaseShort!=4);
+      return;
+   }
+
+   // LETRA / F16 cycle authority — normalized return/breakout edges.
+   WaveCycle cy=g_state.cycles[eff];
+   if(cy.entryEdge)
+   {
+      if(cy.entryDir==DIR_LONG)      { if(cy.entryKind==3) eL3=true; else if(cy.entryKind==4) eL4=true; }
+      else if(cy.entryDir==DIR_SHORT){ if(cy.entryKind==3) eS3=true; else if(cy.entryKind==4) eS4=true; }
+   }
 }
 
 //==================================================================
@@ -816,39 +928,49 @@ void SymphonyExecuteTrading()
    bool longLocked  = (sym_exitedLongAnchor  != 0.0);
    bool shortLocked = (sym_exitedShortAnchor != 0.0);
 
-   // EDGE-TRIGGERED entries: fire only on the bar the phase TRANSITIONS into 3/4,
-   // never on every bar it stays there. (Level-triggering re-opened a new stacked
-   // position on every bar of a multi-bar retrace -> the dense entry clusters /
-   // chop.) Controlled pyramiding still happens: each fresh retest cycles phase
-   // back to 3 and arms one more stack.
-   bool L3 = (sym_mode==1  && sym_phaseLong ==3 && sym_prevPhaseLong !=3 && !longLocked  && !MM_CounterDirBlocked(DIR_LONG)  && SymphonyFactsConfirm(DIR_LONG)  && SymphonyBrainConfirms(DIR_LONG));
-   bool L4 = (sym_mode==1  && sym_phaseLong ==4 && sym_prevPhaseLong !=4 && !longLocked  && !MM_CounterDirBlocked(DIR_LONG)  && SymphonyFactsConfirm(DIR_LONG)  && SymphonyBrainConfirms(DIR_LONG));
-   bool S3 = (sym_mode==-1 && sym_phaseShort==3 && sym_prevPhaseShort!=3 && !shortLocked && !MM_CounterDirBlocked(DIR_SHORT) && SymphonyFactsConfirm(DIR_SHORT) && SymphonyBrainConfirms(DIR_SHORT));
-   bool S4 = (sym_mode==-1 && sym_phaseShort==4 && sym_prevPhaseShort!=4 && !shortLocked && !MM_CounterDirBlocked(DIR_SHORT) && SymphonyFactsConfirm(DIR_SHORT) && SymphonyBrainConfirms(DIR_SHORT));
+   // The Symphony per-impulse lockout only makes sense under Symphony authority
+   // (it is keyed to sym anchors). Other engines rely on edge-triggering +
+   // per-bar dedupe to avoid churn.
+   bool symAuth = (g_cfg.entryEngine!=ENG_CONSENSUS && Sym_EffectiveEngine()==ENG_SYMPHONY);
+   if(!symAuth){ longLocked=false; shortLocked=false; }
+
+   // EDGE-TRIGGERED entries from the SELECTED engine's wave cycle (LETRA / F16 /
+   // Symphony / Consensus / Best). Each fires only on the bar the engine
+   // TRANSITIONS into a return (P3) or breakout (P4), then clears the SAME
+   // subsystem gates (facts / brain / counter-dir).
+   bool eL3,eL4,eS3,eS4;
+   Sym_RawEntryEdges(eL3,eL4,eS3,eS4);
+
+   bool L3 = (eL3 && !longLocked  && !MM_CounterDirBlocked(DIR_LONG)  && SymphonyFactsConfirm(DIR_LONG)  && SymphonyBrainConfirms(DIR_LONG));
+   bool L4 = (eL4 && !longLocked  && !MM_CounterDirBlocked(DIR_LONG)  && SymphonyFactsConfirm(DIR_LONG)  && SymphonyBrainConfirms(DIR_LONG));
+   bool S3 = (eS3 && !shortLocked && !MM_CounterDirBlocked(DIR_SHORT) && SymphonyFactsConfirm(DIR_SHORT) && SymphonyBrainConfirms(DIR_SHORT));
+   bool S4 = (eS4 && !shortLocked && !MM_CounterDirBlocked(DIR_SHORT) && SymphonyFactsConfirm(DIR_SHORT) && SymphonyBrainConfirms(DIR_SHORT));
+
+   string engTag = FalconEngineStr(g_cfg.entryEngine==ENG_BEST?g_state.referee.bestEngine:g_cfg.entryEngine);
 
    double impL = sym_anchorHigh - sym_anchorLow;
    double impS = sym_anchorHigh - sym_anchorLow;
 
    // LONG P3
    if(L3 && sym_lastLongTradeTime!=barTime)
-      Sym_PlaceEntry(DIR_LONG,"P3 Long",riskCash,atrNow);
+      Sym_PlaceEntry(DIR_LONG,engTag+" P3 Long",riskCash,atrNow);
 
    // LONG P4
-   if(L4 && sym_lastLongTradeTime!=barTime && impL>0)
+   if(L4 && sym_lastLongTradeTime!=barTime && (!symAuth || impL>0))
    {
-      bool breakout = (closeNow>sym_anchorHigh || closeNow>gHigh[shiftNow+1] + 0.20*atrNow);
-      if(breakout) Sym_PlaceEntry(DIR_LONG,"P4 Long",riskCash,atrNow);
+      bool breakout = (!symAuth) || (closeNow>sym_anchorHigh || closeNow>gHigh[shiftNow+1] + 0.20*atrNow);
+      if(breakout) Sym_PlaceEntry(DIR_LONG,engTag+" P4 Long",riskCash,atrNow);
    }
 
    // SHORT P3
    if(S3 && sym_lastShortTradeTime!=barTime)
-      Sym_PlaceEntry(DIR_SHORT,"P3 Short",riskCash,atrNow);
+      Sym_PlaceEntry(DIR_SHORT,engTag+" P3 Short",riskCash,atrNow);
 
    // SHORT P4
-   if(S4 && sym_lastShortTradeTime!=barTime && impS>0)
+   if(S4 && sym_lastShortTradeTime!=barTime && (!symAuth || impS>0))
    {
-      bool breakout = (closeNow<sym_anchorLow || closeNow<gLow[shiftNow+1] - 0.20*atrNow);
-      if(breakout) Sym_PlaceEntry(DIR_SHORT,"P4 Short",riskCash,atrNow);
+      bool breakout = (!symAuth) || (closeNow<sym_anchorLow || closeNow<gLow[shiftNow+1] - 0.20*atrNow);
+      if(breakout) Sym_PlaceEntry(DIR_SHORT,engTag+" P4 Short",riskCash,atrNow);
    }
 }
 

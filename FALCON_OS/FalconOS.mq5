@@ -82,16 +82,24 @@ void FalconPipeline()
    MarketEngineRun();
    FalconModuleEnd(MOD_MARKET,t0);
 
-   // Symphony phase engine = the SINGLE phase/direction SOURCE OF TRUTH.
-   // Computed from the same shared series right after the Market Layer observes
-   // geometry, it then BRIDGES its impulse + Phase 1..4 model onto the canonical
-   // g_state.wave (phase/direction/flip/origin/objective/completion). Every
-   // downstream layer (Memory ownership, Intelligence, Decision master,
-   // Execution, Visualization) therefore reasons on ONE phase engine — Symphony.
-   // The Market Engine still supplies raw geometry descriptors (sub-scores,
-   // energy, recursion, cycle extremes); only the phase ENGINE is unified here.
+   // MULTI-ENGINE WAVE CYCLES — run THREE phase cycles on the SAME shared
+   // observations and let the market decide which has the highest predictive
+   // power (don't replace the phase engine — compare them). LETRA is captured
+   // HERE from the still-native g_state.wave, before any authority overwrites it.
+   if(g_cfg.runAllCycles) CycleLetra_Compute();   // ENG_LETRA — per-TF structural FSM lens
    if(g_cfg.useSymphony)
-      SymphonyUpdatePhases();
+   {
+      SymphonyComputePhases();                    // compute sym_* (NO bridge yet)
+      if(g_cfg.runAllCycles) CycleSymphony_Compute(); // ENG_SYMPHONY — impulse/retracement lens
+   }
+
+   // PHASE AUTHORITY — write the SELECTED engine's read into the canonical
+   // g_state.wave BEFORE the Memory layer consumes it, so ownership/intel/
+   // decision all reason on the chosen engine (default Symphony = unchanged).
+   // The F16 lens uses the curve tree built last bar (a 1-bar lag) because the
+   // tree must rebuild AFTER Memory; entries (execution layer) use the fresh
+   // F16 cycle computed below.
+   PhaseAuthorityApply();
 
    // ── MEMORY LAYER ──────────────────────────────────────────────
    // Network → Curve Tree → Wave Matrix → FEZ → FRZ → Campaign →
@@ -99,8 +107,10 @@ void FalconPipeline()
    FalconModuleStart(MOD_MEMORY,t0);
    MemoryEngineRun();
    CurveTreeRun();      // F72 recursive curve tree — enrich ownership/recursion after memory resolves the owner TF
+   if(g_cfg.runAllCycles) CycleF16_Compute();   // ENG_F16 — recursive curve-tree node lens (fresh, after the tree rebuilds)
    TimeEngineRun();     // TIE — 5-cycle temporal stack (session/killzone/time-quality)
    CurveLocatorRun();   // always-on "you are here" on the curve (multi-TF, persistent)
+   WaveRefereeRun();    // S12J referee — score each engine, form consensus / best, measure deviation
    FalconModuleEnd(MOD_MEMORY,t0);
 
    // ── INTELLIGENCE LAYER ────────────────────────────────────────
