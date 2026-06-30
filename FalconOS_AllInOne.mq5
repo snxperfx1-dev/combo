@@ -5,7 +5,7 @@
 //|   Risk: PYRO thermal + TALON curve-convergent structural grip.   |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "5.04"
+#property version   "5.05"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -8640,6 +8640,7 @@ string VZ_TabName(const int t)
       case 10:return("PERFORMANCE");
       case 12:return("LEARNING");
       case 13:return("ENGINES");
+      case 14:return("COMMAND");
       default:return("DIAGNOSTICS");
    }
 }
@@ -8919,6 +8920,43 @@ string VZ_Body(const int tab)
          s+="money mgr   : "+((g_cfg.useProfitLadder||g_cfg.counterDirBlock||g_cfg.maxBasketRiskPct>0)?"on":"DISABLED");
          break;
       }
+      case 14: // COMMAND — execution + self-learning + engine comparison at a glance
+      {
+         WaveReferee rf=g_state.referee;
+         WaveCycle L=g_state.cycles[ENG_LETRA];
+         WaveCycle F=g_state.cycles[ENG_F16];
+         WaveCycle Y=g_state.cycles[ENG_SYMPHONY];
+         // ---- EXECUTION ----
+         s+="── EXECUTION ─────────────────────────\n";
+         s+="Act "+FalconActionStr(e.action)+"  "+FalconTradeStateStr(e.tradeState)+"  open L/S "+IntegerToString(e.openLongCount)+"/"+IntegerToString(e.openShortCount)+"\n";
+         s+="E/SL/TP "+VZ_Px(e.entry)+" / "+VZ_Px(e.stop)+" / "+VZ_Px(e.target)+"  R:R "+DoubleToString(e.reward,2)+"\n";
+         s+="TALON L "+(e.gripLong>0?VZ_Px(e.gripLong)+" "+FalconTalonStr(e.talonStageLong):"—")
+            +"  S "+(e.gripShort>0?VZ_Px(e.gripShort)+" "+FalconTalonStr(e.talonStageShort):"—")+"\n";
+         s+="Lots "+DoubleToString(e.lots,2)+"  Risk$ "+DoubleToString(e.riskCash,0)+"  PnL "+DoubleToString(e.openPnL,2)
+            +"  "+(e.sessionOpen?"SES":"--")+"  gate "+(g_cfg.useFactGate?(sym_factVeto==""?"clear":sym_factVeto):"off")+"\n";
+         // ---- SELF-LEARNING ----
+         s+="── SELF-LEARNING ─────────────────────\n";
+         if(g_cfg.useSelfAware)
+            s+="SELF "+g_state.self.label+" x"+DoubleToString(g_state.self.throttle,2)
+               +"  "+IntegerToString(g_state.self.winStreak)+"W/"+IntegerToString(g_state.self.lossStreak)+"L\n";
+         else s+="SELF off\n";
+         s+="Adaptive L x"+DoubleToString(AD_SizeMult(AD_Bucket(DIR_LONG)),2)+"(n"+IntegerToString(ad_n[AD_Bucket(DIR_LONG)])+")"
+            +"  S x"+DoubleToString(AD_SizeMult(AD_Bucket(DIR_SHORT)),2)+"(n"+IntegerToString(ad_n[AD_Bucket(DIR_SHORT)])+")"
+            +"  globR "+DoubleToString(ad_globalR,2)+"\n";
+         int ccodes[6]={VR_NOZONE,VR_NOROOM,VR_EXHAUST,VR_LATE,VR_NETWORK,VR_PARTICIPANT};
+         int taking=0; for(int i=0;i<6;i++) if(MT_Override(ccodes[i])) taking++;
+         s+="Regret overrides active: "+IntegerToString(taking)+"\n";
+         // ---- ENGINE COMPARISON ----
+         s+="── ENGINES (dir · stage · acc%(n)) ───\n";
+         s+=StringFormat("LETRA %-5s %-10s %.0f(%d)\n", VZ_Dir(L.direction),FalconStageStr(L.stage),L.accuracy,L.samples);
+         s+=StringFormat("F16   %-5s %-10s %.0f(%d)\n", VZ_Dir(F.direction),FalconStageStr(F.stage),F.accuracy,F.samples);
+         s+=StringFormat("SYMPH %-5s %-10s %.0f(%d)\n", VZ_Dir(Y.direction),FalconStageStr(Y.stage),Y.accuracy,Y.samples);
+         s+="Consensus "+VZ_Dir(rf.consensusDir)+" "+FalconStageStr(rf.consensusStage)
+            +"  dev st"+DoubleToString(rf.deviationStage,0)+"/"+DoubleToString(rf.deviationObjATR,1)+"ATR\n";
+         s+="Best "+FalconEngineStr(rf.bestEngine)+" "+DoubleToString(rf.bestAccuracy,0)+"%"
+            +"  Lead "+FalconEngineStr(rf.leader)+"  Auth "+FalconEngineStr(g_cfg.entryEngine);
+         break;
+      }
       default: // DIAGNOSTICS
          for(int m=0;m<MOD_COUNT;m++)
             s+=StringFormat("%-14s %s  avg %.0fus  runs %d\n",
@@ -9016,8 +9054,8 @@ void FalconVizOnChartEvent(const int id,const long &lparam,const double &dparam,
 {
    if(id!=CHARTEVENT_KEYDOWN) return;
    int prev=g_cfg.dashboardTab;
-   if(lparam==84 || lparam==39)       g_cfg.dashboardTab = (g_cfg.dashboardTab+1)%14;  // 'T' / RIGHT
-   else if(lparam==37)                g_cfg.dashboardTab = (g_cfg.dashboardTab+13)%14;  // LEFT
+   if(lparam==84 || lparam==39)       g_cfg.dashboardTab = (g_cfg.dashboardTab+1)%15;  // 'T' / RIGHT
+   else if(lparam==37)                g_cfg.dashboardTab = (g_cfg.dashboardTab+14)%15;  // LEFT
    if(g_cfg.dashboardTab!=prev) VisualizationRun();
 }
 
