@@ -5,7 +5,7 @@
 //|   Risk: PYRO thermal + TALON curve-convergent structural grip.   |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "5.03"
+#property version   "5.04"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -1195,6 +1195,8 @@ input double  InpTalonBaseATR     = 2.5;  // Base trail distance far from target
 input double  InpTalonConvSpanATR = 6.0;  // Distance-to-target (ATR) over which the trail converges
 input double  InpTalonMinTighten  = 0.25; // Tightest trail fraction near target / terminal (0..1)
 input double  InpTalonBeATR        = 1.6; // Favorable excursion (ATR) that earns the breakeven lock
+input double  InpTalonGiveback     = 0.5; // PROFIT LOCK: max fraction of PEAK campaign profit TALON will give back (0=lock all, 1=off)
+input double  InpTalonLockArmATR   = 1.5; // Peak favorable excursion (ATR) before the profit-lock engages
 input double  InpArcPartialFrac    = 0.33;// Fraction banked when price REACHES the curve destination (0 = let it all run)
 input double  InpArcPartialMinATR  = 1.5; // Min favorable excursion (ATR) before any ARC partial is allowed
 
@@ -1272,6 +1274,7 @@ struct FalconConfig
    // TALON grip (breakeven + trail)
    bool   useTalon;  int talonStructLen;
    double talonBufATR, talonBaseATR, talonConvSpanATR, talonMinTighten, talonBeATR;
+   double talonGiveback, talonLockArmATR;
    double arcPartialFrac, arcPartialMinATR;
    // viz
    bool   showDashboard, verboseLog;  int dashboardTab;
@@ -1422,6 +1425,8 @@ void FalconConfigInit()
    g_cfg.talonConvSpanATR = InpTalonConvSpanATR;
    g_cfg.talonMinTighten  = InpTalonMinTighten;
    g_cfg.talonBeATR       = InpTalonBeATR;
+   g_cfg.talonGiveback    = InpTalonGiveback;
+   g_cfg.talonLockArmATR  = InpTalonLockArmATR;
    g_cfg.arcPartialFrac   = InpArcPartialFrac;
    g_cfg.arcPartialMinATR = InpArcPartialMinATR;
 
@@ -7295,6 +7300,8 @@ double   talon_anchorLong  = 0.0;   // ratcheting higher-low the long grip rides
 double   talon_anchorShort = 0.0;   // ratcheting lower-high the short grip rides
 bool     talon_beLong  = false;     // long campaign breakeven earned
 bool     talon_beShort = false;     // short campaign breakeven earned
+double   talon_peakLong  = 0.0;     // peak favorable excursion (ATR) — long campaign
+double   talon_peakShort = 0.0;     // peak favorable excursion (ATR) — short campaign
 
 // Re-entry lockout — once a campaign for the CURRENT impulse has been closed
 // (by trail-stop or composite exit), block re-entry in that direction until a
@@ -8408,6 +8415,25 @@ void TalonManageSide(const int dir,const FalconThermalCampaign &c,
    double trailDist = atr*g_cfg.talonBaseATR*convFrac;
    double convSL    = (dir==DIR_LONG ? price-trailDist : price+trailDist);
 
+   // 4b) PROFIT GIVE-BACK LOCK — the give-back killer. The structural/convergence
+   //    trail only tightens NEAR the target; a stacked campaign can run deep in
+   //    profit while the destination is still far, and hand a chunk back before
+   //    the wide trail catches. So track PEAK favorable excursion (ATR, ratchet
+   //    only) and, once it clears talonLockArmATR, never give back more than
+   //    talonGiveback of that peak. This caps "up heavy then gives it back"
+   //    regardless of distance to target. talonGiveback=1 disables it.
+   double favATR = (dir==DIR_LONG ? (price-E) : (E-price))/atr;
+   if(dir==DIR_LONG){ if(favATR>talon_peakLong)  talon_peakLong =favATR; }
+   else             { if(favATR>talon_peakShort) talon_peakShort=favATR; }
+   double peakATR = (dir==DIR_LONG ? talon_peakLong : talon_peakShort);
+   bool   lockOn  = false; double lockSL = 0.0;
+   if(g_cfg.talonGiveback < 1.0 && peakATR >= g_cfg.talonLockArmATR)
+   {
+      double keep = (1.0 - g_cfg.talonGiveback) * peakATR * atr;   // profit (price) to protect
+      lockSL = (dir==DIR_LONG ? E + keep : E - keep);
+      lockOn = true;
+   }
+
    // 5) COMPOSE — RIDE vs BANK.
    //    Far from the destination: use the LOOSER of (structural ratchet, ATR
    //    trail) so a healthy winner is given full room and is NOT noise-stopped
@@ -8421,11 +8447,15 @@ void TalonManageSide(const int dir,const FalconThermalCampaign &c,
       cand = (dir==DIR_LONG ? MathMin(structuralSL,convSL) : MathMax(structuralSL,convSL)); // looser => ride
    if(beLocked)
       cand = (dir==DIR_LONG ? MathMax(cand,beFloor) : MathMin(cand,beFloor));
+   // profit give-back lock ratchets the stop up to protect banked peak profit
+   if(lockOn)
+      cand = (dir==DIR_LONG ? MathMax(cand,lockSL) : MathMin(cand,lockSL));
 
    // stage (display)
    int stage;
    if(!beLocked)        stage=TG_FORMING;
    else if(terminal)    stage=TG_TERMINAL;
+   else if(lockOn && ((dir==DIR_LONG && lockSL>=convSL) || (dir==DIR_SHORT && lockSL<=convSL))) stage=TG_CONVERGING;
    else if(approaching) stage=TG_CONVERGING;
    else if(g_state.structure.bos==dir) stage=TG_RIDING;
    else                 stage=TG_BREAKEVEN;
@@ -8458,6 +8488,16 @@ void TalonGrip()
    double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
    double ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
 
+   // TALON needs the campaign baskets (blended entry / stack count / favorable
+   // excursion). PYRO builds them when it runs — but if PYRO is OFF, TALON must
+   // build them itself, otherwise the grip is inert (stackCount stays 0) and
+   // trades give profit back with no trailing at all.
+   if(!g_cfg.useThermalRisk)
+   {
+      TR_BuildCampaign(DIR_LONG,  g_state.risk.campaign[0]);
+      TR_BuildCampaign(DIR_SHORT, g_state.risk.campaign[1]);
+   }
+
    // confirmed structural pivots for the grip anchor
    int cl = g_cfg.talonStructLen+1;
    double pLow  = FalconIsPivotLow (cl,g_cfg.talonStructLen) ? gLow[cl]  : 0.0;
@@ -8467,10 +8507,10 @@ void TalonGrip()
    FalconThermalCampaign cS = g_state.risk.campaign[1];
 
    if(cL.stackCount>0) TalonManageSide(DIR_LONG, cL, atr, bid, ask, pLow);
-   else { talon_anchorLong=0.0;  talon_beLong=false;  g_state.exec.gripLong=0.0;  g_state.exec.talonStageLong=TG_FORMING; }
+   else { talon_anchorLong=0.0;  talon_beLong=false;  talon_peakLong=0.0;  g_state.exec.gripLong=0.0;  g_state.exec.talonStageLong=TG_FORMING; }
 
    if(cS.stackCount>0) TalonManageSide(DIR_SHORT, cS, atr, bid, ask, pHigh);
-   else { talon_anchorShort=0.0; talon_beShort=false; g_state.exec.gripShort=0.0; g_state.exec.talonStageShort=TG_FORMING; }
+   else { talon_anchorShort=0.0; talon_beShort=false; talon_peakShort=0.0; g_state.exec.gripShort=0.0; g_state.exec.talonStageShort=TG_FORMING; }
 }
 
 //==================================================================

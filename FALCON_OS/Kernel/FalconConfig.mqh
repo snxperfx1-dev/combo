@@ -173,6 +173,8 @@ input double  InpTalonBaseATR     = 2.5;  // Base trail distance far from target
 input double  InpTalonConvSpanATR = 6.0;  // Distance-to-target (ATR) over which the trail converges
 input double  InpTalonMinTighten  = 0.25; // Tightest trail fraction near target / terminal (0..1)
 input double  InpTalonBeATR        = 1.6; // Favorable excursion (ATR) that earns the breakeven lock
+input double  InpTalonGiveback     = 0.5; // PROFIT LOCK: max fraction of PEAK campaign profit TALON will give back (0=lock all, 1=off)
+input double  InpTalonLockArmATR   = 1.5; // Peak favorable excursion (ATR) before the profit-lock engages
 input double  InpArcPartialFrac    = 0.33;// Fraction banked when price REACHES the curve destination (0 = let it all run)
 input double  InpArcPartialMinATR  = 1.5; // Min favorable excursion (ATR) before any ARC partial is allowed
 
@@ -250,6 +252,7 @@ struct FalconConfig
    // TALON grip (breakeven + trail)
    bool   useTalon;  int talonStructLen;
    double talonBufATR, talonBaseATR, talonConvSpanATR, talonMinTighten, talonBeATR;
+   double talonGiveback, talonLockArmATR;
    double arcPartialFrac, arcPartialMinATR;
    // viz
    bool   showDashboard, verboseLog;  int dashboardTab;
@@ -400,6 +403,8 @@ void FalconConfigInit()
    g_cfg.talonConvSpanATR = InpTalonConvSpanATR;
    g_cfg.talonMinTighten  = InpTalonMinTighten;
    g_cfg.talonBeATR       = InpTalonBeATR;
+   g_cfg.talonGiveback    = InpTalonGiveback;
+   g_cfg.talonLockArmATR  = InpTalonLockArmATR;
    g_cfg.arcPartialFrac   = InpArcPartialFrac;
    g_cfg.arcPartialMinATR = InpArcPartialMinATR;
 
