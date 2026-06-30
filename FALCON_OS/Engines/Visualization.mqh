@@ -94,19 +94,18 @@ string VZ_Body(const int tab)
          s+="Symphony    : "+(w.symMode==1?"LONG":w.symMode==-1?"SHORT":"—")
             +"  Pl="+IntegerToString(w.symPhaseLong)+" Ps="+IntegerToString(w.symPhaseShort)
             +(g_cfg.useSymphony?"  [AUTHORITY]":"")+"\n";
-         s+="Intent      : "+x.intent+"   Timing "+x.timing+"\n";
-         s+="Hypothesis  : "+x.hypothesis+"  ("+DoubleToString(x.hypothesisProb*100.0,0)+"%)\n";
-         s+="Prediction  : "+x.prediction+"\n";
-         s+="Validation  : "+(x.validated?"confirming":"pending")+"  ("+DoubleToString(x.validationScore,0)+"% hit)\n";
-         s+="Confidence  : "+DoubleToString(x.confidence,0)+"   Threat "+DoubleToString(x.threat,0)+"\n";
-         s+="Opportunity : "+x.opportunityGrade+"  ("+DoubleToString(x.opportunity,0)+")\n";
-         s+="Exec Prob   : "+DoubleToString(x.executionProbability*100.0,0)+"%   Resolution "+FalconResStr(x.resolutionState)+"\n";
+         s+="Owner       : "+VZ_Dir(g_state.campaign.owner)+"  ctrl "+DoubleToString(g_state.campaign.controlScore,0)
+            +"  HTF "+DoubleToString(g_state.htf.alignment,0)+"%"+(g_state.htf.fractalAgreement?" agree":"")+"\n";
+         s+="Curve here  : "+DoubleToString(g_state.curveLocator.pos*100.0,0)+"% "+g_state.curveLocator.label
+            +(g_state.curveLocator.advancing?" adv":" retr")+"  room "+DoubleToString(g_state.convexity.geometryCapacity,0)
+            +"  "+FalconResStr(x.resolutionState)+"\n";
+         s+="Conviction  : "+DoubleToString(x.confidence,0)+"   ExecProb "+DoubleToString(x.executionProbability*100.0,0)+"%\n";
          s+="Master Chief: "+(x.masterChiefConfirm?"CLEARED":"HOLD")+"  ("+DoubleToString(x.masterChiefScore,0)+")  "+x.masterChiefNote+"\n";
          s+="SELF        : "+(g_cfg.useSelfAware? (g_state.self.label+"  conf "+DoubleToString(g_state.self.selfConfidence,0)
             +"  throttle x"+DoubleToString(g_state.self.throttle,2)
             +"  (calib "+DoubleToString(g_state.self.calibration,0)
             +" form "+DoubleToString(g_state.self.form,0)+" streak "+IntegerToString(g_state.self.winStreak)+"/"+IntegerToString(g_state.self.lossStreak)+")") : "off (full size)")+"\n";
-         s+="Story       : "+x.story;
+         s+="Reasoning   : concrete engines (phases / ownership / curve / structure / multi-TF)";
          break;
       case 1: // PHYSICS
          s+="ATR         : "+DoubleToString(ph.atr,_Digits)+"   Vol "+DoubleToString(ph.volatility,2)+"\n";
