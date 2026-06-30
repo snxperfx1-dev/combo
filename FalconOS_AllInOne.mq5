@@ -5,7 +5,7 @@
 //|   Risk: PYRO thermal + TALON curve-convergent structural grip.   |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "5.23"
+#property version   "5.24"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -1119,6 +1119,8 @@ input bool    InpUseFactGate     = true;  // Each subsystem casts a concrete VET
 input double  InpFactPartThreat  = 70.0;  // Opposing participant dominance (%) that vetoes an entry
 input double  InpFactNetPressure = 50.0;  // Opposing network authority-pressure that vetoes an entry
 input bool    InpFactNeedZone    = true;  // Require price to be AT a real subsystem zone (flip/demand/supply/OB/FU/inducement)
+input bool    InpEntryAtZone     = true;  // FREE-RUN too: only enter when price is AT a real zone (demand=buys / supply=sells) — stops random-location entries
+input bool    InpEntryNeedRoom   = true;  // FREE-RUN too: require curve ROOM (capacity left, not late/exhausted on the owner leg) before entering
 input string  __sep_plan        = "════════ TRADE PLAN (subsystem-composed) ════════"; // ──
 input bool    InpUseTradePlan    = true;  // Compose stop/target/size from subsystems (off: Symphony anchor+-ATR / ARC)
 input double  InpMinRR           = 4.0;   // Min reward:risk (from subsystem stop+target) to take an entry
@@ -1269,6 +1271,7 @@ struct FalconConfig
    int    minConf;  double maxThreat, maxConflict, execProbArm;
    bool   requireConfluence;
    bool   useFactGate, factNeedZone;
+   bool   entryAtZone, entryNeedRoom;
    double factPartThreat, factNetPressure;
    bool   useTradePlan;
    double minRR, stopBufATR;
@@ -1415,6 +1418,8 @@ void FalconConfigInit()
    g_cfg.requireConfluence= InpRequireConfluence;
    g_cfg.useFactGate      = InpUseFactGate;
    g_cfg.factNeedZone     = InpFactNeedZone;
+   g_cfg.entryAtZone      = InpEntryAtZone;
+   g_cfg.entryNeedRoom    = InpEntryNeedRoom;
    g_cfg.factPartThreat   = InpFactPartThreat;
    g_cfg.factNetPressure  = InpFactNetPressure;
    g_cfg.useTradePlan     = InpUseTradePlan;
@@ -8409,6 +8414,23 @@ void Sym_PlaceEntry(const int dir,const string tag,const double riskCash,const d
 //   Trigger/timing = Symphony phase edge; stop/target/size = composed
 //   from the subsystems (TradePlan). Reuses EE_IsTradeTime.
 //==================================================================
+// FREE-RUN ENTRY QUALITY — the location discipline that stops "random"
+// entries when the heavy fact gate is bypassed (raw/free mode). Keeps only
+// the checks that decide WHERE you enter: at a real zone (demand=buys /
+// supply=sells) and with room left on the curve. HTF/ownership/network
+// vetoes stay off in free-run; this just blocks random-location entries.
+bool Sym_EntryQuality(const int dir,const double px)
+{
+   if(g_cfg.entryAtZone && !Sym_AtRealZone(dir,px)){ sym_factVeto="not at zone"; return(false); }
+   if(g_cfg.entryNeedRoom)
+   {
+      if(g_state.convexity.geometryCapacity < g_cfg.minEntryRoomPct){ sym_factVeto="no room"; return(false); }
+      if(g_state.wave.completion >= g_cfg.maxEntryComplete){ sym_factVeto="exhausted"; return(false); }
+      if(g_cfg.useCurveLocator && g_state.curveLocator.pos >= g_cfg.maxOwnerLegPos){ sym_factVeto="late on curve"; return(false); }
+   }
+   return(true);
+}
+
 void SymphonyExecuteTrading()
 {
    int barsAvail = FalconBars();
@@ -8454,8 +8476,8 @@ void SymphonyExecuteTrading()
    // and uses a clean ATR stop/target. This is what makes the A/B/C test fair
    // and lets any engine "trade freely like LETRA".
    bool rawMode = (g_cfg.cycleRawEntries && rawLike);
-   bool gateL = rawMode || (SymphonyFactsConfirm(DIR_LONG)  && SymphonyBrainConfirms(DIR_LONG));
-   bool gateS = rawMode || (SymphonyFactsConfirm(DIR_SHORT) && SymphonyBrainConfirms(DIR_SHORT));
+   bool gateL = (rawMode ? Sym_EntryQuality(DIR_LONG, closeNow)  : (SymphonyFactsConfirm(DIR_LONG)  && SymphonyBrainConfirms(DIR_LONG)));
+   bool gateS = (rawMode ? Sym_EntryQuality(DIR_SHORT,closeNow)  : (SymphonyFactsConfirm(DIR_SHORT) && SymphonyBrainConfirms(DIR_SHORT)));
 
    bool L3 = (eL3 && !longLocked  && !MM_CounterDirBlocked(DIR_LONG)  && gateL);
    bool L4 = (eL4 && !longLocked  && !MM_CounterDirBlocked(DIR_LONG)  && gateL);

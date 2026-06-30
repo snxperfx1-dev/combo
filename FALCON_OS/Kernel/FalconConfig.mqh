@@ -93,6 +93,8 @@ input bool    InpUseFactGate     = true;  // Each subsystem casts a concrete VET
 input double  InpFactPartThreat  = 70.0;  // Opposing participant dominance (%) that vetoes an entry
 input double  InpFactNetPressure = 50.0;  // Opposing network authority-pressure that vetoes an entry
 input bool    InpFactNeedZone    = true;  // Require price to be AT a real subsystem zone (flip/demand/supply/OB/FU/inducement)
+input bool    InpEntryAtZone     = true;  // FREE-RUN too: only enter when price is AT a real zone (demand=buys / supply=sells) — stops random-location entries
+input bool    InpEntryNeedRoom   = true;  // FREE-RUN too: require curve ROOM (capacity left, not late/exhausted on the owner leg) before entering
 input string  __sep_plan        = "════════ TRADE PLAN (subsystem-composed) ════════"; // ──
 input bool    InpUseTradePlan    = true;  // Compose stop/target/size from subsystems (off: Symphony anchor+-ATR / ARC)
 input double  InpMinRR           = 4.0;   // Min reward:risk (from subsystem stop+target) to take an entry
@@ -243,6 +245,7 @@ struct FalconConfig
    int    minConf;  double maxThreat, maxConflict, execProbArm;
    bool   requireConfluence;
    bool   useFactGate, factNeedZone;
+   bool   entryAtZone, entryNeedRoom;
    double factPartThreat, factNetPressure;
    bool   useTradePlan;
    double minRR, stopBufATR;
@@ -389,6 +392,8 @@ void FalconConfigInit()
    g_cfg.requireConfluence= InpRequireConfluence;
    g_cfg.useFactGate      = InpUseFactGate;
    g_cfg.factNeedZone     = InpFactNeedZone;
+   g_cfg.entryAtZone      = InpEntryAtZone;
+   g_cfg.entryNeedRoom    = InpEntryNeedRoom;
    g_cfg.factPartThreat   = InpFactPartThreat;
    g_cfg.factNetPressure  = InpFactNetPressure;
    g_cfg.useTradePlan     = InpUseTradePlan;
