@@ -105,7 +105,9 @@ string VZ_Body(const int tab)
             +"  throttle x"+DoubleToString(g_state.self.throttle,2)
             +"  (calib "+DoubleToString(g_state.self.calibration,0)
             +" form "+DoubleToString(g_state.self.form,0)+" streak "+IntegerToString(g_state.self.winStreak)+"/"+IntegerToString(g_state.self.lossStreak)+")") : "off (full size)")+"\n";
-         s+="Reasoning   : concrete engines (phases / ownership / curve / structure / multi-TF)";
+         s+="Reasoning   : concrete engines (phases / ownership / curve / structure / multi-TF)\n";
+         s+="Time        : "+g_state.timeIntel.sessionName+"  Q "+DoubleToString(g_state.timeIntel.timeQuality,0)+" "+g_state.timeIntel.label
+            +(g_state.timeIntel.killzone?("  KZ:"+g_state.timeIntel.killzoneName):"");
          break;
       case 1: // PHYSICS
          s+="ATR         : "+DoubleToString(ph.atr,_Digits)+"   Vol "+DoubleToString(ph.volatility,2)+"\n";
@@ -148,7 +150,22 @@ string VZ_Body(const int tab)
          s+="Evolution   : "+DoubleToString(cu.evolution,0)+"%   emergent nodes "+IntegerToString(cu.emergentNodes)+"\n";
          s+="Wave Matrix : dom TF "+IntegerToString(wmx.dominantTF)+" "+VZ_Dir(wmx.dominantDir)
             +"  agree "+DoubleToString(wmx.agreement,0)+"%  E "+DoubleToString(wmx.matrixEnergy,0)+"\n";
-         s+="Emergent    : "+FalconPhaseStr(cu.emergentPhase);
+         s+="Emergent    : "+FalconPhaseStr(cu.emergentPhase)+"\n";
+         s+="── F72 TREE ─────────────────────────\n";
+         s+="Nodes/Depth : "+IntegerToString(cu.treeNodeCount)+" alive  depth "+IntegerToString(cu.treeDepth)
+            +"/"+IntegerToString(cu.budgetDepth)+(cu.recursionComplete?"  [RECURSION SPENT]":"")+"\n";
+         s+="Owner Node  : "+VZ_Dir(cu.ownerNodeDir)+"  E "+DoubleToString(cu.ownerNodeEnergy,0)
+            +"  d"+IntegerToString(cu.ownerNodeDepth)+"  "+cu.ownerNodeState+"\n";
+         s+="Node leg    : "+VZ_Px(cu.ownerNodeOrigin)+" -> "+VZ_Px(cu.ownerNodeExtreme)+"\n";
+         s+="Compression : "+cu.compState+"  force "+DoubleToString(cu.compForce,0)+"\n";
+         s+="Migration   : 0.5 "+VZ_Px(cu.migration50)+"   0.618 "+VZ_Px(cu.migration618)+"\n";
+         s+="Narrative   : "+DoubleToString(cu.narrative,0)+(cu.narrative>=55?" strengthening":cu.narrative<=45?" weakening":" balanced")
+            +"  (sup "+IntegerToString(cu.supportVotes)+" / deg "+IntegerToString(cu.degradeVotes)+")\n";
+         s+="── TIME (TIE) ───────────────────────\n";
+         s+="Session     : "+g_state.timeIntel.sessionName+"  "+DoubleToString(g_state.timeIntel.sessionProgress*100.0,0)+"%"
+            +(g_state.timeIntel.killzone?("  KZ:"+g_state.timeIntel.killzoneName):"")+"\n";
+         s+="Time Quality: "+DoubleToString(g_state.timeIntel.timeQuality,0)+"  "+g_state.timeIntel.label
+            +"  path "+DoubleToString(g_state.timeIntel.pathProbability*100.0,0)+"%"+(g_state.timeIntel.permit?"":"  [DEAD]");
          break;
       case 5: // CAMPAIGN
          s+="Owner       : "+VZ_Dir(cm.owner)+"  ("+cm.institution+")\n";

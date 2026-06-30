@@ -647,6 +647,12 @@ bool SymphonyFactsConfirm(const int dir)
    // 7) LEARNED AVOIDANCE — refuse to repeat its own losing context.  [HARD]
    if(AD_Veto(AD_Bucket(dir))){ sym_factVeto="learned avoid"; return(false); }
 
+   // 7b) TIME INTELLIGENCE (TIE) — optional soft temporal permit. Off by
+   //     default (informational). When enabled, a DEAD-hour timeQuality
+   //     vetoes new entries (the hard session window stays separate).
+   if(g_cfg.useTimeIntel && g_cfg.timeGateEntries && !g_state.timeIntel.permit)
+   { sym_factVeto="time dead"; return(false); }
+
    // 8) SELF-AWARENESS — stood itself down (health / loss cluster / DD).  [HARD]
    if(SA_StandDown()){ sym_factVeto="self standdown"; return(false); }
 

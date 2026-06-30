@@ -34,6 +34,8 @@
 //==================================================================
 #include "Engines/MarketEngine.mqh"        // Market Layer
 #include "Engines/MemoryEngine.mqh"        // Intelligence Layer — memory
+#include "Engines/CurveTree.mqh"           // Intelligence Layer — F72 recursive event-driven curve tree (curves inside curves)
+#include "Engines/TimeEngine.mqh"          // Intelligence Layer — TIE (Engine 8.0) 5-cycle temporal stack
 #include "Engines/CurveLocator.mqh"        // Intelligence Layer — always-on multi-TF curve position
 #include "Engines/IntelligenceEngine.mqh"  // Intelligence Layer — reasoning
 #include "Engines/DecisionEngine.mqh"      // Decision Layer
@@ -95,6 +97,8 @@ void FalconPipeline()
    // Participants   (remembers)
    FalconModuleStart(MOD_MEMORY,t0);
    MemoryEngineRun();
+   CurveTreeRun();      // F72 recursive curve tree — enrich ownership/recursion after memory resolves the owner TF
+   TimeEngineRun();     // TIE — 5-cycle temporal stack (session/killzone/time-quality)
    CurveLocatorRun();   // always-on "you are here" on the curve (multi-TF, persistent)
    FalconModuleEnd(MOD_MEMORY,t0);
 
@@ -173,6 +177,8 @@ int OnInit()
    FalconPersistenceInit();
    if(g_cfg.useThermalRisk) ThermalRiskInit();
    MoneyManagerInit();
+   CurveTreeInit();
+   TimeEngineInit();
    CurveLocatorInit();
    AdaptiveInit();
    SelfAwarenessInit();

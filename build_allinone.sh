@@ -16,6 +16,8 @@ ORDER=(
   "Kernel/FalconPersistence.mqh"
   "Engines/MarketEngine.mqh"
   "Engines/MemoryEngine.mqh"
+  "Engines/CurveTree.mqh"
+  "Engines/TimeEngine.mqh"
   "Engines/CurveLocator.mqh"
   "Engines/IntelligenceEngine.mqh"
   "Engines/DecisionEngine.mqh"

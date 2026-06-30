@@ -61,6 +61,18 @@ input int     InpAuthMin        = 45;    // Min node authority
 input int     InpDormantBars    = 120;   // Bars until dormant
 input int     InpHistoryBars    = 600;   // Bars until historical
 
+input string  __sep_curvetree   = "════════ RECURSIVE CURVE TREE (F72) ════════"; // ──
+input bool    InpUseCurveTree    = true;  // Build the F72 event-driven recursive CurveNode tree (curves inside curves)
+input double  InpCTOwnerMinE     = 12.0;  // Energy floor: a node owns price only while energy >= this (Principle 8)
+input double  InpCTProgressGain  = 7.0;   // Energy gained per bar a node makes progress (continuation)
+input double  InpCTStallDecay     = 2.0;  // Energy lost per bar a node stalls (no new extreme)
+input int     InpCTMaxNodes       = 60;   // Max nodes retained in the tree (oldest shifted out)
+
+input string  __sep_time        = "════════ TIME INTELLIGENCE (TIE — Engine 8.0) ════════"; // ──
+input bool    InpUseTimeIntel    = true;  // Run the 5-cycle temporal stack (session/killzone/time-quality probabilities)
+input double  InpTimeQualityFloor= 35.0;  // Soft temporal permit: timeQuality below this marks DEAD/QUIET hours
+input bool    InpTimeGateEntries = false; // Let TIE cast a SOFT veto on entries in DEAD hours (off: informational only)
+
 input string  __sep_decision    = "════════ DECISION (SENSEEI) ════════"; // ──
 input int     InpMinConf        = 55;    // Min confidence to ATTACK
 input double  InpMaxThreat      = 45.0;  // Max threat to ATTACK
@@ -180,6 +192,13 @@ struct FalconConfig
    int    arcHorizonBars;  double convPower, arcExtMult, outerBandAtrMult, arcToleranceAtr;
    // memory
    double wickFrac;  int fuLookback, authMin, dormantBars, historyBars;
+   // recursive curve tree (F72)
+   bool   useCurveTree;
+   double ctOwnerMinE, ctProgressGain, ctStallDecay;
+   int    ctMaxNodes;
+   // time intelligence (TIE — Engine 8.0)
+   bool   useTimeIntel, timeGateEntries;
+   double timeQualityFloor;
    // decision
    int    minConf;  double maxThreat, maxConflict, execProbArm;
    bool   requireConfluence;
@@ -265,6 +284,16 @@ void FalconConfigInit()
    g_cfg.authMin          = InpAuthMin;
    g_cfg.dormantBars      = InpDormantBars;
    g_cfg.historyBars      = InpHistoryBars;
+
+   g_cfg.useCurveTree     = InpUseCurveTree;
+   g_cfg.ctOwnerMinE      = InpCTOwnerMinE;
+   g_cfg.ctProgressGain   = InpCTProgressGain;
+   g_cfg.ctStallDecay     = InpCTStallDecay;
+   g_cfg.ctMaxNodes       = InpCTMaxNodes;
+
+   g_cfg.useTimeIntel     = InpUseTimeIntel;
+   g_cfg.timeGateEntries  = InpTimeGateEntries;
+   g_cfg.timeQualityFloor = InpTimeQualityFloor;
 
    g_cfg.minConf          = InpMinConf;
    g_cfg.maxThreat        = InpMaxThreat;

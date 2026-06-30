@@ -5,7 +5,7 @@
 //|   Risk: PYRO thermal + TALON curve-convergent structural grip.   |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "4.57"
+#property version   "4.60"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -74,6 +74,18 @@ input int     InpFuLookback     = 3;     // FU structure lookback
 input int     InpAuthMin        = 45;    // Min node authority
 input int     InpDormantBars    = 120;   // Bars until dormant
 input int     InpHistoryBars    = 600;   // Bars until historical
+
+input string  __sep_curvetree   = "════════ RECURSIVE CURVE TREE (F72) ════════"; // ──
+input bool    InpUseCurveTree    = true;  // Build the F72 event-driven recursive CurveNode tree (curves inside curves)
+input double  InpCTOwnerMinE     = 12.0;  // Energy floor: a node owns price only while energy >= this (Principle 8)
+input double  InpCTProgressGain  = 7.0;   // Energy gained per bar a node makes progress (continuation)
+input double  InpCTStallDecay     = 2.0;  // Energy lost per bar a node stalls (no new extreme)
+input int     InpCTMaxNodes       = 60;   // Max nodes retained in the tree (oldest shifted out)
+
+input string  __sep_time        = "════════ TIME INTELLIGENCE (TIE — Engine 8.0) ════════"; // ──
+input bool    InpUseTimeIntel    = true;  // Run the 5-cycle temporal stack (session/killzone/time-quality probabilities)
+input double  InpTimeQualityFloor= 35.0;  // Soft temporal permit: timeQuality below this marks DEAD/QUIET hours
+input bool    InpTimeGateEntries = false; // Let TIE cast a SOFT veto on entries in DEAD hours (off: informational only)
 
 input string  __sep_decision    = "════════ DECISION (SENSEEI) ════════"; // ──
 input int     InpMinConf        = 55;    // Min confidence to ATTACK
@@ -194,6 +206,13 @@ struct FalconConfig
    int    arcHorizonBars;  double convPower, arcExtMult, outerBandAtrMult, arcToleranceAtr;
    // memory
    double wickFrac;  int fuLookback, authMin, dormantBars, historyBars;
+   // recursive curve tree (F72)
+   bool   useCurveTree;
+   double ctOwnerMinE, ctProgressGain, ctStallDecay;
+   int    ctMaxNodes;
+   // time intelligence (TIE — Engine 8.0)
+   bool   useTimeIntel, timeGateEntries;
+   double timeQualityFloor;
    // decision
    int    minConf;  double maxThreat, maxConflict, execProbArm;
    bool   requireConfluence;
@@ -279,6 +298,16 @@ void FalconConfigInit()
    g_cfg.authMin          = InpAuthMin;
    g_cfg.dormantBars      = InpDormantBars;
    g_cfg.historyBars      = InpHistoryBars;
+
+   g_cfg.useCurveTree     = InpUseCurveTree;
+   g_cfg.ctOwnerMinE      = InpCTOwnerMinE;
+   g_cfg.ctProgressGain   = InpCTProgressGain;
+   g_cfg.ctStallDecay     = InpCTStallDecay;
+   g_cfg.ctMaxNodes       = InpCTMaxNodes;
+
+   g_cfg.useTimeIntel     = InpUseTimeIntel;
+   g_cfg.timeGateEntries  = InpTimeGateEntries;
+   g_cfg.timeQualityFloor = InpTimeQualityFloor;
 
    g_cfg.minConf          = InpMinConf;
    g_cfg.maxThreat        = InpMaxThreat;
@@ -765,6 +794,63 @@ struct FalconCurve
    double parentExtreme;
    int    emergentNodes;  // count of emergent child nodes
    int    ownerTF;        // owning timeframe index
+   // ---- F72 RECURSIVE CURVE TREE (event-driven CurveNode array summary) ----
+   int    treeNodeCount;  // total living nodes in the recursive tree
+   int    treeDepth;      // deepest living recursion depth
+   int    budgetDepth;    // compression-derived recursion budget (1..4)
+   bool   recursionComplete; // treeDepth >= budgetDepth (recursion spent)
+   int    ownerNodeDir;   // direction of the OWNING node (shallowest alive w/ energy)
+   double ownerNodeEnergy;// energy of the owning node (0..100)
+   int    ownerNodeDepth; // recursion depth of the owning node
+   double ownerNodeOrigin;
+   double ownerNodeExtreme;
+   string ownerNodeState; // emergent phase label the owning node emits
+   double compForce;      // F72 Principle 10 — compression persistence force (0..100)
+   string compState;      // PERSISTING / NEUTRAL / LEAKING
+   double migration50;    // 0.5 retrace of owner leg (migrated S/R band)
+   double migration618;   // 0.618 retrace of owner leg
+   double narrative;      // narrative-lineage strength (0..100, >50 strengthening)
+   int    supportVotes;   // converging (support) pullback votes
+   int    degradeVotes;   // diverging (degrade) pullback votes
+};
+
+//==================================================================
+// SUB-STATE : TIME INTELLIGENCE (TIE — F16 Engine 8.0)
+//   The temporal layer. Markets behave differently by SESSION, hour,
+//   day, and weekly position. TIE models a 5-cycle temporal stack and
+//   synthesises a continuous timeQuality + path probability + a soft
+//   temporal permission. It NEVER hard-blocks on its own (hard session
+//   limits remain the separate session filter) — it is an informational
+//   probability layer the decision/fact layers can weigh.
+//==================================================================
+enum FALCON_SESSION
+{
+   SES_CLOSED  = 0,
+   SES_ASIA    = 1,
+   SES_LONDON  = 2,
+   SES_NY      = 3,
+   SES_OVERLAP = 4   // London/NY overlap (the high-liquidity window)
+};
+
+struct FalconTime
+{
+   int    session;            // FALCON_SESSION
+   string sessionName;
+   double sessionProgress;    // 0..1 progress through the active session
+   int    hour;               // session-adjusted hour (0..23)
+   int    minute;
+   int    dayOfWeek;          // 0=Sun..6=Sat
+   double volExpectation;     // 0..100 expected volatility for this hour (gold profile)
+   double liquidityExpectation; // 0..100 expected participation
+   bool   killzone;           // inside a high-probability killzone window
+   string killzoneName;
+   // 5-cycle temporal stack (each 0..100 favourability)
+   double cycle[5];
+   double timeQuality;        // 0..100 composite temporal quality (the master scalar)
+   double pathProbability;    // 0..1 probability time-of-day favours continuation
+   int    temporalBias;       // FALCON_DIR temporal lean (e.g. London expands Asia range)
+   bool   permit;             // soft temporal permission (timeQuality >= floor)
+   string label;              // PRIME / ACTIVE / QUIET / DEAD
 };
 
 //==================================================================
@@ -1083,6 +1169,7 @@ struct FalconMarketState
    FalconCampaign     campaign;
    FalconParticipants participants;
    FalconCurveLocator curveLocator;
+   FalconTime         timeIntel;
    FalconSelfAwareness self;
    FalconIntelligence intel;
    FalconEntryCycle   entryCycle;
@@ -1193,6 +1280,18 @@ string FalconCompressionStr(const int c)
 string FalconResStr(const int r)
 {
    return(r==RES_RESOLVED ? "RESOLVED" : r==RES_PARTIALLY_RESOLVED ? "PARTIAL" : "UNRESOLVED");
+}
+
+string FalconSessionStr(const int s)
+{
+   switch(s)
+   {
+      case SES_ASIA:    return("ASIA");
+      case SES_LONDON:  return("LONDON");
+      case SES_NY:      return("NEW YORK");
+      case SES_OVERLAP: return("LDN/NY OVERLAP");
+      default:          return("CLOSED");
+   }
 }
 
 string FalconAdmitStr(const int a)
@@ -3308,6 +3407,487 @@ void MemoryEngineRun()
 }
 
 #endif // FALCON_MEMORY_ENGINE_MQH
+//+------------------------------------------------------------------+
+
+//  ===== Engines/CurveTree.mqh =====
+//+------------------------------------------------------------------+
+//|  FALCON OS — Intelligence : CurveTree.mqh                       |
+//|  Source: F16 Raptor — F72 RECURSIVE CURVE TREE                  |
+//|                                                                  |
+//|  CURVES INSIDE CURVES. Recursion is EVENT-generated, not          |
+//|  timeframe-generated: a Phase-2 CHoCH against the OWNING node     |
+//|  spawns a CHILD curve (same lifecycle, opposite orientation).     |
+//|  Ownership = the shallowest living node that still holds energy    |
+//|  (Principle 8). A child that keeps making progress GAINS energy    |
+//|  and eventually owns (→ transfer); one that stalls decays and dies |
+//|  (→ merge back into the parent). COMPRESSION sets the recursion     |
+//|  BUDGET: a wide curve makes ~1 deep recursion, a failure-swing     |
+//|  (high compression) up to 4 tiny ones.                            |
+//|                                                                   |
+//|  This is the genuine event-driven CurveNode array the PORT_AUDIT   |
+//|  flagged as missing (the previous build only derived a per-rung    |
+//|  tree). It runs AFTER MemoryEngine (owner TF resolved) and ENRICHES |
+//|  g_state.curve with the recursive-tree summary. Additive: it does  |
+//|  NOT change the authoritative direction/ownership (phases stay      |
+//|  OUTPUTS) — it is the curve-tree the spec's Intelligence Layer asks |
+//|  for, observable on the Curve tab.                                  |
+//+------------------------------------------------------------------+
+#ifndef FALCON_CURVE_TREE_MQH
+#define FALCON_CURVE_TREE_MQH
+
+
+//==================================================================
+// EVENT-DRIVEN CURVE NODE (port of F16 type CurveNode)
+//==================================================================
+struct CTNode
+{
+   int    id;
+   int    parent;
+   int    dir;
+   double origin;
+   double extreme;
+   double energy;
+   bool   alive;
+   int    depth;
+   string state;     // emergent phase the node owns (Principle 1: curve -> phase)
+   int    bar;       // bar_index at birth
+   double comp;      // this curve's own compression
+   double mat;       // this curve's own maturity
+   int    srcTf;     // ladder index of the source timeframe (depth-0 root only)
+};
+
+#define CT_CAP 96
+CTNode ct_tree[CT_CAP];
+int    ct_count = 0;
+int    ct_seq   = 0;
+
+// compression history ring (for the "tightening vs broadening" read)
+double ct_compHist[6];
+int    ct_compIdx = 0;
+bool   ct_compFull = false;
+
+// narrative lineage state (persists across bars)
+int    ct_narrDir   = 0;
+int    ct_supVotes  = 0;
+int    ct_degVotes  = 0;
+double ct_narrative = 50.0;
+
+void CurveTreeInit()
+{
+   ct_count=0; ct_seq=0; ct_compIdx=0; ct_compFull=false;
+   ct_narrDir=0; ct_supVotes=0; ct_degVotes=0; ct_narrative=50.0;
+   for(int i=0;i<6;i++) ct_compHist[i]=0.0;
+   for(int i=0;i<CT_CAP;i++){ ZeroMemory(ct_tree[i]); ct_tree[i].alive=false; ct_tree[i].parent=-1; }
+}
+
+//------------------------------------------------------------------
+// f_nodeState — phases EMERGE from the node (Principle 1: curve -> phase)
+// (faithful port of F16 f_nodeState)
+//------------------------------------------------------------------
+string CT_NodeState(const int d,const double e,const int dep,const double cmp,const double mat)
+{
+   if(dep>0)
+      return(e>=70.0 ? "Transition · recursive expansion"
+           : e>=40.0 ? "Transition · recursive induction"
+                     : "Transition · recursive liquidation");
+   if(mat<12.0) return("Point 4 Origin");
+   if(e>=78.0 && mat>=70.0) return(d==1 ? "New High" : d==-1 ? "New Low" : "Climax");
+   if(mat<35.0) return("Expansion");
+   if(mat<55.0) return("Expansion Pre-Convexity");
+   if(e>=55.0)  return("Expansion Induction");
+   if(e>=35.0)  return("Expansion Liquidity");
+   if(cmp>=60.0)return("Retracement Pre-Convexity");
+   if(e>=18.0)  return("Retracement Induction");
+   return("Retracement");
+}
+
+//------------------------------------------------------------------
+// shift the oldest node out (keep the array bounded)
+//------------------------------------------------------------------
+void CT_Shift()
+{
+   for(int i=1;i<ct_count;i++) ct_tree[i-1]=ct_tree[i];
+   if(ct_count>0) ct_count--;
+}
+
+//------------------------------------------------------------------
+// MASTER ENTRY — Recursive Curve Tree pipeline step
+//------------------------------------------------------------------
+void CurveTreeRun()
+{
+   if(!g_cfg.useCurveTree) return;
+
+   FalconHTF  h = g_state.htf;
+   double atr   = g_state.physics.atr;
+   double close1= gClose[1];
+   double hi1   = gHigh[1];
+   double lo1   = gLow[1];
+   double expE  = g_state.physics.energy;          // expansion-energy proxy (0..100)
+   double comp  = g_state.physics.compression;     // chart/operating compression
+   double residual = g_state.intel.residualEnergy; // back-filled by Intelligence
+
+   int ot = (h.ownerTF>=0 && h.ownerTF<7) ? h.ownerTF : 4;
+
+   // CHoCH against the owner — the event that nests a child curve
+   bool bullCHoCH = (g_state.structure.choch==DIR_LONG);
+   bool bearCHoCH = (g_state.structure.choch==DIR_SHORT);
+
+   double ownMinE = g_cfg.ctOwnerMinE;
+
+   //--------------------------------------------------------------
+   // PRE-OWNER (Principle 8) — shallowest living node still holding
+   // energy; drives the child-spawn direction.
+   //--------------------------------------------------------------
+   int    preOwn=-1; double preE=-1.0; int preDepth=999;
+   for(int i=0;i<ct_count;i++)
+   {
+      if(ct_tree[i].alive && ct_tree[i].energy>=ownMinE &&
+         (ct_tree[i].depth<preDepth || (ct_tree[i].depth==preDepth && ct_tree[i].energy>preE)))
+      { preDepth=ct_tree[i].depth; preE=ct_tree[i].energy; preOwn=i; }
+   }
+   if(preOwn<0)
+      for(int i=0;i<ct_count;i++)
+         if(ct_tree[i].alive && ct_tree[i].energy>preE){ preE=ct_tree[i].energy; preOwn=i; }
+
+   //--------------------------------------------------------------
+   // CONTEXT ANCHOR — the root curve is born from the timeframe-stable
+   // OWNER curve, so its origin does not shift with the chart.
+   //--------------------------------------------------------------
+   int    ctxDir = g_tfCurve[ot].oDir;
+   double ctxOrig= g_tfCurve[ot].oOrigin;
+   double ctxExt = g_tfCurve[ot].oExtreme;
+   if(ctxDir==DIR_NONE){ ctxDir=h.stackDir; }
+
+   // seed / RE-SEED the root whenever no living node owns price
+   if(preOwn<0 && ctxDir!=DIR_NONE && ctxOrig!=0.0)
+   {
+      if(ct_count>=CT_CAP) CT_Shift();
+      ct_seq++;
+      CTNode root; ZeroMemory(root);
+      root.id=ct_seq; root.parent=-1; root.dir=ctxDir;
+      root.origin=ctxOrig; root.extreme=(ctxExt!=0.0?ctxExt:close1);
+      root.energy=MathMax(40.0, expE>0?expE:60.0);
+      root.alive=true; root.depth=0; root.bar=g_barCounter; root.srcTf=ot;
+      root.comp=comp; root.mat=g_tfCurve[ot].oCompletion;
+      root.state=CT_NodeState(root.dir,root.energy,0,root.comp,root.mat);
+      ct_tree[ct_count++]=root;
+      FalconPublish(EVT_NODE_BORN, root.origin);
+   }
+
+   //--------------------------------------------------------------
+   // COMPRESSION BUDGET (Principle 3/4) — how many curves can form.
+   //--------------------------------------------------------------
+   int budgetDepth = (int)MathMax(1.0, MathMin(4.0, 1.0 + MathRound(comp/33.0)));
+
+   //--------------------------------------------------------------
+   // EVENT-GENERATED CHILD — a CHoCH against the owner spawns an
+   // inverse curve, while the recursion budget still has room.
+   //--------------------------------------------------------------
+   bool spawnedChild=false;
+   if(preOwn>=0)
+   {
+      int pdir=ct_tree[preOwn].dir;
+      bool against = (pdir==DIR_LONG && bearCHoCH) || (pdir==DIR_SHORT && bullCHoCH);
+      if(against && (ct_tree[preOwn].depth+1<=budgetDepth))
+      {
+         if(ct_count>=CT_CAP) CT_Shift();
+         ct_seq++;
+         CTNode ch; ZeroMemory(ch);
+         ch.id=ct_seq; ch.parent=ct_tree[preOwn].id; ch.dir=-pdir;
+         ch.origin=close1; ch.extreme=close1;
+         ch.energy=MathMax(25.0, (expE>0?expE:50.0)*0.85);
+         ch.alive=true; ch.depth=ct_tree[preOwn].depth+1; ch.bar=g_barCounter; ch.srcTf=0;
+         ch.comp=comp; ch.mat=0.0;
+         ch.state=CT_NodeState(ch.dir,ch.energy,ch.depth,ch.comp,ch.mat);
+         ct_tree[ct_count++]=ch;
+         spawnedChild=true;
+         FalconPublish(EVT_NODE_BORN, ch.origin);
+      }
+   }
+
+   //--------------------------------------------------------------
+   // UPDATE LIVING NODES — energy rises on progress, decays on stall.
+   //--------------------------------------------------------------
+   for(int i=0;i<ct_count;i++)
+   {
+      if(!ct_tree[i].alive) continue;
+      // depth-0 root mirrors its source TF's live curve (dir/origin/extreme)
+      if(ct_tree[i].depth==0)
+      {
+         int st=ct_tree[i].srcTf; if(st<0||st>6) st=ot;
+         ct_tree[i].dir    = (g_tfCurve[st].oDir!=DIR_NONE? g_tfCurve[st].oDir : ct_tree[i].dir);
+         ct_tree[i].origin = (g_tfCurve[st].oOrigin!=0.0? g_tfCurve[st].oOrigin : ct_tree[i].origin);
+         ct_tree[i].extreme= (g_tfCurve[st].oExtreme!=0.0? g_tfCurve[st].oExtreme : ct_tree[i].extreme);
+         ct_tree[i].mat    = g_tfCurve[st].oCompletion;
+      }
+      bool prog = (ct_tree[i].dir==DIR_LONG ? hi1>ct_tree[i].extreme : lo1<ct_tree[i].extreme);
+      if(ct_tree[i].depth>0)
+         ct_tree[i].extreme = (ct_tree[i].dir==DIR_LONG ? MathMax(ct_tree[i].extreme,hi1)
+                                                        : MathMin(ct_tree[i].extreme,lo1));
+      ct_tree[i].energy = prog ? MathMin(100.0, ct_tree[i].energy + g_cfg.ctProgressGain)
+                               : MathMax(0.0,   ct_tree[i].energy - g_cfg.ctStallDecay);
+      ct_tree[i].comp   = comp;
+      ct_tree[i].state  = CT_NodeState(ct_tree[i].dir, ct_tree[i].energy, ct_tree[i].depth, ct_tree[i].comp, ct_tree[i].mat);
+      if(ct_tree[i].energy<=2.0) ct_tree[i].alive=false;
+   }
+
+   // trim dead/old beyond budget
+   while(ct_count > g_cfg.ctMaxNodes) CT_Shift();
+
+   //--------------------------------------------------------------
+   // FINAL OWNER (Principle 8) + tree summary
+   //--------------------------------------------------------------
+   int    alive=0, treeDepth=0;
+   int    ownF=-1; double ownFE=-1.0; int ownDepth=999;
+   for(int i=0;i<ct_count;i++)
+   {
+      if(!ct_tree[i].alive) continue;
+      alive++;
+      if(ct_tree[i].depth>treeDepth) treeDepth=ct_tree[i].depth;
+      if(ct_tree[i].energy>=ownMinE &&
+         (ct_tree[i].depth<ownDepth || (ct_tree[i].depth==ownDepth && ct_tree[i].energy>ownFE)))
+      { ownDepth=ct_tree[i].depth; ownFE=ct_tree[i].energy; ownF=i; }
+   }
+   if(ownF<0)
+      for(int i=0;i<ct_count;i++)
+         if(ct_tree[i].alive && ct_tree[i].energy>ownFE){ ownFE=ct_tree[i].energy; ownF=i; }
+
+   //--------------------------------------------------------------
+   // COMPRESSION PERSISTENCE (Principle 10) — can the COUNTER side even
+   // generate room to build? Tightening + concentrated energy + few
+   // recursions ⇒ the opposite side suffocates (PERSISTING).
+   //--------------------------------------------------------------
+   double comp5 = (ct_compFull ? ct_compHist[(ct_compIdx)%6] : comp); // value ~5 bars ago
+   double cmpTighten = comp - comp5;
+   double compForce = FalconClamp(comp*0.50 + residual*0.20 - treeDepth*12.0
+                                  + MathMax(0.0,cmpTighten)*0.8 + 8.0, 0, 100);
+   string compState = compForce>=60.0 ? "PERSISTING" : compForce<=35.0 ? "LEAKING" : "NEUTRAL";
+   // push current compression into the ring
+   ct_compHist[ct_compIdx]=comp; ct_compIdx=(ct_compIdx+1)%6; if(ct_compIdx==0) ct_compFull=true;
+
+   bool recursionComplete = (budgetDepth>0 && treeDepth>=budgetDepth);
+
+   //--------------------------------------------------------------
+   // NARRATIVE LINEAGE — each completed child (pullback) votes SUPPORT
+   // (shallow retrace + tightening) or DEGRADE (deep retrace + broadening).
+   // A converging sequence ⇒ strengthening; diverging ⇒ ownership about
+   // to transfer.
+   //--------------------------------------------------------------
+   int ownDirT = (ownF>=0 ? ct_tree[ownF].dir : DIR_NONE);
+   double ownOrig = (ownF>=0 ? ct_tree[ownF].origin : 0.0);
+   double ownExt  = (ownF>=0 ? ct_tree[ownF].extreme: 0.0);
+   if(ownDirT!=ct_narrDir){ ct_narrDir=ownDirT; ct_supVotes=0; ct_degVotes=0; ct_narrative=50.0; }
+   if(spawnedChild)
+   {
+      double retrX = (ownExt==ownOrig) ? 50.0
+                     : FalconClamp(MathAbs(ownExt-close1)/MathMax(MathAbs(ownExt-ownOrig),1e-10)*100.0,0,100);
+      bool support = (retrX<45.0 && cmpTighten>0.0);
+      bool degrade = (retrX>60.0 && cmpTighten<0.0);
+      if(support) ct_supVotes++;
+      else if(degrade) ct_degVotes++;
+      ct_narrative = FalconClamp(50.0 + (ct_supVotes-ct_degVotes)*10.0, 0, 100);
+   }
+
+   // migrated ownership band — 0.5 / 0.618 retrace of the owner curve leg
+   double mig50  = (ownOrig==0.0||ownExt==0.0) ? 0.0 : ownExt + 0.5  *(ownOrig-ownExt);
+   double mig618 = (ownOrig==0.0||ownExt==0.0) ? 0.0 : ownExt + 0.618*(ownOrig-ownExt);
+
+   //--------------------------------------------------------------
+   // ENRICH SHARED STATE (additive — does NOT change ownerDir/phase)
+   //--------------------------------------------------------------
+   g_state.curve.treeNodeCount   = alive;
+   g_state.curve.treeDepth       = treeDepth;
+   g_state.curve.budgetDepth     = budgetDepth;
+   g_state.curve.recursionComplete = recursionComplete;
+   g_state.curve.ownerNodeDir    = ownDirT;
+   g_state.curve.ownerNodeEnergy = (ownF>=0 ? ct_tree[ownF].energy : 0.0);
+   g_state.curve.ownerNodeDepth  = (ownF>=0 ? ct_tree[ownF].depth  : 0);
+   g_state.curve.ownerNodeOrigin = ownOrig;
+   g_state.curve.ownerNodeExtreme= ownExt;
+   g_state.curve.ownerNodeState  = (ownF>=0 ? ct_tree[ownF].state : "—");
+   g_state.curve.compForce       = compForce;
+   g_state.curve.compState       = compState;
+   g_state.curve.migration50     = mig50;
+   g_state.curve.migration618    = mig618;
+   g_state.curve.narrative       = ct_narrative;
+   g_state.curve.supportVotes    = ct_supVotes;
+   g_state.curve.degradeVotes    = ct_degVotes;
+   // emergent-node count = living recursion children (depth>0)
+   int kids=0; for(int i=0;i<ct_count;i++) if(ct_tree[i].alive && ct_tree[i].depth>0) kids++;
+   g_state.curve.emergentNodes   = kids;
+   g_state.curve.childCount      = kids;
+}
+
+#endif // FALCON_CURVE_TREE_MQH
+//+------------------------------------------------------------------+
+
+//  ===== Engines/TimeEngine.mqh =====
+//+------------------------------------------------------------------+
+//|  FALCON OS — Intelligence : TimeEngine.mqh                      |
+//|  Source: F16 Raptor — ENGINE 8.0 (Time Intelligence Engine)     |
+//|                                                                  |
+//|  THE TEMPORAL LAYER. Markets do not behave uniformly across the  |
+//|  clock: a London-open expansion is not a dead Asian-lunch range. |
+//|  TIE models a 5-CYCLE TEMPORAL STACK and synthesises one          |
+//|  continuous timeQuality + a path probability + a SOFT temporal    |
+//|  permission. It is informational by default — the HARD session    |
+//|  window stays in the separate session filter. (Design law:        |
+//|  hard risk/time limits are kept separate from probability layers.)|
+//|                                                                  |
+//|  The 5 cycles (each 0..100 favourability):                       |
+//|    1. SESSION cycle   — Asia / London / NY / overlap structure    |
+//|    2. HOUR cycle      — gold's intraday volatility profile        |
+//|    3. KILLZONE cycle  — London-open & NY-open high-prob windows   |
+//|    4. WEEKDAY cycle   — Mon ramp · mid-week peak · Fri fade        |
+//|    5. WEEKPOS cycle   — early/mid/late-week momentum bias          |
+//|                                                                  |
+//|  Writes g_state.timeIntel. Reads only the clock (TimeGMT) + the    |
+//|  GMT offset already used by the session filter — no market recompute|
+//+------------------------------------------------------------------+
+#ifndef FALCON_TIME_ENGINE_MQH
+#define FALCON_TIME_ENGINE_MQH
+
+
+void TimeEngineInit() { ZeroMemory(g_state.timeIntel); }
+
+//------------------------------------------------------------------
+// Gold's typical intraday volatility profile by session-adjusted hour
+// (0..100). Two humps: the London open (~7-10) and the NY open + the
+// London/NY overlap (~12-16). Asia (~0-6) and the post-NY lull (~17-23)
+// are low. A smooth heuristic, not a fitted curve.
+//------------------------------------------------------------------
+double TIE_HourVol(const int hh)
+{
+   // hand-tuned 24-slot profile (relative expected range for XAUUSD)
+   static double prof[24] =
+   {
+      28,24,22,20,22,30,45,68,  // 00-07  Asia -> London ramp
+      82,88,80,66,72,90,95,88,  // 08-15  London peak -> NY open / overlap peak
+      72,58,46,40,36,34,32,30   // 16-23  NY fade -> post-NY lull
+   };
+   int i = hh; if(i<0) i=0; if(i>23) i=23;
+   return(prof[i]);
+}
+
+//------------------------------------------------------------------
+// MASTER ENTRY — Time Intelligence Engine pipeline step
+//------------------------------------------------------------------
+void TimeEngineRun()
+{
+   FalconTime t;
+   ZeroMemory(t);
+
+   if(!g_cfg.useTimeIntel)
+   {
+      // neutral pass-through so downstream weighing is a no-op
+      t.session=SES_CLOSED; t.sessionName="(off)";
+      t.timeQuality=100.0; t.pathProbability=0.5; t.permit=true; t.label="—";
+      for(int k=0;k<5;k++) t.cycle[k]=100.0;
+      g_state.timeIntel=t;
+      return;
+   }
+
+   MqlDateTime g; TimeGMT(g);
+   int hh = g.hour + g_cfg.targetGMT;
+   while(hh<0) hh+=24; while(hh>=24) hh-=24;
+   int cur = hh*60 + g.min;
+
+   t.hour      = hh;
+   t.minute    = g.min;
+   t.dayOfWeek = g.day_of_week;
+
+   //--------------------------------------------------------------
+   // CYCLE 1 — SESSION structure
+   //   Asia 00:00-06:59 · London 07:00-15:59 · NY 12:00-20:59 ·
+   //   Overlap 12:00-15:59 (London & NY both live = the prime window)
+   //--------------------------------------------------------------
+   int    ses=SES_CLOSED; double sesStart=0, sesLen=1; double sesFav=30;
+   bool   ldn = (cur>=420 && cur<960);   // 07:00-15:59
+   bool   ny  = (cur>=720 && cur<1260);  // 12:00-20:59
+   bool   asia= (cur>=0   && cur<420);   // 00:00-06:59
+   if(ldn && ny) { ses=SES_OVERLAP; sesStart=720; sesLen=240; sesFav=95; }
+   else if(ldn)  { ses=SES_LONDON;  sesStart=420; sesLen=300; sesFav=82; }
+   else if(ny)   { ses=SES_NY;      sesStart=960; sesLen=300; sesFav=78; } // NY-only portion (after overlap)
+   else if(asia) { ses=SES_ASIA;    sesStart=0;   sesLen=420; sesFav=42; }
+   else          { ses=SES_CLOSED;  sesStart=1260;sesLen=180; sesFav=24; } // 21:00-23:59 lull
+
+   t.session     = ses;
+   t.sessionName = FalconSessionStr(ses);
+   t.sessionProgress = FalconClamp((cur - sesStart)/MathMax(sesLen,1.0), 0.0, 1.0);
+   t.cycle[0]    = sesFav;
+
+   //--------------------------------------------------------------
+   // CYCLE 2 — HOUR volatility profile
+   //--------------------------------------------------------------
+   t.volExpectation       = TIE_HourVol(hh);
+   t.liquidityExpectation = FalconClamp(t.volExpectation*0.7 + sesFav*0.3, 0, 100);
+   t.cycle[1]             = t.volExpectation;
+
+   //--------------------------------------------------------------
+   // CYCLE 3 — KILLZONE windows (high-probability institutional times)
+   //   London open 07:00-10:00 · NY open 12:00-15:00 (GMT-adjusted)
+   //--------------------------------------------------------------
+   bool kzLondon = (cur>=420 && cur<600);
+   bool kzNY     = (cur>=720 && cur<900);
+   t.killzone = (kzLondon || kzNY);
+   t.killzoneName = kzLondon ? "LONDON OPEN" : kzNY ? "NY OPEN" : "—";
+   t.cycle[2] = t.killzone ? 92.0 : (asia ? 35.0 : 55.0);
+
+   //--------------------------------------------------------------
+   // CYCLE 4 — WEEKDAY cycle (Mon ramp, Tue-Thu peak, Fri fade,
+   //   weekend dead). day_of_week: 0=Sun .. 6=Sat.
+   //--------------------------------------------------------------
+   double dayFav;
+   switch(g.day_of_week)
+   {
+      case 1: dayFav=70; break;  // Mon
+      case 2: dayFav=90; break;  // Tue
+      case 3: dayFav=95; break;  // Wed
+      case 4: dayFav=90; break;  // Thu
+      case 5: dayFav=62; break;  // Fri (fade into close)
+      default: dayFav=15; break; // Sat/Sun
+   }
+   t.cycle[3]=dayFav;
+
+   //--------------------------------------------------------------
+   // CYCLE 5 — WEEK-POSITION momentum bias. Early week tends to
+   //   establish the move, late week mean-reverts / books profit.
+   //--------------------------------------------------------------
+   double weekPos = (g.day_of_week>=1 && g.day_of_week<=5) ? (g.day_of_week-1)/4.0 : 1.0; // 0=Mon..1=Fri
+   t.cycle[4] = FalconClamp(100.0 - weekPos*45.0, 0, 100); // momentum strongest early
+
+   //--------------------------------------------------------------
+   // COMPOSITE timeQuality — weighted blend of the stack. Session and
+   // killzone dominate (institutional participation drives gold).
+   //--------------------------------------------------------------
+   t.timeQuality = FalconClamp(
+        t.cycle[0]*0.28      // session
+      + t.cycle[1]*0.24      // hour vol
+      + t.cycle[2]*0.22      // killzone
+      + t.cycle[3]*0.16      // weekday
+      + t.cycle[4]*0.10,     // week position
+      0, 100);
+
+   //--------------------------------------------------------------
+   // PATH probability — likelihood the clock favours a CONTINUATION
+   // (expansion) rather than chop. Higher in killzones / overlap.
+   //--------------------------------------------------------------
+   t.pathProbability = FalconClamp(t.timeQuality/100.0*0.7 + (t.killzone?0.2:0.0) + (ses==SES_OVERLAP?0.1:0.0), 0.0, 1.0);
+
+   //--------------------------------------------------------------
+   // TEMPORAL bias — London typically EXPANDS the Asian range (its
+   // direction emerges from price, not the clock), so TIE stays
+   // direction-agnostic and only flags the regime, not a side.
+   //--------------------------------------------------------------
+   t.temporalBias = DIR_NONE;
+
+   t.permit = (t.timeQuality >= g_cfg.timeQualityFloor);
+   t.label  = (t.timeQuality>=78 ? "PRIME" : t.timeQuality>=g_cfg.timeQualityFloor ? "ACTIVE" : t.timeQuality>=22 ? "QUIET" : "DEAD");
+
+   g_state.timeIntel=t;
+}
+
+#endif // FALCON_TIME_ENGINE_MQH
 //+------------------------------------------------------------------+
 
 //  ===== Engines/CurveLocator.mqh =====
@@ -6748,6 +7328,12 @@ bool SymphonyFactsConfirm(const int dir)
    // 7) LEARNED AVOIDANCE — refuse to repeat its own losing context.  [HARD]
    if(AD_Veto(AD_Bucket(dir))){ sym_factVeto="learned avoid"; return(false); }
 
+   // 7b) TIME INTELLIGENCE (TIE) — optional soft temporal permit. Off by
+   //     default (informational). When enabled, a DEAD-hour timeQuality
+   //     vetoes new entries (the hard session window stays separate).
+   if(g_cfg.useTimeIntel && g_cfg.timeGateEntries && !g_state.timeIntel.permit)
+   { sym_factVeto="time dead"; return(false); }
+
    // 8) SELF-AWARENESS — stood itself down (health / loss cluster / DD).  [HARD]
    if(SA_StandDown()){ sym_factVeto="self standdown"; return(false); }
 
@@ -7341,7 +7927,9 @@ string VZ_Body(const int tab)
             +"  throttle x"+DoubleToString(g_state.self.throttle,2)
             +"  (calib "+DoubleToString(g_state.self.calibration,0)
             +" form "+DoubleToString(g_state.self.form,0)+" streak "+IntegerToString(g_state.self.winStreak)+"/"+IntegerToString(g_state.self.lossStreak)+")") : "off (full size)")+"\n";
-         s+="Reasoning   : concrete engines (phases / ownership / curve / structure / multi-TF)";
+         s+="Reasoning   : concrete engines (phases / ownership / curve / structure / multi-TF)\n";
+         s+="Time        : "+g_state.timeIntel.sessionName+"  Q "+DoubleToString(g_state.timeIntel.timeQuality,0)+" "+g_state.timeIntel.label
+            +(g_state.timeIntel.killzone?("  KZ:"+g_state.timeIntel.killzoneName):"");
          break;
       case 1: // PHYSICS
          s+="ATR         : "+DoubleToString(ph.atr,_Digits)+"   Vol "+DoubleToString(ph.volatility,2)+"\n";
@@ -7384,7 +7972,22 @@ string VZ_Body(const int tab)
          s+="Evolution   : "+DoubleToString(cu.evolution,0)+"%   emergent nodes "+IntegerToString(cu.emergentNodes)+"\n";
          s+="Wave Matrix : dom TF "+IntegerToString(wmx.dominantTF)+" "+VZ_Dir(wmx.dominantDir)
             +"  agree "+DoubleToString(wmx.agreement,0)+"%  E "+DoubleToString(wmx.matrixEnergy,0)+"\n";
-         s+="Emergent    : "+FalconPhaseStr(cu.emergentPhase);
+         s+="Emergent    : "+FalconPhaseStr(cu.emergentPhase)+"\n";
+         s+="── F72 TREE ─────────────────────────\n";
+         s+="Nodes/Depth : "+IntegerToString(cu.treeNodeCount)+" alive  depth "+IntegerToString(cu.treeDepth)
+            +"/"+IntegerToString(cu.budgetDepth)+(cu.recursionComplete?"  [RECURSION SPENT]":"")+"\n";
+         s+="Owner Node  : "+VZ_Dir(cu.ownerNodeDir)+"  E "+DoubleToString(cu.ownerNodeEnergy,0)
+            +"  d"+IntegerToString(cu.ownerNodeDepth)+"  "+cu.ownerNodeState+"\n";
+         s+="Node leg    : "+VZ_Px(cu.ownerNodeOrigin)+" -> "+VZ_Px(cu.ownerNodeExtreme)+"\n";
+         s+="Compression : "+cu.compState+"  force "+DoubleToString(cu.compForce,0)+"\n";
+         s+="Migration   : 0.5 "+VZ_Px(cu.migration50)+"   0.618 "+VZ_Px(cu.migration618)+"\n";
+         s+="Narrative   : "+DoubleToString(cu.narrative,0)+(cu.narrative>=55?" strengthening":cu.narrative<=45?" weakening":" balanced")
+            +"  (sup "+IntegerToString(cu.supportVotes)+" / deg "+IntegerToString(cu.degradeVotes)+")\n";
+         s+="── TIME (TIE) ───────────────────────\n";
+         s+="Session     : "+g_state.timeIntel.sessionName+"  "+DoubleToString(g_state.timeIntel.sessionProgress*100.0,0)+"%"
+            +(g_state.timeIntel.killzone?("  KZ:"+g_state.timeIntel.killzoneName):"")+"\n";
+         s+="Time Quality: "+DoubleToString(g_state.timeIntel.timeQuality,0)+"  "+g_state.timeIntel.label
+            +"  path "+DoubleToString(g_state.timeIntel.pathProbability*100.0,0)+"%"+(g_state.timeIntel.permit?"":"  [DEAD]");
          break;
       case 5: // CAMPAIGN
          s+="Owner       : "+VZ_Dir(cm.owner)+"  ("+cm.institution+")\n";
@@ -7682,6 +8285,8 @@ void FalconPipeline()
    // Participants   (remembers)
    FalconModuleStart(MOD_MEMORY,t0);
    MemoryEngineRun();
+   CurveTreeRun();      // F72 recursive curve tree — enrich ownership/recursion after memory resolves the owner TF
+   TimeEngineRun();     // TIE — 5-cycle temporal stack (session/killzone/time-quality)
    CurveLocatorRun();   // always-on "you are here" on the curve (multi-TF, persistent)
    FalconModuleEnd(MOD_MEMORY,t0);
 
@@ -7760,6 +8365,8 @@ int OnInit()
    FalconPersistenceInit();
    if(g_cfg.useThermalRisk) ThermalRiskInit();
    MoneyManagerInit();
+   CurveTreeInit();
+   TimeEngineInit();
    CurveLocatorInit();
    AdaptiveInit();
    SelfAwarenessInit();

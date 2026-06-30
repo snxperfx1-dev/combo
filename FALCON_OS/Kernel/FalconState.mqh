@@ -380,6 +380,63 @@ struct FalconCurve
    double parentExtreme;
    int    emergentNodes;  // count of emergent child nodes
    int    ownerTF;        // owning timeframe index
+   // ---- F72 RECURSIVE CURVE TREE (event-driven CurveNode array summary) ----
+   int    treeNodeCount;  // total living nodes in the recursive tree
+   int    treeDepth;      // deepest living recursion depth
+   int    budgetDepth;    // compression-derived recursion budget (1..4)
+   bool   recursionComplete; // treeDepth >= budgetDepth (recursion spent)
+   int    ownerNodeDir;   // direction of the OWNING node (shallowest alive w/ energy)
+   double ownerNodeEnergy;// energy of the owning node (0..100)
+   int    ownerNodeDepth; // recursion depth of the owning node
+   double ownerNodeOrigin;
+   double ownerNodeExtreme;
+   string ownerNodeState; // emergent phase label the owning node emits
+   double compForce;      // F72 Principle 10 — compression persistence force (0..100)
+   string compState;      // PERSISTING / NEUTRAL / LEAKING
+   double migration50;    // 0.5 retrace of owner leg (migrated S/R band)
+   double migration618;   // 0.618 retrace of owner leg
+   double narrative;      // narrative-lineage strength (0..100, >50 strengthening)
+   int    supportVotes;   // converging (support) pullback votes
+   int    degradeVotes;   // diverging (degrade) pullback votes
+};
+
+//==================================================================
+// SUB-STATE : TIME INTELLIGENCE (TIE — F16 Engine 8.0)
+//   The temporal layer. Markets behave differently by SESSION, hour,
+//   day, and weekly position. TIE models a 5-cycle temporal stack and
+//   synthesises a continuous timeQuality + path probability + a soft
+//   temporal permission. It NEVER hard-blocks on its own (hard session
+//   limits remain the separate session filter) — it is an informational
+//   probability layer the decision/fact layers can weigh.
+//==================================================================
+enum FALCON_SESSION
+{
+   SES_CLOSED  = 0,
+   SES_ASIA    = 1,
+   SES_LONDON  = 2,
+   SES_NY      = 3,
+   SES_OVERLAP = 4   // London/NY overlap (the high-liquidity window)
+};
+
+struct FalconTime
+{
+   int    session;            // FALCON_SESSION
+   string sessionName;
+   double sessionProgress;    // 0..1 progress through the active session
+   int    hour;               // session-adjusted hour (0..23)
+   int    minute;
+   int    dayOfWeek;          // 0=Sun..6=Sat
+   double volExpectation;     // 0..100 expected volatility for this hour (gold profile)
+   double liquidityExpectation; // 0..100 expected participation
+   bool   killzone;           // inside a high-probability killzone window
+   string killzoneName;
+   // 5-cycle temporal stack (each 0..100 favourability)
+   double cycle[5];
+   double timeQuality;        // 0..100 composite temporal quality (the master scalar)
+   double pathProbability;    // 0..1 probability time-of-day favours continuation
+   int    temporalBias;       // FALCON_DIR temporal lean (e.g. London expands Asia range)
+   bool   permit;             // soft temporal permission (timeQuality >= floor)
+   string label;              // PRIME / ACTIVE / QUIET / DEAD
 };
 
 //==================================================================
@@ -698,6 +755,7 @@ struct FalconMarketState
    FalconCampaign     campaign;
    FalconParticipants participants;
    FalconCurveLocator curveLocator;
+   FalconTime         timeIntel;
    FalconSelfAwareness self;
    FalconIntelligence intel;
    FalconEntryCycle   entryCycle;
@@ -808,6 +866,18 @@ string FalconCompressionStr(const int c)
 string FalconResStr(const int r)
 {
    return(r==RES_RESOLVED ? "RESOLVED" : r==RES_PARTIALLY_RESOLVED ? "PARTIAL" : "UNRESOLVED");
+}
+
+string FalconSessionStr(const int s)
+{
+   switch(s)
+   {
+      case SES_ASIA:    return("ASIA");
+      case SES_LONDON:  return("LONDON");
+      case SES_NY:      return("NEW YORK");
+      case SES_OVERLAP: return("LDN/NY OVERLAP");
+      default:          return("CLOSED");
+   }
 }
 
 string FalconAdmitStr(const int a)
