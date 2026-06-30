@@ -5,7 +5,7 @@
 //|   Risk: PYRO thermal + TALON curve-convergent structural grip.   |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "5.05"
+#property version   "5.06"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -7893,8 +7893,21 @@ void Sym_RawEntryEdges(bool &eL3,bool &eL4,bool &eS3,bool &eS4)
    }
 
    int eff=Sym_EffectiveEngine();
+   WaveCycle cy=g_state.cycles[eff];
 
-   // SYMPHONY authority — native impulse phase edges (unchanged behaviour).
+   // FREE RUN — let the AUTHORITY engine (LETRA, F16, OR Symphony) trade on
+   // EVERY fresh in-direction phase transition, not just its return/breakout
+   // analogs. Edge-triggered (one shot per transition). Uses the engine's own
+   // normalized cycle, so it works identically for Symphony as for LETRA.
+   if(g_cfg.cycleFreeRun && g_cfg.runAllCycles)
+   {
+      bool freshEdge = (cy.stage!=cy.prevStage) && cy.stage>=CYC_EXPANSION && cy.direction!=DIR_NONE;
+      if(freshEdge && cy.direction==DIR_LONG)       { if(cy.stage==CYC_BREAKOUT) eL4=true; else eL3=true; }
+      else if(freshEdge && cy.direction==DIR_SHORT) { if(cy.stage==CYC_BREAKOUT) eS4=true; else eS3=true; }
+      return;
+   }
+
+   // SYMPHONY authority (non-free) — native impulse phase 3/4 edges.
    if(eff==ENG_SYMPHONY)
    {
       eL3=(sym_mode==1  && sym_phaseLong ==3 && sym_prevPhaseLong !=3);
@@ -7904,23 +7917,7 @@ void Sym_RawEntryEdges(bool &eL3,bool &eL4,bool &eS3,bool &eS4)
       return;
    }
 
-   // LETRA / F16 cycle authority — normalized return/breakout edges.
-   WaveCycle cy=g_state.cycles[eff];
-
-   // FREE RUN — let an engine that's accurate at phases trade on EVERY fresh
-   // in-direction phase transition (expansion/return/breakout), not just the
-   // return/breakout entry analogs. Edge-triggered (one shot per transition),
-   // so no per-bar spam; exits still follow the engine's own phase reversal.
-   if(g_cfg.cycleFreeRun)
-   {
-      bool freshEdge = (cy.stage!=cy.prevStage) && cy.stage>=CYC_EXPANSION;
-      if(freshEdge && cy.direction==DIR_LONG)
-      { if(cy.stage==CYC_BREAKOUT) eL4=true; else eL3=true; }
-      else if(freshEdge && cy.direction==DIR_SHORT)
-      { if(cy.stage==CYC_BREAKOUT) eS4=true; else eS3=true; }
-      return;
-   }
-
+   // LETRA / F16 (non-free) — normalized return/breakout edges only.
    if(cy.entryEdge)
    {
       if(cy.entryDir==DIR_LONG)      { if(cy.entryKind==3) eL3=true; else if(cy.entryKind==4) eL4=true; }
@@ -8172,10 +8169,12 @@ void SymphonyExecuteTrading()
    bool shortLocked = (sym_exitedShortAnchor != 0.0);
 
    // The Symphony per-impulse lockout only makes sense under Symphony authority
-   // (it is keyed to sym anchors). Other engines rely on edge-triggering +
-   // per-bar dedupe to avoid churn.
-   bool symAuth = (g_cfg.entryEngine!=ENG_CONSENSUS && Sym_EffectiveEngine()==ENG_SYMPHONY);
-   if(!symAuth){ longLocked=false; shortLocked=false; }
+   // (it is keyed to sym anchors). Other engines — and Symphony itself in FREE
+   // RUN — rely on edge-triggering + per-bar dedupe to avoid churn.
+   bool symAuth  = (g_cfg.entryEngine!=ENG_CONSENSUS && Sym_EffectiveEngine()==ENG_SYMPHONY);
+   bool freeMode = (g_cfg.cycleFreeRun && g_cfg.runAllCycles);   // any authority engine trades ALL phases
+   bool rawLike  = (!symAuth || freeMode);                       // free/raw entry behaviour (no lockout / no anchor confirm)
+   if(rawLike){ longLocked=false; shortLocked=false; }
 
    // EDGE-TRIGGERED entries from the SELECTED engine's wave cycle (LETRA / F16 /
    // Symphony / Consensus / Best). Each fires only on the bar the engine
@@ -8184,12 +8183,12 @@ void SymphonyExecuteTrading()
    bool eL3,eL4,eS3,eS4;
    Sym_RawEntryEdges(eL3,eL4,eS3,eS4);
 
-   // RAW comparison mode: a non-Symphony engine enters on its OWN edge,
-   // bypassing the Symphony fact/brain gate (which is tuned to Symphony's
-   // "price-back-at-zone" phase-3 and would veto LETRA/F16's lifecycle
-   // edges). This is what makes the A/B/C test fair. Symphony authority
-   // keeps its full discretionary gate.
-   bool rawMode = (g_cfg.cycleRawEntries && !symAuth);
+   // RAW mode: an engine entering on its own edge (non-Symphony, or Symphony in
+   // FREE RUN) bypasses the Symphony fact/brain gate (which is tuned to
+   // Symphony's "price-back-at-zone" phase-3 and would veto raw phase edges)
+   // and uses a clean ATR stop/target. This is what makes the A/B/C test fair
+   // and lets any engine "trade freely like LETRA".
+   bool rawMode = (g_cfg.cycleRawEntries && rawLike);
    bool gateL = rawMode || (SymphonyFactsConfirm(DIR_LONG)  && SymphonyBrainConfirms(DIR_LONG));
    bool gateS = rawMode || (SymphonyFactsConfirm(DIR_SHORT) && SymphonyBrainConfirms(DIR_SHORT));
 
@@ -8208,9 +8207,9 @@ void SymphonyExecuteTrading()
       Sym_PlaceEntry(DIR_LONG,engTag+" P3 Long",riskCash,atrNow,rawMode);
 
    // LONG P4
-   if(L4 && sym_lastLongTradeTime!=barTime && (!symAuth || impL>0))
+   if(L4 && sym_lastLongTradeTime!=barTime && (rawLike || impL>0))
    {
-      bool breakout = (!symAuth) || (closeNow>sym_anchorHigh || closeNow>gHigh[shiftNow+1] + 0.20*atrNow);
+      bool breakout = rawLike || (closeNow>sym_anchorHigh || closeNow>gHigh[shiftNow+1] + 0.20*atrNow);
       if(breakout) Sym_PlaceEntry(DIR_LONG,engTag+" P4 Long",riskCash,atrNow,rawMode);
    }
 
@@ -8219,9 +8218,9 @@ void SymphonyExecuteTrading()
       Sym_PlaceEntry(DIR_SHORT,engTag+" P3 Short",riskCash,atrNow,rawMode);
 
    // SHORT P4
-   if(S4 && sym_lastShortTradeTime!=barTime && (!symAuth || impS>0))
+   if(S4 && sym_lastShortTradeTime!=barTime && (rawLike || impS>0))
    {
-      bool breakout = (!symAuth) || (closeNow<sym_anchorLow || closeNow<gLow[shiftNow+1] - 0.20*atrNow);
+      bool breakout = rawLike || (closeNow<sym_anchorLow || closeNow<gLow[shiftNow+1] - 0.20*atrNow);
       if(breakout) Sym_PlaceEntry(DIR_SHORT,engTag+" P4 Short",riskCash,atrNow,rawMode);
    }
 }
