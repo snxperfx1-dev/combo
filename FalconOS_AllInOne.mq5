@@ -5,7 +5,7 @@
 //|   Risk: PYRO thermal + TALON curve-convergent structural grip.   |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "4.53"
+#property version   "4.54"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -102,7 +102,7 @@ input double  InpAdaptSizeK       = 0.40; // Size sensitivity to learned edge (l
 input double  InpAdaptAlpha       = 0.10; // EWMA weight on the newest trade (higher = adapts faster, noisier)
 input bool    InpAdaptPersist     = true; // Persist the learning table to Common\Files (survives restarts)
 input string  __sep_self        = "════════ SELF-AWARENESS (metacognition) ════════"; // ──
-input bool    InpUseSelfAware     = true; // The OS watches its own form/calibration/health -> global risk throttle + stand-down
+input bool    InpUseSelfAware     = false; // The OS watches its own form/calibration/health -> global risk throttle + stand-down
 input double  InpSelfMinThrottle  = 0.25; // Lowest size multiplier when self-confidence is low (1.0 = full)
 input double  InpSelfFullConf     = 50.0; // At/above this self-confidence, size is FULL (no throttle); below it ramps down
 input int     InpSelfLossHalt     = 6;    // Consecutive losses that trigger a self stand-down (then auto-resumes after a cooldown)
