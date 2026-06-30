@@ -986,6 +986,16 @@ void SymphonyExecuteTrading()
 
    string engTag = FalconEngineStr(g_cfg.entryEngine==ENG_BEST?g_state.referee.bestEngine:g_cfg.entryEngine);
 
+   // NO HEDGE — never hold both directions. Block a new entry while ANY
+   // opposite-direction position is open (regardless of its PnL). This is the
+   // hard "one direction at a time" rule, distinct from the counter-dir lock
+   // (which only blocks against a *net-profitable* opposite book).
+   if(g_cfg.noHedge)
+   {
+      if(g_state.exec.openShortCount>0){ L3=false; L4=false; }
+      if(g_state.exec.openLongCount >0){ S3=false; S4=false; }
+   }
+
    double impL = sym_anchorHigh - sym_anchorLow;
    double impS = sym_anchorHigh - sym_anchorLow;
 

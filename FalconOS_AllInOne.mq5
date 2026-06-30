@@ -5,7 +5,7 @@
 //|   Risk: PYRO thermal + TALON curve-convergent structural grip.   |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "5.06"
+#property version   "5.07"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -1165,6 +1165,7 @@ input double  InpCycleRawTgtATR    = 3.0;       // Raw-entry target distance (AT
 input string  __sep_money      = "════════ MONEY MANAGER (Symphony v3.0) ════════"; // ──
 input bool    InpUseProfitLadder= false; // Use v3.0 live-PnL profit ladder (DISABLED — raw cycle comparison)
 input bool    InpCounterDirBlock= false; // Block new entries against a net-profitable opposite book (DISABLED)
+input bool    InpNoHedge        = false; // NO HEDGE: never hold both directions — block a new entry while ANY opposite position is open
 input double  InpMaxBasketRiskPct= 0.0;  // Max per-direction basket dollar-risk-at-SL (% equity); 0=off (DISABLED)
 input double  InpLadderR1        = 0.7;  // Rung 1 trigger (PnL >= R1 x basket risk) -> bank + breakeven
 input double  InpLadderR2        = 1.5;  // Rung 2 trigger -> bank + trail
@@ -1267,7 +1268,7 @@ struct FalconConfig
    int    maxAvgDownStacks;
    double heatAdverseSpan, acctHeatDDPct;
    // money manager (Symphony v3.0)
-   bool   useProfitLadder, counterDirBlock;
+   bool   useProfitLadder, counterDirBlock, noHedge;
    double maxBasketRiskPct;
    double ladderR1, ladderR2, ladderR3, ladderFrac1, ladderFrac2, ladderFrac3, trailLockPct;
    double ladderBEbufATR;  bool targetTP;
@@ -1407,6 +1408,7 @@ void FalconConfigInit()
 
    g_cfg.useProfitLadder  = InpUseProfitLadder;
    g_cfg.counterDirBlock  = InpCounterDirBlock;
+   g_cfg.noHedge          = InpNoHedge;
    g_cfg.maxBasketRiskPct = InpMaxBasketRiskPct;
    g_cfg.ladderR1         = InpLadderR1;
    g_cfg.ladderR2         = InpLadderR2;
@@ -8198,6 +8200,16 @@ void SymphonyExecuteTrading()
    bool S4 = (eS4 && !shortLocked && !MM_CounterDirBlocked(DIR_SHORT) && gateS);
 
    string engTag = FalconEngineStr(g_cfg.entryEngine==ENG_BEST?g_state.referee.bestEngine:g_cfg.entryEngine);
+
+   // NO HEDGE — never hold both directions. Block a new entry while ANY
+   // opposite-direction position is open (regardless of its PnL). This is the
+   // hard "one direction at a time" rule, distinct from the counter-dir lock
+   // (which only blocks against a *net-profitable* opposite book).
+   if(g_cfg.noHedge)
+   {
+      if(g_state.exec.openShortCount>0){ L3=false; L4=false; }
+      if(g_state.exec.openLongCount >0){ S3=false; S4=false; }
+   }
 
    double impL = sym_anchorHigh - sym_anchorLow;
    double impS = sym_anchorHigh - sym_anchorLow;
