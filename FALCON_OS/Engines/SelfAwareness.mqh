@@ -84,8 +84,14 @@ void SelfAwarenessRun()
    // SYNTHESIS — one self-confidence, then a bounded throttle.
    s.selfConfidence = FalconClamp(0.30*s.calibration + 0.35*s.form + 0.20*s.regimeFit
                                   + 0.15*(s.health?100.0:0.0), 0, 100);
-   if(!s.health) s.throttle = 0.0;     // stand down: no new size
-   else          s.throttle = FalconClamp(s.selfConfidence/100.0, g_cfg.selfMinThrottle, 1.0);
+   // THROTTLE — full size in normal conditions; only ramp DOWN when confidence
+   //   drops below selfFullConf. (Previously a linear conf/100 map haircut size
+   //   even at middling confidence and slowed the whole system down.)
+   if(!s.health)                          s.throttle = 0.0;                 // stand down
+   else if(s.selfConfidence >= g_cfg.selfFullConf) s.throttle = 1.0;        // full size
+   else s.throttle = FalconClamp(g_cfg.selfMinThrottle
+                     + (1.0-g_cfg.selfMinThrottle)*(s.selfConfidence/MathMax(g_cfg.selfFullConf,1.0)),
+                     g_cfg.selfMinThrottle, 1.0);
 
    s.label = (!s.health ? "STANDDOWN"
               : s.selfConfidence>70 ? "CONFIDENT"
