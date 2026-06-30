@@ -1,31 +1,20 @@
 ; ==================================================================
-; FALCON OS — PRESET: SYMPHONY FREE-RUN  (v5.10)
-; Symphony wave-cycle drives entries, trading ALL phases freely (like LETRA).
-; Min R:R = 4   |   Max 2 positions   |   No hedging
-; Exits: TALON (BE 0.9 / peak-profit lock 0.35)  +  PYRO risk (max 2 stacks)
-; Load via Strategy Tester "Load" or drop in MQL5\Presets\
+; FALCON OS — PRESET: SYMPHONY FREE-RUN  (v5.17)
+; Matches the corrected DEFAULT frame. Trades held by TALON (late
+; breakeven/profit-lock) + position SL/TP only — risk layer never closes.
+; Min R:R = 4 | Max 2 positions | No hedging
 ; ==================================================================
-
-; --- general ---
-InpProfile=0
 InpMagic=770020
 InpOperatingTF=5
 InpUseSymphony=true
-
-; --- multi-engine wave cycles ---
 InpRunAllCycles=true
 InpEntryEngine=2
-InpRefereeLearn=true
 InpCycleFreeRun=true
 InpCycleRawEntries=true
 InpCycleRawStopATR=1.0
-InpCycleRawTgtATR=4.2
-
-; --- trade plan / R gate ---
+InpCycleRawTgtATR=4.5
 InpUseTradePlan=true
 InpMinRR=4.0
-
-; --- execution / risk ---
 InpEnableTrading=true
 InpRiskPercent=0.5
 InpMaxLots=1.0
@@ -36,37 +25,21 @@ InpDDProtect=true
 InpMaxDrawdownPct=12.0
 InpDDFlattenPct=20.0
 InpSessionFilter=false
-
-; --- money manager (TALON owns profit -> ladder OFF) ---
 InpUseProfitLadder=false
 InpCounterDirBlock=false
 InpNoHedge=true
 InpMaxBasketRiskPct=0.0
 InpTargetTP=true
-
-; --- PYRO thermal risk (admission + catastrophe stop) ---
-InpUseThermalRisk=true
-InpMaxStacks=2
-InpMaxCampaignLots=2.0
-InpHeatThrottle=0.50
-InpHeatFreeze=0.80
-InpHeatCritical=1.00
-InpMaxAvgDownStacks=1
-InpHeatAdverseSpan=3.5
-InpAcctHeatDDPct=15.0
-
-; --- TALON grip (breakeven + trail + peak-profit lock) ---
+InpUseThermalRisk=false
 InpUseTalon=true
 InpTalonStructLen=6
 InpTalonBufATR=0.35
-InpTalonBaseATR=2.5
+InpTalonBaseATR=3.5
 InpTalonConvSpanATR=6.0
-InpTalonMinTighten=0.20
-InpTalonBeATR=0.9
-InpTalonGiveback=0.35
-InpTalonLockArmATR=1.5
+InpTalonMinTighten=0.30
+InpTalonBeATR=2.5
+InpTalonGiveback=0.45
+InpTalonLockArmATR=2.5
 InpArcPartialFrac=0.33
 InpArcPartialMinATR=1.5
-
-; --- viz ---
 InpDashboardTab=14

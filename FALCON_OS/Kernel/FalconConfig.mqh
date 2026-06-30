@@ -95,7 +95,7 @@ input double  InpFactNetPressure = 50.0;  // Opposing network authority-pressure
 input bool    InpFactNeedZone    = true;  // Require price to be AT a real subsystem zone (flip/demand/supply/OB/FU/inducement)
 input string  __sep_plan        = "════════ TRADE PLAN (subsystem-composed) ════════"; // ──
 input bool    InpUseTradePlan    = true;  // Compose stop/target/size from subsystems (off: Symphony anchor+-ATR / ARC)
-input double  InpMinRR           = 1.2;   // Min reward:risk (from subsystem stop+target) to take an entry
+input double  InpMinRR           = 4.0;   // Min reward:risk (from subsystem stop+target) to take an entry
 input double  InpStopBufATR      = 0.25;  // Buffer beyond the zone-invalidation level for the stop (ATR)
 input bool    InpFractalZones    = true;  // Also consider the OWNER TF's zones (per-TF liquidity/OB/S&D) for entry location + stop
 input double  InpMaxStopATR      = 10.0;  // Cap stop distance (ATR) so a far higher-TF zone can't create an absurd stop
@@ -124,15 +124,15 @@ input string  __sep_execution   = "════════ EXECUTION / RISK ═
 input bool    InpEnableTrading  = true;  // Allow live order sending
 input double  InpRiskPercent    = 0.5;   // Risk % per trade
 input double  InpMaxLots        = 1.0;   // Hard cap on lots per entry (safety)
-input int     InpMaxOpenPositions = 0;   // Max concurrent open positions across ALL directions (0=off)
+input int     InpMaxOpenPositions = 2;   // Max concurrent open positions across ALL directions (0=off)
 input bool    InpBlockIfBreach  = true;  // Block new entries after a risk breach (cooldown)
 input bool    InpSessionFilter  = false; // Restrict to London/US windows (off for full backtests)
 input double  InpContractValue  = 100.0; // Value per lot per price unit
-input bool    InpTrailEnable    = true;  // Enable trailing stop engine
+input bool    InpTrailEnable    = false; // EE ATR trailing engine (OFF: TALON owns trailing)
 input double  InpTrailStartATR  = 1.0;   // Start trailing after profit (ATR)
 input double  InpTrailDistATR   = 1.5;   // Trailing distance (ATR)
 input bool    InpDDProtect      = true;  // Enable drawdown protection
-input bool    InpRiskAutoClose  = true;  // Let the RISK layer CLOSE trades (DD-flatten + PYRO catastrophe). OFF = only TALON / money manager / SL-TP manage exits
+input bool    InpRiskAutoClose  = false; // Let the RISK layer CLOSE trades (DD-flatten + PYRO catastrophe). OFF = only TALON / money manager / SL-TP manage exits
 input double  InpMaxDrawdownPct = 12.0;  // Block entries above this drawdown %
 input double  InpDDFlattenPct   = 20.0;  // Flatten everything above this drawdown %
 input double  InpMaxEntryComplete = 85.0;// Block NEW entries when wave completion >= this (no buying tops / selling bottoms)
@@ -148,13 +148,13 @@ input double  InpCycleEvalATR    = 1.2;        // Favorable move (ATR) that scor
 input int     InpBestMinSamples  = 12;         // Min resolved predictions before BEST/learned selection trusts an engine
 input bool    InpCycleRawEntries  = true;       // Selected non-Symphony engine enters on its raw P3/P4 edge (bypass fact gate + zone R:R) — clean A/B/C
 input bool    InpCycleFreeRun      = true;       // FREE RUN: authority engine enters on EVERY fresh in-direction phase edge (expansion/return/breakout) — let an accurate engine trade freely
-input double  InpCycleRawStopATR   = 1.5;       // Raw-entry stop distance (ATR) when bypassing the trade plan
-input double  InpCycleRawTgtATR    = 3.0;       // Raw-entry target distance (ATR)
+input double  InpCycleRawStopATR   = 1.0;       // Raw-entry stop distance (ATR) when bypassing the trade plan
+input double  InpCycleRawTgtATR    = 4.5;       // Raw-entry target distance (ATR) — keep >= MinRR x stop or entries are rejected
 
 input string  __sep_money      = "════════ MONEY MANAGER (Symphony v3.0) ════════"; // ──
 input bool    InpUseProfitLadder= false; // Use v3.0 live-PnL profit ladder (DISABLED — raw cycle comparison)
 input bool    InpCounterDirBlock= false; // Block new entries against a net-profitable opposite book (DISABLED)
-input bool    InpNoHedge        = false; // NO HEDGE: never hold both directions — block a new entry while ANY opposite position is open
+input bool    InpNoHedge        = true;  // NO HEDGE: never hold both directions — block a new entry while ANY opposite position is open
 input double  InpMaxBasketRiskPct= 0.0;  // Max per-direction basket dollar-risk-at-SL (% equity); 0=off (DISABLED)
 input double  InpLadderR1        = 0.7;  // Rung 1 trigger (PnL >= R1 x basket risk) -> bank + breakeven
 input double  InpLadderR2        = 1.5;  // Rung 2 trigger -> bank + trail
@@ -178,15 +178,15 @@ input double  InpHeatAdverseSpan = 4.0;   // Adverse excursion (ATR) that equals
 input double  InpAcctHeatDDPct   = 15.0;  // Account heat: equity drawdown %% that fully freezes admissions
 
 input string  __sep_talon       = "════════ TALON GRIP — breakeven + trail ════════"; // ──
-input bool    InpUseTalon        = false; // Use TALON curve-convergent grip (off: profit ladder governs trailing)
-input int     InpTalonStructLen  = 5;     // Structural pivot length for the grip anchor
+input bool    InpUseTalon        = true;  // Use TALON curve-convergent grip (breakeven + trail + peak-profit lock)
+input int     InpTalonStructLen  = 6;     // Structural pivot length for the grip anchor
 input double  InpTalonBufATR      = 0.35; // Buffer beyond the structural pivot (ATR)
-input double  InpTalonBaseATR     = 2.5;  // Base trail distance far from target (ATR)
+input double  InpTalonBaseATR     = 3.5;  // Base trail distance far from target (ATR) — loose so winners run to TP
 input double  InpTalonConvSpanATR = 6.0;  // Distance-to-target (ATR) over which the trail converges
-input double  InpTalonMinTighten  = 0.25; // Tightest trail fraction near target / terminal (0..1)
-input double  InpTalonBeATR        = 1.6; // Favorable excursion (ATR) that earns the breakeven lock
-input double  InpTalonGiveback     = 0.5; // PROFIT LOCK: max fraction of PEAK campaign profit TALON will give back (0=lock all, 1=off)
-input double  InpTalonLockArmATR   = 1.5; // Peak favorable excursion (ATR) before the profit-lock engages
+input double  InpTalonMinTighten  = 0.30; // Tightest trail fraction near target / terminal (0..1)
+input double  InpTalonBeATR        = 2.5; // Favorable excursion (ATR) before breakeven locks — LATE, so normal trades aren't scratched at entry
+input double  InpTalonGiveback     = 0.45;// PROFIT LOCK: max fraction of PEAK campaign profit TALON will give back (0=lock all, 1=off)
+input double  InpTalonLockArmATR   = 2.5; // Peak favorable excursion (ATR) before the profit-lock engages — only protects big runners
 input double  InpArcPartialFrac    = 0.33;// Fraction banked when price REACHES the curve destination (0 = let it all run)
 input double  InpArcPartialMinATR  = 1.5; // Min favorable excursion (ATR) before any ARC partial is allowed
 
@@ -283,61 +283,28 @@ FalconConfig g_cfg;
 // any input and YOUR value wins. The engine identity (and the cycle
 // plumbing it needs) is always set by the preset. CUSTOM = no overlay.
 //------------------------------------------------------------------
-// apply preset value `pv` only if the user left input `inp` at default `defv`
-#define PSET(field,inp,defv,pv) if((inp)==(defv)) g_cfg.field=(pv)
+// QUICK PROFILE — the corrected risk/exit FRAME is now the DEFAULT
+// config (minR 4 · max 2 pos · no-hedge · riskAutoClose off · TALON on
+// with LATE breakeven/profit-lock so trades hold toward TP). So a preset
+// only needs to select the ENGINE and, for LETRA, a slightly wider
+// stop/target (LETRA overshoots). Overridable: change the input to win.
+//------------------------------------------------------------------
 void FalconApplyPreset(const int preset)
 {
    if(preset==PRESET_CUSTOM) return;
 
-   // ---- forced identity / plumbing (the preset's reason to exist) ----
    g_cfg.entryEngine  = (preset==PRESET_LETRA ? ENG_LETRA : ENG_SYMPHONY);
    g_cfg.useSymphony  = true;     // execution host
    g_cfg.runAllCycles = true;     // cycles must run for the engine + referee
+   if(InpDashboardTab==0) g_cfg.dashboardTab = 14;   // COMMAND tab
 
-   // ---- shared frame (overridable: edit the input to change it) ----
-   PSET(operatingTF,      InpOperatingTF,      PERIOD_CURRENT, PERIOD_M5);
-   PSET(cycleFreeRun,     InpCycleFreeRun,     true,  true);
-   PSET(cycleRawEntries,  InpCycleRawEntries,  true,  true);
-   PSET(useTradePlan,     InpUseTradePlan,     true,  true);
-   PSET(minRR,            InpMinRR,            1.2,   4.0);
-   PSET(maxOpenPositions, InpMaxOpenPositions, 0,     2);
-   PSET(noHedge,          InpNoHedge,          false, true);
-   PSET(trailEnable,      InpTrailEnable,      true,  false);
-   PSET(riskAutoClose,    InpRiskAutoClose,    true,  false);
-   PSET(useProfitLadder,  InpUseProfitLadder,  false, false);
-   PSET(counterDirBlock,  InpCounterDirBlock,  false, false);
-   PSET(targetTP,         InpTargetTP,         true,  true);
-   // PYRO risk
-   PSET(useThermalRisk,   InpUseThermalRisk,   false, true);
-   PSET(maxStacks,        InpMaxStacks,        12,    2);
-   PSET(maxCampaignLots,  InpMaxCampaignLots,  8.0,   2.0);
-   PSET(heatThrottle,     InpHeatThrottle,     0.55,  0.50);
-   PSET(heatCritical,     InpHeatCritical,     1.10,  1.00);
-   PSET(maxAvgDownStacks, InpMaxAvgDownStacks, 3,     1);
-   PSET(heatAdverseSpan,  InpHeatAdverseSpan,  4.0,   3.5);
-   // TALON profit protection
-   PSET(useTalon,         InpUseTalon,         false, true);
-   PSET(talonStructLen,   InpTalonStructLen,   5,     6);
-   PSET(talonMinTighten,  InpTalonMinTighten,  0.25,  0.20);
-   PSET(talonBeATR,       InpTalonBeATR,       1.6,   0.9);
-   PSET(talonGiveback,    InpTalonGiveback,    0.5,   0.35);
-   PSET(dashboardTab,     InpDashboardTab,     0,     14);
-
-   // ---- engine-specific stop/target (overridable) ----
    if(preset==PRESET_LETRA)
    {
-      PSET(cycleRawStopATR, InpCycleRawStopATR, 1.5, 1.2);
-      PSET(cycleRawTgtATR,  InpCycleRawTgtATR,  3.0, 5.0);
-      PSET(talonBaseATR,    InpTalonBaseATR,    2.5, 2.8);
+      if(InpCycleRawStopATR==1.0) g_cfg.cycleRawStopATR = 1.2;   // a touch more room
+      if(InpCycleRawTgtATR ==4.5) g_cfg.cycleRawTgtATR  = 5.5;   // ~4.6R (LETRA overshoots)
    }
-   else // PRESET_SYMPHONY
-   {
-      PSET(cycleRawStopATR, InpCycleRawStopATR, 1.5, 1.0);
-      PSET(cycleRawTgtATR,  InpCycleRawTgtATR,  3.0, 4.2);
-      // talonBaseATR preset == default (2.5) -> nothing to override
-   }
+   // SYMPHONY uses the (corrected) defaults as-is
 }
-#undef PSET
 
 //------------------------------------------------------------------
 // Build resolved config from inputs and apply per-profile overrides.
