@@ -98,6 +98,7 @@ input bool    InpEntryNeedRoom   = true;  // FREE-RUN too: require curve ROOM (c
 input bool    InpOneEntryPerDir   = true;  // Only ONE entry per direction at a time — no pyramiding the same move (stops the terrible follow-up after a good entry)
 input int     InpReentryCooldown  = 4;     // Bars to wait after ANY entry before another can fire (anti rapid-fire follow-ups); 0=off
 input bool    InpOneEntryPerCurve = true;  // STRUCTURAL: trade each OWNER curve only ONCE per direction — re-arm only when ownership TRANSFERS to a new curve
+input bool    InpDualSourceFire   = true;  // Let the PLANNER and SYMPHONY each hold their OWN entry simultaneously (per-source guards). maxPos + noHedge stay portfolio-wide
 input string  __sep_plan        = "════════ TRADE PLAN (subsystem-composed) ════════"; // ──
 input bool    InpUseTradePlan    = true;  // Compose stop/target/size from subsystems (off: Symphony anchor+-ATR / ARC)
 input double  InpMinRR           = 4.0;   // Min reward:risk (from subsystem stop+target) to take an entry
@@ -259,6 +260,7 @@ struct FalconConfig
    bool   entryAtZone, entryNeedRoom;
    bool   oneEntryPerDir;  int reentryCooldown;
    bool   oneEntryPerCurve;
+   bool   dualSourceFire;
    double factPartThreat, factNetPressure;
    bool   useTradePlan;
    double minRR, stopBufATR;
@@ -415,6 +417,7 @@ void FalconConfigInit()
    g_cfg.oneEntryPerDir   = InpOneEntryPerDir;
    g_cfg.reentryCooldown  = InpReentryCooldown;
    g_cfg.oneEntryPerCurve = InpOneEntryPerCurve;
+   g_cfg.dualSourceFire   = InpDualSourceFire;
    g_cfg.factPartThreat   = InpFactPartThreat;
    g_cfg.factNetPressure  = InpFactNetPressure;
    g_cfg.useTradePlan     = InpUseTradePlan;

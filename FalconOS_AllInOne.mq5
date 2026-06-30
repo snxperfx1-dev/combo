@@ -5,7 +5,7 @@
 //|   Risk: PYRO thermal + TALON curve-convergent structural grip.   |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "6.13"
+#property version   "6.14"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -660,6 +660,11 @@ struct FalconExecution
    double shortGrossLots;
    int    openLongCount;
    int    openShortCount;
+   // per-source open counts (planner vs symphony) — for dual-source guards
+   int    openLongPlan;
+   int    openShortPlan;
+   int    openLongSym;
+   int    openShortSym;
    double openPnL;
    bool   sessionOpen;
    // TALON grip (campaign-level protective stop) — display
@@ -1219,6 +1224,7 @@ input bool    InpEntryNeedRoom   = true;  // FREE-RUN too: require curve ROOM (c
 input bool    InpOneEntryPerDir   = true;  // Only ONE entry per direction at a time — no pyramiding the same move (stops the terrible follow-up after a good entry)
 input int     InpReentryCooldown  = 4;     // Bars to wait after ANY entry before another can fire (anti rapid-fire follow-ups); 0=off
 input bool    InpOneEntryPerCurve = true;  // STRUCTURAL: trade each OWNER curve only ONCE per direction — re-arm only when ownership TRANSFERS to a new curve
+input bool    InpDualSourceFire   = true;  // Let the PLANNER and SYMPHONY each hold their OWN entry simultaneously (per-source guards). maxPos + noHedge stay portfolio-wide
 input string  __sep_plan        = "════════ TRADE PLAN (subsystem-composed) ════════"; // ──
 input bool    InpUseTradePlan    = true;  // Compose stop/target/size from subsystems (off: Symphony anchor+-ATR / ARC)
 input double  InpMinRR           = 4.0;   // Min reward:risk (from subsystem stop+target) to take an entry
@@ -1380,6 +1386,7 @@ struct FalconConfig
    bool   entryAtZone, entryNeedRoom;
    bool   oneEntryPerDir;  int reentryCooldown;
    bool   oneEntryPerCurve;
+   bool   dualSourceFire;
    double factPartThreat, factNetPressure;
    bool   useTradePlan;
    double minRR, stopBufATR;
@@ -1536,6 +1543,7 @@ void FalconConfigInit()
    g_cfg.oneEntryPerDir   = InpOneEntryPerDir;
    g_cfg.reentryCooldown  = InpReentryCooldown;
    g_cfg.oneEntryPerCurve = InpOneEntryPerCurve;
+   g_cfg.dualSourceFire   = InpDualSourceFire;
    g_cfg.factPartThreat   = InpFactPartThreat;
    g_cfg.factNetPressure  = InpFactNetPressure;
    g_cfg.useTradePlan     = InpUseTradePlan;
@@ -5486,6 +5494,26 @@ void EE_UpdateExposure(const EE_Market &m)
    g_state.exec.shortGrossLots=shortLots;
    g_state.exec.openPnL=pnl;
 
+   // ---- PER-SOURCE OPEN COUNTS (planner vs symphony) — for dual-source guards.
+   // Planner entries carry "PLAN" in the position comment; everything else is
+   // a Symphony phase entry.
+   {
+      int lP=0,sP=0,lY=0,sY=0; int tot=PositionsTotal();
+      for(int i=0;i<tot;i++)
+      {
+         ulong tk=PositionGetTicket(i);
+         if(!PositionSelectByTicket(tk)) continue;
+         if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
+         if(PositionGetInteger(POSITION_MAGIC)!=g_cfg.magic) continue;
+         bool isPlan = (StringFind(PositionGetString(POSITION_COMMENT),"PLAN")>=0);
+         bool isLong = (PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY);
+         if(isPlan){ if(isLong) lP++; else sP++; }
+         else      { if(isLong) lY++; else sY++; }
+      }
+      g_state.exec.openLongPlan=lP; g_state.exec.openShortPlan=sP;
+      g_state.exec.openLongSym =lY; g_state.exec.openShortSym =sY;
+   }
+
    // ---- TRADE STATE ----
    int ts;
    if(nl>0 && ns>0)      ts=TS_HEDGED;
@@ -7560,6 +7588,10 @@ double   talon_peakShort = 0.0;     // peak favorable excursion (ATR) — short 
 int      sym_lastEntryBar = -100000;// bar index of the most recent entry (re-entry cooldown)
 int      sym_ownerEntryLong  = -1; // owner curve-node id we last entered LONG on  (one-entry-per-curve)
 int      sym_ownerEntryShort = -1; // owner curve-node id we last entered SHORT on
+// per-source mirrors (dual-source mode: planner & symphony each keep their own locks)
+int      pln_lastEntryBar = -100000;
+int      pln_ownerEntryLong  = -1;
+int      pln_ownerEntryShort = -1;
 
 // Re-entry lockout — once a campaign for the CURRENT impulse has been closed
 // (by trail-stop or composite exit), block re-entry in that direction until a
@@ -8575,6 +8607,15 @@ void Sym_PlaceEntry(const int dir,const string tag,const double riskCash,const d
       sym_lastEntryBar = g_barCounter;                        // arm the re-entry cooldown
       if(dir==DIR_LONG) sym_ownerEntryLong = g_state.curve.ownerNodeId;  // scope to the owner curve
       else              sym_ownerEntryShort= g_state.curve.ownerNodeId;
+      // per-source lock: planner entries (tag has "PLAN") arm the planner's own
+      // cooldown/owner locks; everything else arms Symphony's. In dual-source
+      // mode each engine consults only its own locks (see entry guards).
+      if(StringFind(tag,"PLAN")>=0)
+      {
+         pln_lastEntryBar = g_barCounter;
+         if(dir==DIR_LONG) pln_ownerEntryLong = g_state.curve.ownerNodeId;
+         else              pln_ownerEntryShort= g_state.curve.ownerNodeId;
+      }
       AD_RecordEntry(ee_lastTicket, adBucket, lots*MathAbs(entry-sl)*g_cfg.contractValue, g_state.intel.executionProbability);
       g_state.exec.entry=entry; g_state.exec.stop=sl; g_state.exec.lots=lots; g_state.exec.riskCash=riskCash;
       g_state.exec.target=target; g_state.exec.target2=t2; g_state.exec.reward=rr;
@@ -8689,19 +8730,25 @@ void SymphonyExecuteTrading()
       (g_state.exec.openLongCount+g_state.exec.openShortCount) >= g_cfg.maxOpenPositions)
    { L3=false; L4=false; S3=false; S4=false; }
 
-   // ONE ENTRY PER DIRECTION — no pyramiding the same move. After a good entry,
-   // the next phase transition would otherwise fire a 2nd (extended/late) entry
-   // in the same direction — the classic "great entry then terrible one".
+   // ONE ENTRY PER DIRECTION — no pyramiding the same move. In dual-source mode
+   // this is scoped to SYMPHONY's own positions (a planner long doesn't block a
+   // Symphony long); otherwise it's portfolio-wide.
    if(g_cfg.oneEntryPerDir)
    {
-      if(g_state.exec.openLongCount >0){ L3=false; L4=false; }
-      if(g_state.exec.openShortCount>0){ S3=false; S4=false; }
+      int longCnt  = g_cfg.dualSourceFire ? g_state.exec.openLongSym  : g_state.exec.openLongCount;
+      int shortCnt = g_cfg.dualSourceFire ? g_state.exec.openShortSym : g_state.exec.openShortCount;
+      if(longCnt >0){ L3=false; L4=false; }
+      if(shortCnt>0){ S3=false; S4=false; }
    }
 
-   // RE-ENTRY COOLDOWN — wait N bars after ANY entry before another can fire,
-   // so consecutive phase transitions don't rapid-fire follow-up entries.
-   if(g_cfg.reentryCooldown>0 && (g_barCounter - sym_lastEntryBar) < g_cfg.reentryCooldown)
-   { L3=false; L4=false; S3=false; S4=false; }
+   // RE-ENTRY COOLDOWN — wait N bars after THIS engine's last entry (dual mode)
+   // or after ANY entry (legacy) before another can fire.
+   if(g_cfg.reentryCooldown>0)
+   {
+      int lastBar = g_cfg.dualSourceFire ? sym_lastEntryBar : MathMax(sym_lastEntryBar,pln_lastEntryBar);
+      if((g_barCounter - lastBar) < g_cfg.reentryCooldown)
+      { L3=false; L4=false; S3=false; S4=false; }
+   }
 
    // ONE ENTRY PER OWNER CURVE — the STRUCTURAL fix for "great entry then
    // terrible one". The terrible follow-ups are correctly-detected phase
@@ -8713,8 +8760,11 @@ void SymphonyExecuteTrading()
       int oid=g_state.curve.ownerNodeId;
       if(oid>0)
       {
-         if(oid==sym_ownerEntryLong) { L3=false; L4=false; }
-         if(oid==sym_ownerEntryShort){ S3=false; S4=false; }
+         // dual mode: only Symphony's own owner-locks block Symphony; legacy: either source's lock blocks.
+         bool blkL = (oid==sym_ownerEntryLong)  || (!g_cfg.dualSourceFire && oid==pln_ownerEntryLong);
+         bool blkS = (oid==sym_ownerEntryShort) || (!g_cfg.dualSourceFire && oid==pln_ownerEntryShort);
+         if(blkL) { L3=false; L4=false; }
+         if(blkS) { S3=false; S4=false; }
       }
    }
 
@@ -8734,9 +8784,11 @@ void SymphonyExecuteTrading()
       else
       {
          string why="edge blocked: ";
+         int symL = g_cfg.dualSourceFire ? g_state.exec.openLongSym  : g_state.exec.openLongCount;
+         int symS = g_cfg.dualSourceFire ? g_state.exec.openShortSym : g_state.exec.openShortCount;
          if(g_cfg.maxOpenPositions>0 && totOpen>=g_cfg.maxOpenPositions) why+="max-pos ";
          if(g_cfg.noHedge && (g_state.exec.openShortCount>0||g_state.exec.openLongCount>0)) why+="no-hedge ";
-         if(g_cfg.oneEntryPerDir && (g_state.exec.openLongCount>0||g_state.exec.openShortCount>0)) why+="one-per-dir ";
+         if(g_cfg.oneEntryPerDir && (symL>0||symS>0)) why+="one-per-dir ";
          if(g_cfg.reentryCooldown>0 && (g_barCounter-sym_lastEntryBar)<g_cfg.reentryCooldown) why+="cooldown ";
          if(g_cfg.oneEntryPerCurve && g_state.curve.ownerNodeId>0
             && (g_state.curve.ownerNodeId==sym_ownerEntryLong||g_state.curve.ownerNodeId==sym_ownerEntryShort)) why+="one-per-curve ";
@@ -9502,7 +9554,11 @@ void PlannerExecute()
    if(!EE_IsTradeTime()) return;
    if(g_cfg.blockIfBreach && !ee_lastRiskOk) return;
    if(ee_riskCooldown>0) return;
-   if(g_cfg.reentryCooldown>0 && (g_barCounter - sym_lastEntryBar) < g_cfg.reentryCooldown) return;
+   // cooldown: dual mode uses the PLANNER's own last entry; legacy uses any entry.
+   {
+      int lastBar = g_cfg.dualSourceFire ? pln_lastEntryBar : MathMax(sym_lastEntryBar,pln_lastEntryBar);
+      if(g_cfg.reentryCooldown>0 && (g_barCounter - lastBar) < g_cfg.reentryCooldown) return;
+   }
 
    int openL=g_state.exec.openLongCount, openS=g_state.exec.openShortCount;
    if(g_cfg.maxOpenPositions>0 && (openL+openS)>=g_cfg.maxOpenPositions) return;
@@ -9519,15 +9575,24 @@ void PlannerExecute()
    FalconPlan p=g_state.plans[best];
    int dir=p.dir;
 
+   // noHedge stays portfolio-wide (never hold opposite directions).
    if(g_cfg.noHedge)       { if(dir==DIR_LONG && openS>0) return; if(dir==DIR_SHORT && openL>0) return; }
-   if(g_cfg.oneEntryPerDir){ if(dir==DIR_LONG && openL>0) return; if(dir==DIR_SHORT && openS>0) return; }
+   // one-per-dir: dual mode scopes to the PLANNER's own positions; legacy is portfolio-wide.
+   if(g_cfg.oneEntryPerDir)
+   {
+      int dL = g_cfg.dualSourceFire ? g_state.exec.openLongPlan  : openL;
+      int dS = g_cfg.dualSourceFire ? g_state.exec.openShortPlan : openS;
+      if(dir==DIR_LONG && dL>0) return; if(dir==DIR_SHORT && dS>0) return;
+   }
    if(g_cfg.oneEntryPerCurve)
    {
       int oid=g_state.curve.ownerNodeId;
       if(oid>0)
       {
-         if(dir==DIR_LONG  && oid==sym_ownerEntryLong)  return;
-         if(dir==DIR_SHORT && oid==sym_ownerEntryShort) return;
+         int ownL = g_cfg.dualSourceFire ? pln_ownerEntryLong  : sym_ownerEntryLong;
+         int ownS = g_cfg.dualSourceFire ? pln_ownerEntryShort : sym_ownerEntryShort;
+         if(dir==DIR_LONG  && (oid==ownL || (!g_cfg.dualSourceFire && oid==pln_ownerEntryLong)))  return;
+         if(dir==DIR_SHORT && (oid==ownS || (!g_cfg.dualSourceFire && oid==pln_ownerEntryShort))) return;
       }
    }
 

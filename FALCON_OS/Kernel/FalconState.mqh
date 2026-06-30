@@ -646,6 +646,11 @@ struct FalconExecution
    double shortGrossLots;
    int    openLongCount;
    int    openShortCount;
+   // per-source open counts (planner vs symphony) — for dual-source guards
+   int    openLongPlan;
+   int    openShortPlan;
+   int    openLongSym;
+   int    openShortSym;
    double openPnL;
    bool   sessionOpen;
    // TALON grip (campaign-level protective stop) — display

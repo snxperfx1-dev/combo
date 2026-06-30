@@ -216,6 +216,26 @@ void EE_UpdateExposure(const EE_Market &m)
    g_state.exec.shortGrossLots=shortLots;
    g_state.exec.openPnL=pnl;
 
+   // ---- PER-SOURCE OPEN COUNTS (planner vs symphony) — for dual-source guards.
+   // Planner entries carry "PLAN" in the position comment; everything else is
+   // a Symphony phase entry.
+   {
+      int lP=0,sP=0,lY=0,sY=0; int tot=PositionsTotal();
+      for(int i=0;i<tot;i++)
+      {
+         ulong tk=PositionGetTicket(i);
+         if(!PositionSelectByTicket(tk)) continue;
+         if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
+         if(PositionGetInteger(POSITION_MAGIC)!=g_cfg.magic) continue;
+         bool isPlan = (StringFind(PositionGetString(POSITION_COMMENT),"PLAN")>=0);
+         bool isLong = (PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY);
+         if(isPlan){ if(isLong) lP++; else sP++; }
+         else      { if(isLong) lY++; else sY++; }
+      }
+      g_state.exec.openLongPlan=lP; g_state.exec.openShortPlan=sP;
+      g_state.exec.openLongSym =lY; g_state.exec.openShortSym =sY;
+   }
+
    // ---- TRADE STATE ----
    int ts;
    if(nl>0 && ns>0)      ts=TS_HEDGED;

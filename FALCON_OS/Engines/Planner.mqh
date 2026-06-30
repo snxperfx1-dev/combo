@@ -318,7 +318,11 @@ void PlannerExecute()
    if(!EE_IsTradeTime()) return;
    if(g_cfg.blockIfBreach && !ee_lastRiskOk) return;
    if(ee_riskCooldown>0) return;
-   if(g_cfg.reentryCooldown>0 && (g_barCounter - sym_lastEntryBar) < g_cfg.reentryCooldown) return;
+   // cooldown: dual mode uses the PLANNER's own last entry; legacy uses any entry.
+   {
+      int lastBar = g_cfg.dualSourceFire ? pln_lastEntryBar : MathMax(sym_lastEntryBar,pln_lastEntryBar);
+      if(g_cfg.reentryCooldown>0 && (g_barCounter - lastBar) < g_cfg.reentryCooldown) return;
+   }
 
    int openL=g_state.exec.openLongCount, openS=g_state.exec.openShortCount;
    if(g_cfg.maxOpenPositions>0 && (openL+openS)>=g_cfg.maxOpenPositions) return;
@@ -335,15 +339,24 @@ void PlannerExecute()
    FalconPlan p=g_state.plans[best];
    int dir=p.dir;
 
+   // noHedge stays portfolio-wide (never hold opposite directions).
    if(g_cfg.noHedge)       { if(dir==DIR_LONG && openS>0) return; if(dir==DIR_SHORT && openL>0) return; }
-   if(g_cfg.oneEntryPerDir){ if(dir==DIR_LONG && openL>0) return; if(dir==DIR_SHORT && openS>0) return; }
+   // one-per-dir: dual mode scopes to the PLANNER's own positions; legacy is portfolio-wide.
+   if(g_cfg.oneEntryPerDir)
+   {
+      int dL = g_cfg.dualSourceFire ? g_state.exec.openLongPlan  : openL;
+      int dS = g_cfg.dualSourceFire ? g_state.exec.openShortPlan : openS;
+      if(dir==DIR_LONG && dL>0) return; if(dir==DIR_SHORT && dS>0) return;
+   }
    if(g_cfg.oneEntryPerCurve)
    {
       int oid=g_state.curve.ownerNodeId;
       if(oid>0)
       {
-         if(dir==DIR_LONG  && oid==sym_ownerEntryLong)  return;
-         if(dir==DIR_SHORT && oid==sym_ownerEntryShort) return;
+         int ownL = g_cfg.dualSourceFire ? pln_ownerEntryLong  : sym_ownerEntryLong;
+         int ownS = g_cfg.dualSourceFire ? pln_ownerEntryShort : sym_ownerEntryShort;
+         if(dir==DIR_LONG  && (oid==ownL || (!g_cfg.dualSourceFire && oid==pln_ownerEntryLong)))  return;
+         if(dir==DIR_SHORT && (oid==ownS || (!g_cfg.dualSourceFire && oid==pln_ownerEntryShort))) return;
       }
    }
 
