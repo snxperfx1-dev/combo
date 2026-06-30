@@ -5,7 +5,7 @@
 //|   Risk: PYRO thermal + TALON curve-convergent structural grip.   |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "5.24"
+#property version   "5.25"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -1121,6 +1121,8 @@ input double  InpFactNetPressure = 50.0;  // Opposing network authority-pressure
 input bool    InpFactNeedZone    = true;  // Require price to be AT a real subsystem zone (flip/demand/supply/OB/FU/inducement)
 input bool    InpEntryAtZone     = true;  // FREE-RUN too: only enter when price is AT a real zone (demand=buys / supply=sells) — stops random-location entries
 input bool    InpEntryNeedRoom   = true;  // FREE-RUN too: require curve ROOM (capacity left, not late/exhausted on the owner leg) before entering
+input bool    InpOneEntryPerDir   = true;  // Only ONE entry per direction at a time — no pyramiding the same move (stops the terrible follow-up after a good entry)
+input int     InpReentryCooldown  = 4;     // Bars to wait after ANY entry before another can fire (anti rapid-fire follow-ups); 0=off
 input string  __sep_plan        = "════════ TRADE PLAN (subsystem-composed) ════════"; // ──
 input bool    InpUseTradePlan    = true;  // Compose stop/target/size from subsystems (off: Symphony anchor+-ATR / ARC)
 input double  InpMinRR           = 4.0;   // Min reward:risk (from subsystem stop+target) to take an entry
@@ -1272,6 +1274,7 @@ struct FalconConfig
    bool   requireConfluence;
    bool   useFactGate, factNeedZone;
    bool   entryAtZone, entryNeedRoom;
+   bool   oneEntryPerDir;  int reentryCooldown;
    double factPartThreat, factNetPressure;
    bool   useTradePlan;
    double minRR, stopBufATR;
@@ -1420,6 +1423,8 @@ void FalconConfigInit()
    g_cfg.factNeedZone     = InpFactNeedZone;
    g_cfg.entryAtZone      = InpEntryAtZone;
    g_cfg.entryNeedRoom    = InpEntryNeedRoom;
+   g_cfg.oneEntryPerDir   = InpOneEntryPerDir;
+   g_cfg.reentryCooldown  = InpReentryCooldown;
    g_cfg.factPartThreat   = InpFactPartThreat;
    g_cfg.factNetPressure  = InpFactNetPressure;
    g_cfg.useTradePlan     = InpUseTradePlan;
@@ -7393,6 +7398,7 @@ bool     talon_beLong  = false;     // long campaign breakeven earned
 bool     talon_beShort = false;     // short campaign breakeven earned
 double   talon_peakLong  = 0.0;     // peak favorable excursion (ATR) — long campaign
 double   talon_peakShort = 0.0;     // peak favorable excursion (ATR) — short campaign
+int      sym_lastEntryBar = -100000;// bar index of the most recent entry (re-entry cooldown)
 
 // Re-entry lockout — once a campaign for the CURRENT impulse has been closed
 // (by trail-stop or composite exit), block re-entry in that direction until a
@@ -8403,6 +8409,7 @@ void Sym_PlaceEntry(const int dir,const string tag,const double riskCash,const d
       else             { sym_lastShortTradeTime=gTime[0]; sym_shortCampaignOpen=true; }
       TJ_RecordEntry(ee_lastTicket,dir,tag,entry,sl,lots);
       TG_Record(ee_lastTicket,dir,entry,sl,target,atrNow);   // model + categorize this entry's geometry/range band
+      sym_lastEntryBar = g_barCounter;                        // arm the re-entry cooldown
       AD_RecordEntry(ee_lastTicket, adBucket, lots*MathAbs(entry-sl)*g_cfg.contractValue, g_state.intel.executionProbability);
       g_state.exec.entry=entry; g_state.exec.stop=sl; g_state.exec.lots=lots; g_state.exec.riskCash=riskCash;
       g_state.exec.target=target; g_state.exec.target2=t2; g_state.exec.reward=rr;
@@ -8500,6 +8507,20 @@ void SymphonyExecuteTrading()
    // reached, no new entries fire (existing positions still manage their exits).
    if(g_cfg.maxOpenPositions>0 &&
       (g_state.exec.openLongCount+g_state.exec.openShortCount) >= g_cfg.maxOpenPositions)
+   { L3=false; L4=false; S3=false; S4=false; }
+
+   // ONE ENTRY PER DIRECTION — no pyramiding the same move. After a good entry,
+   // the next phase transition would otherwise fire a 2nd (extended/late) entry
+   // in the same direction — the classic "great entry then terrible one".
+   if(g_cfg.oneEntryPerDir)
+   {
+      if(g_state.exec.openLongCount >0){ L3=false; L4=false; }
+      if(g_state.exec.openShortCount>0){ S3=false; S4=false; }
+   }
+
+   // RE-ENTRY COOLDOWN — wait N bars after ANY entry before another can fire,
+   // so consecutive phase transitions don't rapid-fire follow-up entries.
+   if(g_cfg.reentryCooldown>0 && (g_barCounter - sym_lastEntryBar) < g_cfg.reentryCooldown)
    { L3=false; L4=false; S3=false; S4=false; }
 
    double impL = sym_anchorHigh - sym_anchorLow;

@@ -89,6 +89,7 @@ bool     talon_beLong  = false;     // long campaign breakeven earned
 bool     talon_beShort = false;     // short campaign breakeven earned
 double   talon_peakLong  = 0.0;     // peak favorable excursion (ATR) — long campaign
 double   talon_peakShort = 0.0;     // peak favorable excursion (ATR) — short campaign
+int      sym_lastEntryBar = -100000;// bar index of the most recent entry (re-entry cooldown)
 
 // Re-entry lockout — once a campaign for the CURRENT impulse has been closed
 // (by trail-stop or composite exit), block re-entry in that direction until a
@@ -1099,6 +1100,7 @@ void Sym_PlaceEntry(const int dir,const string tag,const double riskCash,const d
       else             { sym_lastShortTradeTime=gTime[0]; sym_shortCampaignOpen=true; }
       TJ_RecordEntry(ee_lastTicket,dir,tag,entry,sl,lots);
       TG_Record(ee_lastTicket,dir,entry,sl,target,atrNow);   // model + categorize this entry's geometry/range band
+      sym_lastEntryBar = g_barCounter;                        // arm the re-entry cooldown
       AD_RecordEntry(ee_lastTicket, adBucket, lots*MathAbs(entry-sl)*g_cfg.contractValue, g_state.intel.executionProbability);
       g_state.exec.entry=entry; g_state.exec.stop=sl; g_state.exec.lots=lots; g_state.exec.riskCash=riskCash;
       g_state.exec.target=target; g_state.exec.target2=t2; g_state.exec.reward=rr;
@@ -1196,6 +1198,20 @@ void SymphonyExecuteTrading()
    // reached, no new entries fire (existing positions still manage their exits).
    if(g_cfg.maxOpenPositions>0 &&
       (g_state.exec.openLongCount+g_state.exec.openShortCount) >= g_cfg.maxOpenPositions)
+   { L3=false; L4=false; S3=false; S4=false; }
+
+   // ONE ENTRY PER DIRECTION — no pyramiding the same move. After a good entry,
+   // the next phase transition would otherwise fire a 2nd (extended/late) entry
+   // in the same direction — the classic "great entry then terrible one".
+   if(g_cfg.oneEntryPerDir)
+   {
+      if(g_state.exec.openLongCount >0){ L3=false; L4=false; }
+      if(g_state.exec.openShortCount>0){ S3=false; S4=false; }
+   }
+
+   // RE-ENTRY COOLDOWN — wait N bars after ANY entry before another can fire,
+   // so consecutive phase transitions don't rapid-fire follow-up entries.
+   if(g_cfg.reentryCooldown>0 && (g_barCounter - sym_lastEntryBar) < g_cfg.reentryCooldown)
    { L3=false; L4=false; S3=false; S4=false; }
 
    double impL = sym_anchorHigh - sym_anchorLow;
