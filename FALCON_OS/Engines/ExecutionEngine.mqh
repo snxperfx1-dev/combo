@@ -658,8 +658,13 @@ void ExecutionEngineRun()
    // Drawdown protection + exposure snapshot always run.
    if(!g_cfg.useSymphony)
    {
-      EE_Trailing();
-      EE_ManagePartialTP();
+      // EE's own ATR trail + partial yield to TALON or the money-manager ladder
+      // whenever either owns exits — never run two trailing managers at once.
+      if(!g_cfg.useTalon && !g_cfg.useProfitLadder)
+      {
+         EE_Trailing();
+         EE_ManagePartialTP();
+      }
 
       // ---- INSTITUTIONAL band tracking, then EXITS, then ENTRIES ----
       EE_UpdateInstitutional();
