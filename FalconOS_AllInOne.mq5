@@ -5,7 +5,7 @@
 //|   Risk: PYRO thermal + TALON curve-convergent structural grip.   |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "5.21"
+#property version   "5.22"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -8379,6 +8379,13 @@ void Sym_PlaceEntry(const int dir,const string tag,const double riskCash,const d
 
    bool slOk = (dir==DIR_LONG ? (sl>0 && entry>sl) : (sl>0 && sl>entry));
    if(!slOk || lots<=0.0) return;
+
+   // UNIVERSAL wide-stop filter (applies to ALL entry modes: raw / tradeplan /
+   // classic). If the stop sits more than InpMaxStructStopATR ATR from entry,
+   // the range is unmanageably wide -> skip the trade.
+   if(g_cfg.maxStructStopATR>0.0 && atrNow>0.0 &&
+      MathAbs(entry-sl) > g_cfg.maxStructStopATR*atrNow)
+      return;
 
    // bank the runner at the destination: composed (or raw) target -> position TP
    double tpOrder = (target>0.0 && (raw || (g_cfg.useTradePlan && g_cfg.targetTP))) ? target : 0.0;
