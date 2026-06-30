@@ -5,7 +5,7 @@
 //|   Risk: PYRO thermal + TALON curve-convergent structural grip.   |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "5.14"
+#property version   "5.15"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -1154,6 +1154,7 @@ input bool    InpTrailEnable    = true;  // Enable trailing stop engine
 input double  InpTrailStartATR  = 1.0;   // Start trailing after profit (ATR)
 input double  InpTrailDistATR   = 1.5;   // Trailing distance (ATR)
 input bool    InpDDProtect      = true;  // Enable drawdown protection
+input bool    InpRiskAutoClose  = true;  // Let the RISK layer CLOSE trades (DD-flatten + PYRO catastrophe). OFF = only TALON / money manager / SL-TP manage exits
 input double  InpMaxDrawdownPct = 12.0;  // Block entries above this drawdown %
 input double  InpDDFlattenPct   = 20.0;  // Flatten everything above this drawdown %
 input double  InpMaxEntryComplete = 85.0;// Block NEW entries when wave completion >= this (no buying tops / selling bottoms)
@@ -1270,6 +1271,7 @@ struct FalconConfig
    double maxLots;
    int    maxOpenPositions;
    bool   trailEnable, ddProtect;
+   bool   riskAutoClose;
    double trailStartATR, trailDistATR, maxDrawdownPct, ddFlattenPct;
    double maxEntryComplete, minEntryRoomPct;
    double attentionATR;
@@ -1323,6 +1325,7 @@ void FalconApplyPreset(const int preset)
    PSET(maxOpenPositions, InpMaxOpenPositions, 0,     2);
    PSET(noHedge,          InpNoHedge,          false, true);
    PSET(trailEnable,      InpTrailEnable,      true,  false);
+   PSET(riskAutoClose,    InpRiskAutoClose,    true,  false);
    PSET(useProfitLadder,  InpUseProfitLadder,  false, false);
    PSET(counterDirBlock,  InpCounterDirBlock,  false, false);
    PSET(targetTP,         InpTargetTP,         true,  true);
@@ -1464,6 +1467,7 @@ void FalconConfigInit()
    g_cfg.trailStartATR    = InpTrailStartATR;
    g_cfg.trailDistATR     = InpTrailDistATR;
    g_cfg.ddProtect        = InpDDProtect;
+   g_cfg.riskAutoClose    = InpRiskAutoClose;
    g_cfg.maxDrawdownPct   = InpMaxDrawdownPct;
    g_cfg.ddFlattenPct     = InpDDFlattenPct;
    g_cfg.maxEntryComplete = InpMaxEntryComplete;
@@ -5666,18 +5670,23 @@ bool EE_DrawdownProtection()
 
    if(worst>=g_cfg.ddFlattenPct)
    {
-      // hard protection: flatten everything
-      int total=PositionsTotal();
-      for(int i=total-1;i>=0;i--)
+      // hard protection: flatten everything — UNLESS the risk layer is set to
+      // not auto-close (then TALON / money manager / SL-TP own all exits; we
+      // still block new entries below).
+      if(g_cfg.riskAutoClose)
       {
-         ulong ticket=PositionGetTicket(i);
-         if(!PositionSelectByTicket(ticket)) continue;
-         if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
-         if(PositionGetInteger(POSITION_MAGIC)!=g_cfg.magic) continue;
-         EE_CloseFull(ticket);
+         int total=PositionsTotal();
+         for(int i=total-1;i>=0;i--)
+         {
+            ulong ticket=PositionGetTicket(i);
+            if(!PositionSelectByTicket(ticket)) continue;
+            if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
+            if(PositionGetInteger(POSITION_MAGIC)!=g_cfg.magic) continue;
+            EE_CloseFull(ticket);
+         }
+         g_state.exec.exitState=XS_DD_FLATTEN;
       }
       FalconPublish(EVT_RISK_BREACH, worst, "drawdown flatten");
-      g_state.exec.exitState=XS_DD_FLATTEN;
       return(false);
    }
    if(worst>=g_cfg.maxDrawdownPct)
@@ -5938,7 +5947,7 @@ void TR_ManageBasket(const int idx,FalconThermalCampaign &c)
    if(c.stackCount==0) return;
 
    // --- CATASTROPHE STOP: thermal runaway -> flatten this campaign ---
-   if(c.admission==ADM_DERISK)
+   if(c.admission==ADM_DERISK && g_cfg.riskAutoClose)
    {
       int total=PositionsTotal();
       for(int i=total-1;i>=0;i--)

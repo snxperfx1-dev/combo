@@ -561,18 +561,23 @@ bool EE_DrawdownProtection()
 
    if(worst>=g_cfg.ddFlattenPct)
    {
-      // hard protection: flatten everything
-      int total=PositionsTotal();
-      for(int i=total-1;i>=0;i--)
+      // hard protection: flatten everything — UNLESS the risk layer is set to
+      // not auto-close (then TALON / money manager / SL-TP own all exits; we
+      // still block new entries below).
+      if(g_cfg.riskAutoClose)
       {
-         ulong ticket=PositionGetTicket(i);
-         if(!PositionSelectByTicket(ticket)) continue;
-         if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
-         if(PositionGetInteger(POSITION_MAGIC)!=g_cfg.magic) continue;
-         EE_CloseFull(ticket);
+         int total=PositionsTotal();
+         for(int i=total-1;i>=0;i--)
+         {
+            ulong ticket=PositionGetTicket(i);
+            if(!PositionSelectByTicket(ticket)) continue;
+            if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
+            if(PositionGetInteger(POSITION_MAGIC)!=g_cfg.magic) continue;
+            EE_CloseFull(ticket);
+         }
+         g_state.exec.exitState=XS_DD_FLATTEN;
       }
       FalconPublish(EVT_RISK_BREACH, worst, "drawdown flatten");
-      g_state.exec.exitState=XS_DD_FLATTEN;
       return(false);
    }
    if(worst>=g_cfg.maxDrawdownPct)

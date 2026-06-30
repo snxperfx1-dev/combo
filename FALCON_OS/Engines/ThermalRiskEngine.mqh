@@ -166,7 +166,7 @@ void TR_ManageBasket(const int idx,FalconThermalCampaign &c)
    if(c.stackCount==0) return;
 
    // --- CATASTROPHE STOP: thermal runaway -> flatten this campaign ---
-   if(c.admission==ADM_DERISK)
+   if(c.admission==ADM_DERISK && g_cfg.riskAutoClose)
    {
       int total=PositionsTotal();
       for(int i=total-1;i>=0;i--)

@@ -132,6 +132,7 @@ input bool    InpTrailEnable    = true;  // Enable trailing stop engine
 input double  InpTrailStartATR  = 1.0;   // Start trailing after profit (ATR)
 input double  InpTrailDistATR   = 1.5;   // Trailing distance (ATR)
 input bool    InpDDProtect      = true;  // Enable drawdown protection
+input bool    InpRiskAutoClose  = true;  // Let the RISK layer CLOSE trades (DD-flatten + PYRO catastrophe). OFF = only TALON / money manager / SL-TP manage exits
 input double  InpMaxDrawdownPct = 12.0;  // Block entries above this drawdown %
 input double  InpDDFlattenPct   = 20.0;  // Flatten everything above this drawdown %
 input double  InpMaxEntryComplete = 85.0;// Block NEW entries when wave completion >= this (no buying tops / selling bottoms)
@@ -248,6 +249,7 @@ struct FalconConfig
    double maxLots;
    int    maxOpenPositions;
    bool   trailEnable, ddProtect;
+   bool   riskAutoClose;
    double trailStartATR, trailDistATR, maxDrawdownPct, ddFlattenPct;
    double maxEntryComplete, minEntryRoomPct;
    double attentionATR;
@@ -301,6 +303,7 @@ void FalconApplyPreset(const int preset)
    PSET(maxOpenPositions, InpMaxOpenPositions, 0,     2);
    PSET(noHedge,          InpNoHedge,          false, true);
    PSET(trailEnable,      InpTrailEnable,      true,  false);
+   PSET(riskAutoClose,    InpRiskAutoClose,    true,  false);
    PSET(useProfitLadder,  InpUseProfitLadder,  false, false);
    PSET(counterDirBlock,  InpCounterDirBlock,  false, false);
    PSET(targetTP,         InpTargetTP,         true,  true);
@@ -442,6 +445,7 @@ void FalconConfigInit()
    g_cfg.trailStartATR    = InpTrailStartATR;
    g_cfg.trailDistATR     = InpTrailDistATR;
    g_cfg.ddProtect        = InpDDProtect;
+   g_cfg.riskAutoClose    = InpRiskAutoClose;
    g_cfg.maxDrawdownPct   = InpMaxDrawdownPct;
    g_cfg.ddFlattenPct     = InpDDFlattenPct;
    g_cfg.maxEntryComplete = InpMaxEntryComplete;
