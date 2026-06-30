@@ -232,6 +232,7 @@ string VZ_Body(const int tab)
          s+="Action      : "+FalconActionStr(e.action)+"\n";
          s+="Last entry  : "+(e.lastEntrySource==""?"— none yet":(e.lastEntrySource+"  <"+e.lastEntryTag+">"
             +(e.lastEntryTime>0?("  "+TimeToString(e.lastEntryTime,TIME_MINUTES)):"")))+"\n";
+         s+="Sym entries : "+(g_cfg.useSymphony?(sym_entryState==""?"idle":sym_entryState):"OFF (useSymphony=false)")+"\n";
          s+="Trade State : "+FalconTradeStateStr(e.tradeState)+"   Last exit "+FalconExitStateStr(e.exitState)+"\n";
          s+="Entry/Stop  : "+VZ_Px(e.entry)+" / "+VZ_Px(e.stop)+"\n";
          s+="Target      : "+VZ_Px(e.target)+"   R:R "+DoubleToString(e.reward,2)+"\n";

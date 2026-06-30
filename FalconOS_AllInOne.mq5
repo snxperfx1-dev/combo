@@ -5,7 +5,7 @@
 //|   Risk: PYRO thermal + TALON curve-convergent structural grip.   |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "6.12"
+#property version   "6.13"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -8221,6 +8221,7 @@ void Sym_RawEntryEdges(bool &eL3,bool &eL4,bool &eS3,bool &eS4)
 //   6. NETWORK/PART — THREAT  : no dominant opposing authority/participant.
 //==================================================================
 string sym_factVeto = "";   // last veto reason (diagnostics)
+string sym_entryState = ""; // WHY Symphony entries did / didn't fire this bar (diagnostics)
 
 bool Sym_PriceInBand(const double px,const double a,const double b)
 {
@@ -8620,7 +8621,7 @@ void SymphonyExecuteTrading()
    // portfolio guards — one-per-owner-curve / cooldown / max-positions — so they
    // can't double-stack the same move). Set InpPlannerExclusive=true to silence
    // Symphony's entries and let the planner own entries alone.
-   if(g_cfg.usePlanner && g_cfg.plannerExclusive) return;
+   if(g_cfg.usePlanner && g_cfg.plannerExclusive){ sym_entryState="suppressed (planner exclusive)"; return; }
 
    int      shiftNow = 1;
    double   closeNow = gClose[shiftNow];
@@ -8632,9 +8633,9 @@ void SymphonyExecuteTrading()
    double riskCash = equity * g_cfg.riskPercent * 0.01;
 
    // session + drawdown gating (FALCON-managed)
-   if(!EE_IsTradeTime()) return;
-   if(g_cfg.blockIfBreach && !ee_lastRiskOk) return;
-   if(ee_riskCooldown>0) return;
+   if(!EE_IsTradeTime()){ sym_entryState="out of session"; return; }
+   if(g_cfg.blockIfBreach && !ee_lastRiskOk){ sym_entryState="risk breach block"; return; }
+   if(ee_riskCooldown>0){ sym_entryState="risk cooldown"; return; }
 
    // Re-entry lockout: a campaign for THIS impulse was already closed -> wait for
    // a fresh impulse before re-engaging this direction (kills exit/re-enter churn).
@@ -8719,6 +8720,30 @@ void SymphonyExecuteTrading()
 
    double impL = sym_anchorHigh - sym_anchorLow;
    double impS = sym_anchorHigh - sym_anchorLow;
+
+   // DIAGNOSTIC — record WHY Symphony entries are / aren't firing this bar so
+   // it's visible on the EXECUTION tab (answers "why isn't Symphony firing?").
+   {
+      bool anyEdge = (eL3||eL4||eS3||eS4);
+      bool anyFire = (L3||L4||S3||S4);
+      int  totOpen = g_state.exec.openLongCount+g_state.exec.openShortCount;
+      if(!anyEdge)
+         sym_entryState = "no fresh phase edge";
+      else if(anyFire)
+         sym_entryState = "ARMED — firing";
+      else
+      {
+         string why="edge blocked: ";
+         if(g_cfg.maxOpenPositions>0 && totOpen>=g_cfg.maxOpenPositions) why+="max-pos ";
+         if(g_cfg.noHedge && (g_state.exec.openShortCount>0||g_state.exec.openLongCount>0)) why+="no-hedge ";
+         if(g_cfg.oneEntryPerDir && (g_state.exec.openLongCount>0||g_state.exec.openShortCount>0)) why+="one-per-dir ";
+         if(g_cfg.reentryCooldown>0 && (g_barCounter-sym_lastEntryBar)<g_cfg.reentryCooldown) why+="cooldown ";
+         if(g_cfg.oneEntryPerCurve && g_state.curve.ownerNodeId>0
+            && (g_state.curve.ownerNodeId==sym_ownerEntryLong||g_state.curve.ownerNodeId==sym_ownerEntryShort)) why+="one-per-curve ";
+         if(sym_factVeto!="") why+="["+sym_factVeto+"] ";
+         sym_entryState = why;
+      }
+   }
 
    // LONG P3
    if(L3 && sym_lastLongTradeTime!=barTime)
@@ -9748,6 +9773,7 @@ string VZ_Body(const int tab)
          s+="Action      : "+FalconActionStr(e.action)+"\n";
          s+="Last entry  : "+(e.lastEntrySource==""?"— none yet":(e.lastEntrySource+"  <"+e.lastEntryTag+">"
             +(e.lastEntryTime>0?("  "+TimeToString(e.lastEntryTime,TIME_MINUTES)):"")))+"\n";
+         s+="Sym entries : "+(g_cfg.useSymphony?(sym_entryState==""?"idle":sym_entryState):"OFF (useSymphony=false)")+"\n";
          s+="Trade State : "+FalconTradeStateStr(e.tradeState)+"   Last exit "+FalconExitStateStr(e.exitState)+"\n";
          s+="Entry/Stop  : "+VZ_Px(e.entry)+" / "+VZ_Px(e.stop)+"\n";
          s+="Target      : "+VZ_Px(e.target)+"   R:R "+DoubleToString(e.reward,2)+"\n";
