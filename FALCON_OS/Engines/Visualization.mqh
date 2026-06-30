@@ -108,6 +108,10 @@ string VZ_Body(const int tab)
             +"  (calib "+DoubleToString(g_state.self.calibration,0)
             +" form "+DoubleToString(g_state.self.form,0)+" streak "+IntegerToString(g_state.self.winStreak)+"/"+IntegerToString(g_state.self.lossStreak)+")") : "off (full size)")+"\n";
          s+="Reasoning   : concrete engines (phases / ownership / curve / structure / multi-TF)\n";
+         s+="Active cfg  : "+FalconEngineStr(g_cfg.entryEngine)+"  minR "+DoubleToString(g_cfg.minRR,1)
+            +"  maxPos "+IntegerToString(g_cfg.maxOpenPositions)+(g_cfg.noHedge?" 1-dir":"")
+            +"  TALON "+(g_cfg.useTalon?"on":"off")+"  PYRO "+(g_cfg.useThermalRisk?"on":"off")
+            +"  free "+((g_cfg.cycleFreeRun&&g_cfg.runAllCycles)?"on":"off")+"\n";
          s+="Time        : "+g_state.timeIntel.sessionName+"  Q "+DoubleToString(g_state.timeIntel.timeQuality,0)+" "+g_state.timeIntel.label
             +(g_state.timeIntel.killzone?("  KZ:"+g_state.timeIntel.killzoneName):"");
          break;

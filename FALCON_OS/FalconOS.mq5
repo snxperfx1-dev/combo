@@ -208,6 +208,15 @@ int OnInit()
       StringFormat("FALCON OS booted — profile=%d magic=%d trading=%s thermalRisk=%s",
         g_cfg.profile, (int)g_cfg.magic,
         g_cfg.enableTrading?"on":"off", g_cfg.useThermalRisk?"PYRO":"off"));
+   // ACTIVE RESOLVED CONFIG — note: MetaTrader cannot change the Inputs grid from
+   // code, so a selected preset is applied INTERNALLY (here) — the grid still
+   // shows your typed values. This line is the source of truth for what is live.
+   PrintFormat("[FALCON] PRESET=%s -> engine=%s  minRR=%.1f  maxPos=%d  noHedge=%s  rawStop/Tgt=%.1f/%.1f  TALON=%s(gb %.2f)  PYRO=%s(stacks %d)",
+        (InpPreset==PRESET_LETRA?"LETRA":InpPreset==PRESET_SYMPHONY?"SYMPHONY":"CUSTOM"),
+        FalconEngineStr(g_cfg.entryEngine), g_cfg.minRR, g_cfg.maxOpenPositions,
+        g_cfg.noHedge?"on":"off", g_cfg.cycleRawStopATR, g_cfg.cycleRawTgtATR,
+        g_cfg.useTalon?"on":"off", g_cfg.talonGiveback,
+        g_cfg.useThermalRisk?"on":"off", g_cfg.maxStacks);
    PrintFormat("[FALCON] Unified Trading Intelligence Platform online. 6 engines · 1 shared state · deterministic pipeline.");
    return(INIT_SUCCEEDED);
 }
