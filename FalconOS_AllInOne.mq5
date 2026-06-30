@@ -5,7 +5,7 @@
 //|   Risk: PYRO thermal + TALON curve-convergent structural grip.   |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "6.10"
+#property version   "6.11"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -671,6 +671,10 @@ struct FalconExecution
    int    tradeBand;       // TG_SCALP / TG_NORMAL / TG_WIDE
    double stopDistPts;     // entry->stop distance (price)
    double tgtDistPts;      // entry->target distance (price)
+   // entry attribution (WHICH source fired the last entry) — display
+   string lastEntrySource; // "PLANNER" or "SYMPHONY"
+   string lastEntryTag;    // full tag (e.g. "PLAN CONTINUATION" / "LETRA P3 Long")
+   datetime lastEntryTime; // when the last entry fired
 };
 
 //==================================================================
@@ -8574,6 +8578,15 @@ void Sym_PlaceEntry(const int dir,const string tag,const double riskCash,const d
       AD_RecordEntry(ee_lastTicket, adBucket, lots*MathAbs(entry-sl)*g_cfg.contractValue, g_state.intel.executionProbability);
       g_state.exec.entry=entry; g_state.exec.stop=sl; g_state.exec.lots=lots; g_state.exec.riskCash=riskCash;
       g_state.exec.target=target; g_state.exec.target2=t2; g_state.exec.reward=rr;
+      // ENTRY ATTRIBUTION — which source fired this entry (PLANNER vs Symphony phase)
+      string src = (StringFind(tag,"PLAN")>=0 ? "PLANNER" : "SYMPHONY");
+      g_state.exec.lastEntrySource = src;
+      g_state.exec.lastEntryTag    = tag;
+      g_state.exec.lastEntryTime   = gTime[0];
+      PrintFormat("[FALCON ENTRY] src=%s  %s  %s  entry=%s sl=%s tp=%s  R:R=%.2f  lots=%.2f  ticket=%I64u",
+                  src, (dir==DIR_LONG?"LONG":"SHORT"), tag,
+                  DoubleToString(entry,_Digits), DoubleToString(sl,_Digits),
+                  DoubleToString(target,_Digits), rr, lots, ee_lastTicket);
    }
 }
 
@@ -9734,6 +9747,8 @@ string VZ_Body(const int tab)
       }
       case 9: // EXECUTION
          s+="Action      : "+FalconActionStr(e.action)+"\n";
+         s+="Last entry  : "+(e.lastEntrySource==""?"— none yet":(e.lastEntrySource+"  <"+e.lastEntryTag+">"
+            +(e.lastEntryTime>0?("  "+TimeToString(e.lastEntryTime,TIME_MINUTES)):"")))+"\n";
          s+="Trade State : "+FalconTradeStateStr(e.tradeState)+"   Last exit "+FalconExitStateStr(e.exitState)+"\n";
          s+="Entry/Stop  : "+VZ_Px(e.entry)+" / "+VZ_Px(e.stop)+"\n";
          s+="Target      : "+VZ_Px(e.target)+"   R:R "+DoubleToString(e.reward,2)+"\n";

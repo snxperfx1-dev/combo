@@ -1109,6 +1109,15 @@ void Sym_PlaceEntry(const int dir,const string tag,const double riskCash,const d
       AD_RecordEntry(ee_lastTicket, adBucket, lots*MathAbs(entry-sl)*g_cfg.contractValue, g_state.intel.executionProbability);
       g_state.exec.entry=entry; g_state.exec.stop=sl; g_state.exec.lots=lots; g_state.exec.riskCash=riskCash;
       g_state.exec.target=target; g_state.exec.target2=t2; g_state.exec.reward=rr;
+      // ENTRY ATTRIBUTION — which source fired this entry (PLANNER vs Symphony phase)
+      string src = (StringFind(tag,"PLAN")>=0 ? "PLANNER" : "SYMPHONY");
+      g_state.exec.lastEntrySource = src;
+      g_state.exec.lastEntryTag    = tag;
+      g_state.exec.lastEntryTime   = gTime[0];
+      PrintFormat("[FALCON ENTRY] src=%s  %s  %s  entry=%s sl=%s tp=%s  R:R=%.2f  lots=%.2f  ticket=%I64u",
+                  src, (dir==DIR_LONG?"LONG":"SHORT"), tag,
+                  DoubleToString(entry,_Digits), DoubleToString(sl,_Digits),
+                  DoubleToString(target,_Digits), rr, lots, ee_lastTicket);
    }
 }
 

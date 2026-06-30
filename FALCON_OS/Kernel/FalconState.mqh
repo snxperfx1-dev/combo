@@ -657,6 +657,10 @@ struct FalconExecution
    int    tradeBand;       // TG_SCALP / TG_NORMAL / TG_WIDE
    double stopDistPts;     // entry->stop distance (price)
    double tgtDistPts;      // entry->target distance (price)
+   // entry attribution (WHICH source fired the last entry) — display
+   string lastEntrySource; // "PLANNER" or "SYMPHONY"
+   string lastEntryTag;    // full tag (e.g. "PLAN CONTINUATION" / "LETRA P3 Long")
+   datetime lastEntryTime; // when the last entry fired
 };
 
 //==================================================================
