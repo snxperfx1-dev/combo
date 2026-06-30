@@ -1410,6 +1410,36 @@ void SymphonyUpdateCampaignLockout()
 }
 
 //==================================================================
+// CAPTURE-AT-DONE — the "no trail, just bank it when the move is finished"
+// exit. When the OWNER curve has travelled to its destination (curve
+// locator pos >= captureCurvePos) and a position in that direction is in
+// profit, close it. No trailing, no breakeven scratch — the trade rides
+// the full squeeze and the profit is taken when the curve completes.
+// (Losers are still cut by the position SL; runaway TP still backstops.)
+//==================================================================
+void SymphonyCaptureExit()
+{
+   if(!g_cfg.captureAtDone) return;
+   if(g_state.curveLocator.pos < g_cfg.captureCurvePos) return;   // move not done yet
+   int odir = g_state.curveLocator.dir;
+   if(odir==DIR_NONE) return;
+
+   int total=PositionsTotal();
+   for(int i=total-1;i>=0;i--)
+   {
+      ulong ticket=PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
+      if(PositionGetInteger(POSITION_MAGIC)!=g_cfg.magic) continue;
+      double pnl=PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP);
+      if(pnl<=0.0) continue;                                       // only CAPTURE profit
+      long type=PositionGetInteger(POSITION_TYPE);
+      if(type==POSITION_TYPE_BUY  && odir==DIR_LONG)  { if(EE_CloseFull(ticket)) FalconPublish(EVT_EXIT_FIRED, 1); }
+      if(type==POSITION_TYPE_SELL && odir==DIR_SHORT) { if(EE_CloseFull(ticket)) FalconPublish(EVT_EXIT_FIRED,-1); }
+   }
+}
+
+//==================================================================
 // MASTER — Symphony manage step (manage open trades, then exits, then entries)
 //   Called from the pipeline's execution stage when g_cfg.useSymphony.
 //==================================================================
@@ -1426,7 +1456,8 @@ void SymphonyTradeManage()
       TalonGrip();
       SymphonyArcPartial();
    }
-   SymphonyManageExits();   // composite ARC + institutional + phase reversal exit
+   SymphonyCaptureExit();   // bank profit when the curve reaches its destination (no trailing)
+   SymphonyManageExits();   // composite ARC + institutional + phase reversal exit (suppressed in raw/free)
    SymphonyExecuteTrading();// Phase 3/4 entries
 }
 

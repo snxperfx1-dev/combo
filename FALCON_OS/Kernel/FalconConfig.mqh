@@ -178,7 +178,9 @@ input double  InpHeatAdverseSpan = 4.0;   // Adverse excursion (ATR) that equals
 input double  InpAcctHeatDDPct   = 15.0;  // Account heat: equity drawdown %% that fully freezes admissions
 
 input string  __sep_talon       = "════════ TALON GRIP — breakeven + trail ════════"; // ──
-input bool    InpUseTalon        = true;  // Use TALON curve-convergent grip (breakeven + trail + peak-profit lock)
+input bool    InpUseTalon        = false; // TALON trailing grip (OFF: no trail — hold to TP / capture-at-done instead)
+input bool    InpCaptureAtDone   = true;  // CAPTURE-AT-DONE: bank a profitable trade when the curve reaches its destination (no trailing)
+input double  InpCaptureCurvePos = 0.90;  // Curve position (0..1 of the owner leg) that counts the move as "done"
 input int     InpTalonStructLen  = 6;     // Structural pivot length for the grip anchor
 input double  InpTalonBufATR      = 0.35; // Buffer beyond the structural pivot (ATR)
 input double  InpTalonBaseATR     = 3.5;  // Base trail distance far from target (ATR) — loose so winners run to TP
@@ -265,6 +267,7 @@ struct FalconConfig
    double ladderBEbufATR;  bool targetTP;
    // TALON grip (breakeven + trail)
    bool   useTalon;  int talonStructLen;
+   bool   captureAtDone;  double captureCurvePos;
    double talonBufATR, talonBaseATR, talonConvSpanATR, talonMinTighten, talonBeATR;
    double talonGiveback, talonLockArmATR;
    double arcPartialFrac, arcPartialMinATR;
@@ -444,6 +447,8 @@ void FalconConfigInit()
    g_cfg.targetTP         = InpTargetTP;
 
    g_cfg.useTalon         = InpUseTalon;
+   g_cfg.captureAtDone    = InpCaptureAtDone;
+   g_cfg.captureCurvePos  = InpCaptureCurvePos;
    g_cfg.talonStructLen   = InpTalonStructLen;
    g_cfg.talonBufATR      = InpTalonBufATR;
    g_cfg.talonBaseATR     = InpTalonBaseATR;

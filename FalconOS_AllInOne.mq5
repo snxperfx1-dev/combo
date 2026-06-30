@@ -5,7 +5,7 @@
 //|   Risk: PYRO thermal + TALON curve-convergent structural grip.   |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "5.17"
+#property version   "5.18"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -1200,7 +1200,9 @@ input double  InpHeatAdverseSpan = 4.0;   // Adverse excursion (ATR) that equals
 input double  InpAcctHeatDDPct   = 15.0;  // Account heat: equity drawdown %% that fully freezes admissions
 
 input string  __sep_talon       = "════════ TALON GRIP — breakeven + trail ════════"; // ──
-input bool    InpUseTalon        = true;  // Use TALON curve-convergent grip (breakeven + trail + peak-profit lock)
+input bool    InpUseTalon        = false; // TALON trailing grip (OFF: no trail — hold to TP / capture-at-done instead)
+input bool    InpCaptureAtDone   = true;  // CAPTURE-AT-DONE: bank a profitable trade when the curve reaches its destination (no trailing)
+input double  InpCaptureCurvePos = 0.90;  // Curve position (0..1 of the owner leg) that counts the move as "done"
 input int     InpTalonStructLen  = 6;     // Structural pivot length for the grip anchor
 input double  InpTalonBufATR      = 0.35; // Buffer beyond the structural pivot (ATR)
 input double  InpTalonBaseATR     = 3.5;  // Base trail distance far from target (ATR) — loose so winners run to TP
@@ -1287,6 +1289,7 @@ struct FalconConfig
    double ladderBEbufATR;  bool targetTP;
    // TALON grip (breakeven + trail)
    bool   useTalon;  int talonStructLen;
+   bool   captureAtDone;  double captureCurvePos;
    double talonBufATR, talonBaseATR, talonConvSpanATR, talonMinTighten, talonBeATR;
    double talonGiveback, talonLockArmATR;
    double arcPartialFrac, arcPartialMinATR;
@@ -1466,6 +1469,8 @@ void FalconConfigInit()
    g_cfg.targetTP         = InpTargetTP;
 
    g_cfg.useTalon         = InpUseTalon;
+   g_cfg.captureAtDone    = InpCaptureAtDone;
+   g_cfg.captureCurvePos  = InpCaptureCurvePos;
    g_cfg.talonStructLen   = InpTalonStructLen;
    g_cfg.talonBufATR      = InpTalonBufATR;
    g_cfg.talonBaseATR     = InpTalonBaseATR;
@@ -8684,6 +8689,36 @@ void SymphonyUpdateCampaignLockout()
 }
 
 //==================================================================
+// CAPTURE-AT-DONE — the "no trail, just bank it when the move is finished"
+// exit. When the OWNER curve has travelled to its destination (curve
+// locator pos >= captureCurvePos) and a position in that direction is in
+// profit, close it. No trailing, no breakeven scratch — the trade rides
+// the full squeeze and the profit is taken when the curve completes.
+// (Losers are still cut by the position SL; runaway TP still backstops.)
+//==================================================================
+void SymphonyCaptureExit()
+{
+   if(!g_cfg.captureAtDone) return;
+   if(g_state.curveLocator.pos < g_cfg.captureCurvePos) return;   // move not done yet
+   int odir = g_state.curveLocator.dir;
+   if(odir==DIR_NONE) return;
+
+   int total=PositionsTotal();
+   for(int i=total-1;i>=0;i--)
+   {
+      ulong ticket=PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
+      if(PositionGetInteger(POSITION_MAGIC)!=g_cfg.magic) continue;
+      double pnl=PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP);
+      if(pnl<=0.0) continue;                                       // only CAPTURE profit
+      long type=PositionGetInteger(POSITION_TYPE);
+      if(type==POSITION_TYPE_BUY  && odir==DIR_LONG)  { if(EE_CloseFull(ticket)) FalconPublish(EVT_EXIT_FIRED, 1); }
+      if(type==POSITION_TYPE_SELL && odir==DIR_SHORT) { if(EE_CloseFull(ticket)) FalconPublish(EVT_EXIT_FIRED,-1); }
+   }
+}
+
+//==================================================================
 // MASTER — Symphony manage step (manage open trades, then exits, then entries)
 //   Called from the pipeline's execution stage when g_cfg.useSymphony.
 //==================================================================
@@ -8700,7 +8735,8 @@ void SymphonyTradeManage()
       TalonGrip();
       SymphonyArcPartial();
    }
-   SymphonyManageExits();   // composite ARC + institutional + phase reversal exit
+   SymphonyCaptureExit();   // bank profit when the curve reaches its destination (no trailing)
+   SymphonyManageExits();   // composite ARC + institutional + phase reversal exit (suppressed in raw/free)
    SymphonyExecuteTrading();// Phase 3/4 entries
 }
 
