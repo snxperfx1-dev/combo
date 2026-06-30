@@ -148,8 +148,8 @@ input double  InpCycleEvalATR    = 1.2;        // Favorable move (ATR) that scor
 input int     InpBestMinSamples  = 12;         // Min resolved predictions before BEST/learned selection trusts an engine
 input bool    InpCycleRawEntries  = true;       // Selected non-Symphony engine enters on its raw P3/P4 edge (bypass fact gate + zone R:R) — clean A/B/C
 input bool    InpCycleFreeRun      = true;       // FREE RUN: authority engine enters on EVERY fresh in-direction phase edge (expansion/return/breakout) — let an accurate engine trade freely
-input double  InpCycleRawStopATR   = 1.0;       // Raw-entry stop distance (ATR) when bypassing the trade plan
-input double  InpCycleRawTgtATR    = 4.5;       // Raw-entry target distance (ATR) — keep >= MinRR x stop or entries are rejected
+input double  InpCycleRawStopATR   = 1.0;       // FALLBACK stop (ATR) only if no structure found — primary stop is structural (swing/anchor)
+input double  InpCycleRawTgtATR    = 4.5;       // (legacy) raw ATR target — superseded: target now = MinRR x structural risk
 
 input string  __sep_money      = "════════ MONEY MANAGER (Symphony v3.0) ════════"; // ──
 input bool    InpUseProfitLadder= false; // Use v3.0 live-PnL profit ladder (DISABLED — raw cycle comparison)

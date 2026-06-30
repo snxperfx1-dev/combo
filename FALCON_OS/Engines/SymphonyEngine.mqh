@@ -892,6 +892,39 @@ bool SymphonyBrainConfirms(const int dir)
 //   conviction, and the entry must clear the subsystem reward:risk gate.
 //   Otherwise falls back to Symphony's anchor ± 0.25 ATR stop.
 //==================================================================
+//==================================================================
+// STRUCTURAL STOP — Symphony-style: place the stop just BEYOND the
+// structure (impulse anchor / swing), not a fixed ATR off entry.
+//   LONG  : structural swing LOW  - 0.25 ATR
+//   SHORT : structural swing HIGH + 0.25 ATR
+// Priority: the current Symphony impulse anchor (its structural origin),
+// else the nearest recent pivot on the correct side, else ATR fallback.
+//==================================================================
+double Sym_StructuralStop(const int dir,const double entry,const double atr)
+{
+   double buf = atr*0.25;
+
+   // 1) Symphony impulse anchor — the structural origin of the live impulse
+   if(dir==DIR_LONG  && sym_anchorLow >0.0 && sym_anchorLow <entry) return(sym_anchorLow  - buf);
+   if(dir==DIR_SHORT && sym_anchorHigh>0.0 && sym_anchorHigh>entry) return(sym_anchorHigh + buf);
+
+   // 2) nearest recent structural swing on the correct side
+   int len = g_cfg.pivotLen;
+   if(dir==DIR_LONG)
+   {
+      for(int c=len+1;c<80;c++)
+         if(FalconIsPivotLow(c,len) && gLow[c]<entry) return(gLow[c]-buf);
+   }
+   else
+   {
+      for(int c=len+1;c<80;c++)
+         if(FalconIsPivotHigh(c,len) && gHigh[c]>entry) return(gHigh[c]+buf);
+   }
+
+   // 3) fallback: ATR stop
+   return(dir==DIR_LONG ? entry-g_cfg.cycleRawStopATR*atr : entry+g_cfg.cycleRawStopATR*atr);
+}
+
 void Sym_PlaceEntry(const int dir,const string tag,const double riskCash,const double atrNow,const bool raw=false)
 {
    double entry = (dir==DIR_LONG ? SymbolInfoDouble(_Symbol,SYMBOL_ASK)
@@ -904,16 +937,19 @@ void Sym_PlaceEntry(const int dir,const string tag,const double riskCash,const d
 
    if(raw)
    {
-      // RAW A/B/C mode: the engine enters on its own edge with a clean ATR
-      // stop/target — no zone/R:R gate — so each wave model can be measured
-      // on identical terms (its directional edge, not Symphony's geometry).
-      double s = g_cfg.cycleRawStopATR*atrNow;
-      double t = g_cfg.cycleRawTgtATR *atrNow;
-      sl     = (dir==DIR_LONG ? entry - s : entry + s);
+      // RAW / FREE mode: STRUCTURAL stop (Symphony-style — just beyond the
+      // swing/anchor), with the target placed at minRR x the structural risk so
+      // every entry is a real structural setup at the required R:R. (The
+      // capture-at-done exit banks profit at the curve destination; this TP is
+      // the backstop.)
+      sl = Sym_StructuralStop(dir, entry, atrNow);
+      double stopDist = MathAbs(entry - sl);
+      if(stopDist <= 0.0) return;
+      if(g_cfg.maxStopATR>0.0 && stopDist > g_cfg.maxStopATR*atrNow) return;  // structure too far -> skip
+      double t = stopDist * g_cfg.minRR;
       target = (dir==DIR_LONG ? entry + t : entry - t);
       t2     = target;
-      rr     = (s>0.0 ? t/s : 0.0);
-      if(rr < g_cfg.minRR) return;                 // enforce min R:R even on raw/free entries
+      rr     = g_cfg.minRR;
       lots   = Sym_SizeLots(dir, riskCash*adMult*saMult, entry, sl);
    }
    else if(g_cfg.useTradePlan)
