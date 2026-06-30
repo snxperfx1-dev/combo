@@ -5,7 +5,7 @@
 //|   Risk: PYRO thermal + TALON curve-convergent structural grip.   |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "5.10"
+#property version   "5.11"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -1039,11 +1039,20 @@ enum FALCON_PROFILE
    PROFILE_RESEARCH = 2
 };
 
+// QUICK PROFILE — one-click tuned presets that override the inputs below.
+enum FALCON_PRESET
+{
+   PRESET_CUSTOM    = 0,   // use the inputs exactly as set
+   PRESET_LETRA     = 1,   // LETRA free-run profile (minR 4 · max 2 pos · no-hedge · TALON+PYRO)
+   PRESET_SYMPHONY  = 2    // SYMPHONY free-run profile (same risk frame, Symphony cycle)
+};
+
 //==================================================================
 // INPUTS — the single declaration of every tunable in the OS
 //==================================================================
 input string  __sep_general    = "════════ FALCON OS — GENERAL ════════"; // ──
 input FALCON_PROFILE InpProfile = PROFILE_LIVE;   // Run profile
+input FALCON_PRESET  InpPreset  = PRESET_CUSTOM;  // QUICK PROFILE: LETRA / SYMPHONY tuned preset (OVERRIDES inputs below). CUSTOM = use inputs as set.
 input long    InpMagic          = 770077;         // EA magic number
 input ENUM_TIMEFRAMES InpOperatingTF = PERIOD_CURRENT; // Operating TF for the trading CORE (PERIOD_CURRENT=use chart). Set explicitly (e.g. M5) to make the chart a pure viewport.
 input int     InpTargetGMT      = 0;              // Session timezone (GMT offset)
@@ -1288,6 +1297,79 @@ struct FalconConfig
 FalconConfig g_cfg;
 
 //------------------------------------------------------------------
+// QUICK PROFILE — overlay a tuned LETRA / SYMPHONY preset over the
+// resolved config. Shared risk/exit frame; only the engine selector
+// and a couple of stop/target distances differ. Applied AFTER all
+// inputs are read, so it overrides them. CUSTOM leaves inputs intact.
+//------------------------------------------------------------------
+void FalconApplyPreset(const int preset)
+{
+   if(preset==PRESET_CUSTOM) return;
+
+   // ---- shared frame (both LETRA & SYMPHONY) ----
+   g_cfg.operatingTF      = PERIOD_M5;     // tuned on the M5 trading scale
+   g_cfg.useSymphony      = true;          // execution host
+   g_cfg.runAllCycles     = true;
+   g_cfg.refereeLearn     = true;
+   g_cfg.cycleFreeRun     = true;          // trade ALL phases
+   g_cfg.cycleRawEntries  = true;          // own-edge entries, gate bypassed
+   g_cfg.useTradePlan     = true;
+   g_cfg.minRR            = 4.0;           // min R:R = 4 to take a trade
+   g_cfg.maxOpenPositions = 2;            // max 2 positions at a time
+   g_cfg.noHedge          = true;          // never both directions
+   g_cfg.riskPercent      = 0.5;
+   g_cfg.maxLots          = 1.0;
+   g_cfg.trailEnable      = false;         // TALON owns trailing
+   g_cfg.ddProtect        = true;
+   g_cfg.maxDrawdownPct   = 12.0;
+   g_cfg.ddFlattenPct     = 20.0;
+   g_cfg.sessionFilter    = false;
+   // money manager — TALON owns profit, so ladder off
+   g_cfg.useProfitLadder  = false;
+   g_cfg.counterDirBlock  = false;
+   g_cfg.maxBasketRiskPct = 0.0;
+   g_cfg.targetTP         = true;
+   // PYRO thermal risk — admission + catastrophe stop, capped to 2 stacks
+   g_cfg.useThermalRisk   = true;
+   g_cfg.maxStacks        = 2;
+   g_cfg.maxCampaignLots  = 2.0;
+   g_cfg.heatThrottle     = 0.50;
+   g_cfg.heatFreeze       = 0.80;
+   g_cfg.heatCritical     = 1.00;
+   g_cfg.maxAvgDownStacks = 1;
+   g_cfg.heatAdverseSpan  = 3.5;
+   g_cfg.acctHeatDDPct    = 15.0;
+   // TALON grip — breakeven + trail + peak-profit lock
+   g_cfg.useTalon         = true;
+   g_cfg.talonStructLen   = 6;
+   g_cfg.talonBufATR      = 0.35;
+   g_cfg.talonConvSpanATR = 6.0;
+   g_cfg.talonMinTighten  = 0.20;
+   g_cfg.talonBeATR       = 0.9;
+   g_cfg.talonGiveback    = 0.35;
+   g_cfg.talonLockArmATR  = 1.5;
+   g_cfg.arcPartialFrac   = 0.33;
+   g_cfg.arcPartialMinATR = 1.5;
+   g_cfg.dashboardTab     = 14;            // COMMAND tab (all info at once)
+
+   // ---- per-engine differences ----
+   if(preset==PRESET_LETRA)
+   {
+      g_cfg.entryEngine     = ENG_LETRA;
+      g_cfg.cycleRawStopATR = 1.2;         // LETRA overshoots -> more room
+      g_cfg.cycleRawTgtATR  = 5.0;         // ~4.2R
+      g_cfg.talonBaseATR    = 2.8;
+   }
+   else // PRESET_SYMPHONY
+   {
+      g_cfg.entryEngine     = ENG_SYMPHONY;
+      g_cfg.cycleRawStopATR = 1.0;         // tighter precision
+      g_cfg.cycleRawTgtATR  = 4.2;         // 4.2R
+      g_cfg.talonBaseATR    = 2.5;
+   }
+}
+
+//------------------------------------------------------------------
 // Build resolved config from inputs and apply per-profile overrides.
 //------------------------------------------------------------------
 void FalconConfigInit()
@@ -1451,6 +1533,10 @@ void FalconConfigInit()
       g_cfg.enableTrading = false;   // research never sends orders
       g_cfg.verboseLog    = true;
    }
+
+   // QUICK PROFILE overlay — applied LAST so a chosen preset overrides the
+   // individual inputs above (CUSTOM leaves everything as set).
+   FalconApplyPreset(InpPreset);
 }
 
 #endif // FALCON_CONFIG_MQH
