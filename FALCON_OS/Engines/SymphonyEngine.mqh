@@ -921,8 +921,10 @@ double Sym_StructuralStop(const int dir,const double entry,const double atr)
          if(FalconIsPivotHigh(c,len) && gHigh[c]>entry) return(gHigh[c]+buf);
    }
 
-   // 3) fallback: ATR stop
-   return(dir==DIR_LONG ? entry-g_cfg.cycleRawStopATR*atr : entry+g_cfg.cycleRawStopATR*atr);
+   // 3) NO structure found -> return 0 so the caller SKIPS the trade.
+   //    (No ATR-from-entry fallback: a trade only ever fires with a stop
+   //    placed beyond real structure.)
+   return(0.0);
 }
 
 void Sym_PlaceEntry(const int dir,const string tag,const double riskCash,const double atrNow,const bool raw=false)
@@ -943,6 +945,7 @@ void Sym_PlaceEntry(const int dir,const string tag,const double riskCash,const d
       // capture-at-done exit banks profit at the curve destination; this TP is
       // the backstop.)
       sl = Sym_StructuralStop(dir, entry, atrNow);
+      if(sl<=0.0) return;                              // no structure -> skip the trade (no ATR fallback)
       double stopDist = MathAbs(entry - sl);
       if(stopDist <= 0.0) return;
       if(g_cfg.maxStopATR>0.0 && stopDist > g_cfg.maxStopATR*atrNow) return;  // structure too far -> skip

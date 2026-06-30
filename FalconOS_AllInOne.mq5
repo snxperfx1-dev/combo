@@ -5,7 +5,7 @@
 //|   Risk: PYRO thermal + TALON curve-convergent structural grip.   |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "5.19"
+#property version   "5.20"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -6412,7 +6412,7 @@ double TP_StopLong(const double entry,const double atr,string &src)
    {
       // fallback: deepest available zone bottom, else fixed structural stop
       for(int i=0;i<n;i++) if(cand[i]>0 && cand[i]<entry && (best==0.0||cand[i]<best)){ best=cand[i]; src=lbl[i]; }
-      if(best<=0.0){ src="atr"; return(entry - 1.5*atr - buf); }
+      if(best<=0.0){ src="none"; return(0.0); }   // no structure -> invalid (no ATR fallback)
    }
    double stopL = best - buf;
    double capL  = entry - g_cfg.maxStopATR*atr;   // never wider than the cap
@@ -6451,7 +6451,7 @@ double TP_StopShort(const double entry,const double atr,string &src)
    if(best<=0.0)
    {
       for(int i=0;i<n;i++) if(cand[i]>0 && cand[i]>entry && cand[i]>best){ best=cand[i]; src=lbl[i]; }
-      if(best<=0.0){ src="atr"; return(entry + 1.5*atr + buf); }
+      if(best<=0.0){ src="none"; return(0.0); }   // no structure -> invalid (no ATR fallback)
    }
    double stopS = best + buf;
    double capS  = entry + g_cfg.maxStopATR*atr;
@@ -8200,8 +8200,10 @@ double Sym_StructuralStop(const int dir,const double entry,const double atr)
          if(FalconIsPivotHigh(c,len) && gHigh[c]>entry) return(gHigh[c]+buf);
    }
 
-   // 3) fallback: ATR stop
-   return(dir==DIR_LONG ? entry-g_cfg.cycleRawStopATR*atr : entry+g_cfg.cycleRawStopATR*atr);
+   // 3) NO structure found -> return 0 so the caller SKIPS the trade.
+   //    (No ATR-from-entry fallback: a trade only ever fires with a stop
+   //    placed beyond real structure.)
+   return(0.0);
 }
 
 void Sym_PlaceEntry(const int dir,const string tag,const double riskCash,const double atrNow,const bool raw=false)
@@ -8222,6 +8224,7 @@ void Sym_PlaceEntry(const int dir,const string tag,const double riskCash,const d
       // capture-at-done exit banks profit at the curve destination; this TP is
       // the backstop.)
       sl = Sym_StructuralStop(dir, entry, atrNow);
+      if(sl<=0.0) return;                              // no structure -> skip the trade (no ATR fallback)
       double stopDist = MathAbs(entry - sl);
       if(stopDist <= 0.0) return;
       if(g_cfg.maxStopATR>0.0 && stopDist > g_cfg.maxStopATR*atrNow) return;  // structure too far -> skip

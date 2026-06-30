@@ -86,7 +86,7 @@ double TP_StopLong(const double entry,const double atr,string &src)
    {
       // fallback: deepest available zone bottom, else fixed structural stop
       for(int i=0;i<n;i++) if(cand[i]>0 && cand[i]<entry && (best==0.0||cand[i]<best)){ best=cand[i]; src=lbl[i]; }
-      if(best<=0.0){ src="atr"; return(entry - 1.5*atr - buf); }
+      if(best<=0.0){ src="none"; return(0.0); }   // no structure -> invalid (no ATR fallback)
    }
    double stopL = best - buf;
    double capL  = entry - g_cfg.maxStopATR*atr;   // never wider than the cap
@@ -125,7 +125,7 @@ double TP_StopShort(const double entry,const double atr,string &src)
    if(best<=0.0)
    {
       for(int i=0;i<n;i++) if(cand[i]>0 && cand[i]>entry && cand[i]>best){ best=cand[i]; src=lbl[i]; }
-      if(best<=0.0){ src="atr"; return(entry + 1.5*atr + buf); }
+      if(best<=0.0){ src="none"; return(0.0); }   // no structure -> invalid (no ATR fallback)
    }
    double stopS = best + buf;
    double capS  = entry + g_cfg.maxStopATR*atr;
