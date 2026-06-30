@@ -5,7 +5,7 @@
 //|   Risk: PYRO thermal + TALON curve-convergent structural grip.   |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "4.54"
+#property version   "4.55"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -5932,6 +5932,8 @@ int    ad_lossStreak = 0;
 double ad_calPredSum = 0.0;   // sum of entry executionProbability
 double ad_calWinSum  = 0.0;   // sum of realised wins (0/1)
 int    ad_calN       = 0;
+double ad_globalR    = 0.0;   // EWMA of EVERY closed trade's R (overall realised edge)
+int    ad_globalN    = 0;
 
 int AD_BandIdx(const double pos)
 {
@@ -6058,6 +6060,9 @@ void AdaptiveOnBar()
       double R = (ad_rec[i].risk>0.0 ? profit/ad_rec[i].risk : 0.0);
       bool   win = (profit>0.0);
       AD_Learn(ad_rec[i].bucket, R);
+      // overall realised edge (for the regret-override safety gate)
+      if(ad_globalN==0) ad_globalR=R; else ad_globalR=ad_globalR+0.05*(R-ad_globalR);
+      ad_globalN++;
       // feed self-awareness: form (streaks) + calibration (predicted vs realised)
       if(win){ ad_winStreak++; ad_lossStreak=0; } else { ad_lossStreak++; ad_winStreak=0; }
       ad_calPredSum += ad_rec[i].predProb; ad_calWinSum += (win?1.0:0.0); ad_calN++;
@@ -6295,6 +6300,10 @@ bool MT_Override(const int code)
 {
    if(!g_cfg.useMissLearn || !MT_Eligible(code)) return(false);
    if(mt_n[code] < g_cfg.missMinN) return(false);
+   // SAFETY: never relax a filter (pull more trades in) while the system is
+   // actually net-losing. Shadow fills are optimistic; overriding into a losing
+   // book just compounds losses. Only override when the real edge is non-negative.
+   if(ad_globalN >= g_cfg.missMinN && ad_globalR < 0.0) return(false);
    return(mt_R[code] >= g_cfg.missOverrideR);
 }
 
@@ -7590,9 +7599,10 @@ string VZ_Body(const int tab)
          s+="Opportunity : "+x.opportunityGrade+"  ("+DoubleToString(x.opportunity,0)+")\n";
          s+="Exec Prob   : "+DoubleToString(x.executionProbability*100.0,0)+"%   Resolution "+FalconResStr(x.resolutionState)+"\n";
          s+="Master Chief: "+(x.masterChiefConfirm?"CLEARED":"HOLD")+"  ("+DoubleToString(x.masterChiefScore,0)+")  "+x.masterChiefNote+"\n";
-         s+="SELF        : "+g_state.self.label+"  conf "+DoubleToString(g_state.self.selfConfidence,0)
-            +"  throttle x"+DoubleToString(g_state.self.throttle,2)+"  (calib "+DoubleToString(g_state.self.calibration,0)
-            +" form "+DoubleToString(g_state.self.form,0)+" streak "+IntegerToString(g_state.self.winStreak)+"/"+IntegerToString(g_state.self.lossStreak)+")\n";
+         s+="SELF        : "+(g_cfg.useSelfAware? (g_state.self.label+"  conf "+DoubleToString(g_state.self.selfConfidence,0)
+            +"  throttle x"+DoubleToString(g_state.self.throttle,2)
+            +"  (calib "+DoubleToString(g_state.self.calibration,0)
+            +" form "+DoubleToString(g_state.self.form,0)+" streak "+IntegerToString(g_state.self.winStreak)+"/"+IntegerToString(g_state.self.lossStreak)+")") : "off (full size)")+"\n";
          s+="Story       : "+x.story;
          break;
       case 1: // PHYSICS
@@ -7720,10 +7730,14 @@ string VZ_Body(const int tab)
       case 12: // LEARNING — what the OS is learning about itself
       {
          FalconSelfAwareness sf=g_state.self;
+         if(!g_cfg.useSelfAware)
+            s+="SELF        : off (no throttle / no stand-down)\n";
+         else {
          s+="SELF        : "+sf.label+"  conf "+DoubleToString(sf.selfConfidence,0)
             +"  throttle x"+DoubleToString(sf.throttle,2)+"\n";
          s+="            : calib "+DoubleToString(sf.calibration,0)+"  form "+DoubleToString(sf.form,0)
             +"  regime "+DoubleToString(sf.regimeFit,0)+"  streak "+IntegerToString(sf.winStreak)+"W/"+IntegerToString(sf.lossStreak)+"L\n";
+         }
          s+="── ADAPTIVE — which setups pay (size/veto) ──\n";
          int shown=0;
          for(int b=0;b<AD_NBUCKETS;b++)

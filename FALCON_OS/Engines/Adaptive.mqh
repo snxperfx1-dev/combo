@@ -53,6 +53,8 @@ int    ad_lossStreak = 0;
 double ad_calPredSum = 0.0;   // sum of entry executionProbability
 double ad_calWinSum  = 0.0;   // sum of realised wins (0/1)
 int    ad_calN       = 0;
+double ad_globalR    = 0.0;   // EWMA of EVERY closed trade's R (overall realised edge)
+int    ad_globalN    = 0;
 
 int AD_BandIdx(const double pos)
 {
@@ -179,6 +181,9 @@ void AdaptiveOnBar()
       double R = (ad_rec[i].risk>0.0 ? profit/ad_rec[i].risk : 0.0);
       bool   win = (profit>0.0);
       AD_Learn(ad_rec[i].bucket, R);
+      // overall realised edge (for the regret-override safety gate)
+      if(ad_globalN==0) ad_globalR=R; else ad_globalR=ad_globalR+0.05*(R-ad_globalR);
+      ad_globalN++;
       // feed self-awareness: form (streaks) + calibration (predicted vs realised)
       if(win){ ad_winStreak++; ad_lossStreak=0; } else { ad_lossStreak++; ad_winStreak=0; }
       ad_calPredSum += ad_rec[i].predProb; ad_calWinSum += (win?1.0:0.0); ad_calN++;

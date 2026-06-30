@@ -102,9 +102,10 @@ string VZ_Body(const int tab)
          s+="Opportunity : "+x.opportunityGrade+"  ("+DoubleToString(x.opportunity,0)+")\n";
          s+="Exec Prob   : "+DoubleToString(x.executionProbability*100.0,0)+"%   Resolution "+FalconResStr(x.resolutionState)+"\n";
          s+="Master Chief: "+(x.masterChiefConfirm?"CLEARED":"HOLD")+"  ("+DoubleToString(x.masterChiefScore,0)+")  "+x.masterChiefNote+"\n";
-         s+="SELF        : "+g_state.self.label+"  conf "+DoubleToString(g_state.self.selfConfidence,0)
-            +"  throttle x"+DoubleToString(g_state.self.throttle,2)+"  (calib "+DoubleToString(g_state.self.calibration,0)
-            +" form "+DoubleToString(g_state.self.form,0)+" streak "+IntegerToString(g_state.self.winStreak)+"/"+IntegerToString(g_state.self.lossStreak)+")\n";
+         s+="SELF        : "+(g_cfg.useSelfAware? (g_state.self.label+"  conf "+DoubleToString(g_state.self.selfConfidence,0)
+            +"  throttle x"+DoubleToString(g_state.self.throttle,2)
+            +"  (calib "+DoubleToString(g_state.self.calibration,0)
+            +" form "+DoubleToString(g_state.self.form,0)+" streak "+IntegerToString(g_state.self.winStreak)+"/"+IntegerToString(g_state.self.lossStreak)+")") : "off (full size)")+"\n";
          s+="Story       : "+x.story;
          break;
       case 1: // PHYSICS
@@ -232,10 +233,14 @@ string VZ_Body(const int tab)
       case 12: // LEARNING — what the OS is learning about itself
       {
          FalconSelfAwareness sf=g_state.self;
+         if(!g_cfg.useSelfAware)
+            s+="SELF        : off (no throttle / no stand-down)\n";
+         else {
          s+="SELF        : "+sf.label+"  conf "+DoubleToString(sf.selfConfidence,0)
             +"  throttle x"+DoubleToString(sf.throttle,2)+"\n";
          s+="            : calib "+DoubleToString(sf.calibration,0)+"  form "+DoubleToString(sf.form,0)
             +"  regime "+DoubleToString(sf.regimeFit,0)+"  streak "+IntegerToString(sf.winStreak)+"W/"+IntegerToString(sf.lossStreak)+"L\n";
+         }
          s+="── ADAPTIVE — which setups pay (size/veto) ──\n";
          int shown=0;
          for(int b=0;b<AD_NBUCKETS;b++)

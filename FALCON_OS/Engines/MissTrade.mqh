@@ -105,6 +105,10 @@ bool MT_Override(const int code)
 {
    if(!g_cfg.useMissLearn || !MT_Eligible(code)) return(false);
    if(mt_n[code] < g_cfg.missMinN) return(false);
+   // SAFETY: never relax a filter (pull more trades in) while the system is
+   // actually net-losing. Shadow fills are optimistic; overriding into a losing
+   // book just compounds losses. Only override when the real edge is non-negative.
+   if(ad_globalN >= g_cfg.missMinN && ad_globalR < 0.0) return(false);
    return(mt_R[code] >= g_cfg.missOverrideR);
 }
 
