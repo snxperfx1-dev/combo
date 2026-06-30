@@ -197,6 +197,13 @@ input double  InpTalonLockArmATR   = 2.5; // Peak favorable excursion (ATR) befo
 input double  InpArcPartialFrac    = 0.33;// Fraction banked when price REACHES the curve destination (0 = let it all run)
 input double  InpArcPartialMinATR  = 1.5; // Min favorable excursion (ATR) before any ARC partial is allowed
 
+input string  __sep_planner     = "════════ TRADE PLANNING LAYER (FALCON OS 9.0) ════════"; // ──
+input bool    InpUsePlanner      = false; // Use the Trade Planning Layer: engines compose persistent plans; Decision executes ready ones (off: Symphony entries)
+input int     InpPlanExpiryBars  = 40;    // Bars a plan waits for its triggers before it expires
+input bool    InpPlanNeedSweep   = false; // Require a liquidity sweep to complete before a plan can trigger
+input bool    InpPlanNeedStruct  = true;  // Require structural confirmation (BOS/CHoCH not against) before a plan can trigger
+input double  InpPlanMinConf     = 0.0;   // Minimum plan confidence (0..100) to keep a plan alive
+
 input string  __sep_bands      = "════════ TRADE COMPOSITION / RANGE BANDS ════════"; // ──
 input int     InpStopPivotLen     = 3;    // Pivot length for the STRUCTURAL stop swing (small = tighter, recent structure)
 input int     InpStopLookback     = 25;   // Max bars back to find the structural-stop swing (short = tight stops)
@@ -286,6 +293,10 @@ struct FalconConfig
    bool   captureAtDone;  double captureCurvePos;
    double maxStructStopATR, bandWideATR, bandPartialR, bandPartialFrac;
    int    stopPivotLen, stopLookback;
+   // trade planning layer (FALCON OS 9.0)
+   bool   usePlanner, planNeedSweep, planNeedStruct;
+   int    planExpiryBars;
+   double planMinConf;
    double talonBufATR, talonBaseATR, talonConvSpanATR, talonMinTighten, talonBeATR;
    double talonGiveback, talonLockArmATR;
    double arcPartialFrac, arcPartialMinATR;
@@ -475,6 +486,11 @@ void FalconConfigInit()
    g_cfg.maxStructStopATR = InpMaxStructStopATR;
    g_cfg.stopPivotLen     = InpStopPivotLen;
    g_cfg.stopLookback     = InpStopLookback;
+   g_cfg.usePlanner       = InpUsePlanner;
+   g_cfg.planExpiryBars   = InpPlanExpiryBars;
+   g_cfg.planNeedSweep    = InpPlanNeedSweep;
+   g_cfg.planNeedStruct   = InpPlanNeedStruct;
+   g_cfg.planMinConf      = InpPlanMinConf;
    g_cfg.bandWideATR      = InpBandWideATR;
    g_cfg.bandPartialR     = InpBandPartialR;
    g_cfg.bandPartialFrac  = InpBandPartialFrac;

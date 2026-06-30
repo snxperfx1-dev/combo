@@ -49,6 +49,7 @@
 #include "Engines/SelfAwareness.mqh"       // Intelligence — metacognition (self form/calibration/health -> throttle)
 #include "Engines/MissTrade.mqh"           // Intelligence — counterfactual / regret learning (take trades it used to miss)
 #include "Engines/SymphonyEngine.mqh"      // Execution Layer — Symphony phase entries/exits (after EE helpers)
+#include "Engines/Planner.mqh"             // Trade Planning Layer (FALCON OS 9.0) — assembles & executes TradePlan objects
 #include "Engines/Visualization.mqh"       // Visualization Layer
 
 //==================================================================
@@ -148,6 +149,15 @@ void FalconPipeline()
    // never double-trade. Risk = lot sizing + drawdown protection only.
    if(g_cfg.useSymphony)
       SymphonyTradeManage();
+
+   // TRADE PLANNING LAYER — assemble persistent plans from every engine, then
+   // execute the highest-priority ready one (Symphony's own entries yield when
+   // usePlanner is on; SymphonyTradeManage still runs exits/management above).
+   if(g_cfg.usePlanner)
+   {
+      PlannerRun();
+      PlannerExecute();
+   }
    TradeJournalOnBar();   // snapshot MFE/MAE + finalise closed trades to the CSV
    AdaptiveOnBar();       // learn from closed trades -> update per-context edge
    MissTradeOnBar();      // resolve shadow (missed) trades -> regret learning
@@ -196,6 +206,7 @@ int OnInit()
    SelfAwarenessInit();
    MissTradeInit();
    if(g_cfg.useSymphony) SymphonyInit();
+   PlannerInit();
    TradeJournalInit();
 
    if(!FalconRefreshSeries())

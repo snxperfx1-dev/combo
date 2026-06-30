@@ -31,6 +31,7 @@ ORDER=(
   "Engines/SelfAwareness.mqh"
   "Engines/MissTrade.mqh"
   "Engines/SymphonyEngine.mqh"
+  "Engines/Planner.mqh"
   "Engines/Visualization.mqh"
   "FalconOS.mq5"
 )

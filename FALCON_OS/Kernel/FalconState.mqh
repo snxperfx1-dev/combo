@@ -824,6 +824,79 @@ string FalconStageStr(const int s)
 }
 
 //==================================================================
+// TRADE PLANNING LAYER (FALCON OS 9.0) — persistent TradePlan objects.
+//   Each engine OWNS one field of the plan; the planner assembles the
+//   complete plan and maintains it as a state machine. The Decision
+//   Engine never analyses the market — it only evaluates these plans.
+//==================================================================
+enum FALCON_PLAN_STATE
+{
+   PLAN_DORMANT   = 0,   // proposed, waiting on context to form
+   PLAN_WAITING   = 1,   // valid plan, waiting for price to reach the zone
+   PLAN_ARMED     = 2,   // price at zone + time window open, awaiting trigger
+   PLAN_TRIGGERED = 3,   // every requirement satisfied -> executable NOW
+   PLAN_EXECUTED  = 4,   // fired
+   PLAN_EXPIRED   = 5,   // timed out / context gone
+   PLAN_CANCELLED = 6    // invalidated (zone broken / ownership flipped)
+};
+
+enum FALCON_PLAN_TYPE
+{
+   PT_CONTINUATION = 0,  // trade with the owner toward its destination
+   PT_RETURN       = 1,  // counter-return into a higher-TF zone
+   PT_REVERSAL     = 2   // ownership-transfer reversal
+};
+
+struct FalconPlan
+{
+   int    id;
+   bool   active;
+   int    type;          // FALCON_PLAN_TYPE
+   int    dir;           // FALCON_DIR
+   int    state;         // FALCON_PLAN_STATE
+   int    ownerTF;       // owning timeframe index (who controls the move)
+   int    execTF;        // timeframe to execute on
+   // LOCATION (owned by OB / S&D / FU / liquidity / FEZ)
+   double zoneTop, zoneBot;
+   string zoneSrc;       // which subsystem set the entry zone
+   double fuAnchor;      // execution anchor (best FU candle), 0=none
+   // RISK + DESTINATION (owned by structure / curve-tree / ARC / network / FRZ)
+   double entry, stop, t1, t2, t3, rr;
+   string stopSrc, tgtSrc;
+   // TRIGGERS / DEPENDENCIES (owned by liquidity / structure / time / locator)
+   bool   needSweep, sweepDone;
+   bool   needStruct, structDone;
+   bool   inWindow;      // time engine permits now
+   bool   atZone;        // price is in the entry zone
+   bool   hasRoom;       // curve room remains (not late/exhausted)
+   // RANK (owned by wave-matrix / ownership / intelligence)
+   double confidence, execProb;
+   int    priority;      // 0..100
+   int    createdBar, expiryBar;
+   string note;
+};
+
+#define FALCON_MAX_PLANS 8
+
+string FalconPlanStateStr(const int s)
+{
+   switch(s)
+   {
+      case PLAN_WAITING:   return("WAITING");
+      case PLAN_ARMED:     return("ARMED");
+      case PLAN_TRIGGERED: return("TRIGGERED");
+      case PLAN_EXECUTED:  return("EXECUTED");
+      case PLAN_EXPIRED:   return("EXPIRED");
+      case PLAN_CANCELLED: return("CANCELLED");
+      default:             return("DORMANT");
+   }
+}
+string FalconPlanTypeStr(const int t)
+{
+   switch(t){ case PT_RETURN:return("RETURN"); case PT_REVERSAL:return("REVERSAL"); default:return("CONTINUATION"); }
+}
+
+//==================================================================
 // MASTER STATE
 //==================================================================
 struct FalconMarketState
@@ -860,6 +933,8 @@ struct FalconMarketState
    FalconTime         timeIntel;
    WaveCycle          cycles[FALCON_NCYCLES];  // [0]LETRA [1]F16 [2]SYMPHONY
    WaveReferee        referee;
+   FalconPlan         plans[FALCON_MAX_PLANS]; // Trade Planning Layer (FALCON OS 9.0)
+   int                planCount;
    FalconSelfAwareness self;
    FalconIntelligence intel;
    FalconEntryCycle   entryCycle;

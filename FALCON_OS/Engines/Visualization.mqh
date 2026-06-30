@@ -43,6 +43,7 @@ string VZ_TabName(const int t)
       case 12:return("LEARNING");
       case 13:return("ENGINES");
       case 14:return("COMMAND");
+      case 15:return("PLANS");
       default:return("DIAGNOSTICS");
    }
 }
@@ -365,6 +366,31 @@ string VZ_Body(const int tab)
             +"  Lead "+FalconEngineStr(rf.leader)+"  Auth "+FalconEngineStr(g_cfg.entryEngine);
          break;
       }
+      case 15: // PLANS — the Trade Planning Layer queue (FALCON OS 9.0)
+      {
+         s+="PLANNER     : "+(g_cfg.usePlanner?"ON":"off")+"   live plans "+IntegerToString(g_state.planCount)+"\n";
+         s+="─────────────────────────────────────\n";
+         int shown=0;
+         for(int i=0;i<FALCON_MAX_PLANS;i++)
+         {
+            FalconPlan p=g_state.plans[i];
+            if(!p.active) continue;
+            if(p.state==PLAN_EXPIRED || p.state==PLAN_CANCELLED) continue;
+            shown++;
+            s+=StringFormat("#%d %-12s %-4s %-9s pr%d rr%.1f\n",
+                 p.id, FalconPlanTypeStr(p.type), VZ_Dir(p.dir), FalconPlanStateStr(p.state), p.priority, p.rr);
+            s+="   zone "+VZ_Px(p.zoneBot)+"-"+VZ_Px(p.zoneTop)+" ("+p.zoneSrc+")"
+               +(p.fuAnchor>0?("  FU "+VZ_Px(p.fuAnchor)):"")+"\n";
+            s+="   SL "+VZ_Px(p.stop)+"  T1 "+VZ_Px(p.t1)+"  T2 "+VZ_Px(p.t2)+"("+p.tgtSrc+")  T3 "+VZ_Px(p.t3)+"\n";
+            s+="   "+(p.atZone?"@zone":"away")+" "+(p.inWindow?"time-ok":"time-wait")
+               +" "+(p.needSweep?(p.sweepDone?"swept":"no-sweep"):"-")
+               +" "+(p.structDone?"struct-ok":"struct-wait")
+               +" "+(p.hasRoom?"room":"no-room")
+               +"  conf "+DoubleToString(p.confidence,0)+"\n";
+         }
+         if(shown==0) s+="  (no active plans — owner direction unresolved or no zone)";
+         break;
+      }
       default: // DIAGNOSTICS
          for(int m=0;m<MOD_COUNT;m++)
             s+=StringFormat("%-14s %s  avg %.0fus  runs %d\n",
@@ -462,8 +488,8 @@ void FalconVizOnChartEvent(const int id,const long &lparam,const double &dparam,
 {
    if(id!=CHARTEVENT_KEYDOWN) return;
    int prev=g_cfg.dashboardTab;
-   if(lparam==84 || lparam==39)       g_cfg.dashboardTab = (g_cfg.dashboardTab+1)%15;  // 'T' / RIGHT
-   else if(lparam==37)                g_cfg.dashboardTab = (g_cfg.dashboardTab+14)%15;  // LEFT
+   if(lparam==84 || lparam==39)       g_cfg.dashboardTab = (g_cfg.dashboardTab+1)%16;  // 'T' / RIGHT
+   else if(lparam==37)                g_cfg.dashboardTab = (g_cfg.dashboardTab+15)%16;  // LEFT
    if(g_cfg.dashboardTab!=prev) VisualizationRun();
 }
 

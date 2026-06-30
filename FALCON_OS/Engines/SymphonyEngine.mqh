@@ -1041,7 +1041,7 @@ double Sym_StructuralStop(const int dir,const double entry,const double atr)
    return(0.0);   // no structure within reach -> skip (no wide/ATR fallback)
 }
 
-void Sym_PlaceEntry(const int dir,const string tag,const double riskCash,const double atrNow,const bool raw=false)
+void Sym_PlaceEntry(const int dir,const string tag,const double riskCash,const double atrNow,const bool raw=false,const double tpIn=0.0)
 {
    double entry = (dir==DIR_LONG ? SymbolInfoDouble(_Symbol,SYMBOL_ASK)
                                  : SymbolInfoDouble(_Symbol,SYMBOL_BID));
@@ -1066,8 +1066,9 @@ void Sym_PlaceEntry(const int dir,const string tag,const double riskCash,const d
       if(g_cfg.maxStopATR>0.0 && stopDist > g_cfg.maxStopATR*atrNow) return;  // structure too far -> skip
       double t = stopDist * g_cfg.minRR;
       target = (dir==DIR_LONG ? entry + t : entry - t);
+      if(tpIn>0.0) target = tpIn;                  // planner-supplied owner-destination target
       t2     = target;
-      rr     = g_cfg.minRR;
+      rr     = (stopDist>0.0 ? MathAbs(target-entry)/stopDist : g_cfg.minRR);
       lots   = Sym_SizeLots(dir, riskCash*adMult*saMult, entry, sl);
    }
    else if(g_cfg.useTradePlan)
@@ -1137,6 +1138,10 @@ void SymphonyExecuteTrading()
 {
    int barsAvail = FalconBars();
    if(barsAvail < 3) return;
+
+   // When the Trade Planning Layer is active it OWNS entries (Symphony still
+   // manages exits via SymphonyTradeManage). Don't double-trade.
+   if(g_cfg.usePlanner) return;
 
    int      shiftNow = 1;
    double   closeNow = gClose[shiftNow];
