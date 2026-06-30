@@ -5,7 +5,7 @@
 //|   Risk: PYRO thermal + TALON curve-convergent structural grip.   |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "5.02"
+#property version   "5.03"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -1158,6 +1158,7 @@ input int     InpCycleEvalBars   = 20;         // Bars to resolve each engine's 
 input double  InpCycleEvalATR    = 1.2;        // Favorable move (ATR) that scores a prediction a WIN
 input int     InpBestMinSamples  = 12;         // Min resolved predictions before BEST/learned selection trusts an engine
 input bool    InpCycleRawEntries  = true;       // Selected non-Symphony engine enters on its raw P3/P4 edge (bypass fact gate + zone R:R) — clean A/B/C
+input bool    InpCycleFreeRun      = true;       // FREE RUN: authority engine enters on EVERY fresh in-direction phase edge (expansion/return/breakout) — let an accurate engine trade freely
 input double  InpCycleRawStopATR   = 1.5;       // Raw-entry stop distance (ATR) when bypassing the trade plan
 input double  InpCycleRawTgtATR    = 3.0;       // Raw-entry target distance (ATR)
 
@@ -1233,7 +1234,7 @@ struct FalconConfig
    bool   useTimeIntel, timeGateEntries;
    double timeQualityFloor;
    // multi-engine wave cycles (comparative A/B/C)
-   bool   runAllCycles, refereeLearn, cycleRawEntries;
+   bool   runAllCycles, refereeLearn, cycleRawEntries, cycleFreeRun;
    int    entryEngine, cycleEvalBars, bestMinSamples;
    double cycleEvalATR, cycleRawStopATR, cycleRawTgtATR;
    // decision
@@ -1339,6 +1340,7 @@ void FalconConfigInit()
    g_cfg.cycleEvalATR     = InpCycleEvalATR;
    g_cfg.bestMinSamples   = InpBestMinSamples;
    g_cfg.cycleRawEntries  = InpCycleRawEntries;
+   g_cfg.cycleFreeRun     = InpCycleFreeRun;
    g_cfg.cycleRawStopATR  = InpCycleRawStopATR;
    g_cfg.cycleRawTgtATR   = InpCycleRawTgtATR;
 
@@ -7897,6 +7899,21 @@ void Sym_RawEntryEdges(bool &eL3,bool &eL4,bool &eS3,bool &eS4)
 
    // LETRA / F16 cycle authority — normalized return/breakout edges.
    WaveCycle cy=g_state.cycles[eff];
+
+   // FREE RUN — let an engine that's accurate at phases trade on EVERY fresh
+   // in-direction phase transition (expansion/return/breakout), not just the
+   // return/breakout entry analogs. Edge-triggered (one shot per transition),
+   // so no per-bar spam; exits still follow the engine's own phase reversal.
+   if(g_cfg.cycleFreeRun)
+   {
+      bool freshEdge = (cy.stage!=cy.prevStage) && cy.stage>=CYC_EXPANSION;
+      if(freshEdge && cy.direction==DIR_LONG)
+      { if(cy.stage==CYC_BREAKOUT) eL4=true; else eL3=true; }
+      else if(freshEdge && cy.direction==DIR_SHORT)
+      { if(cy.stage==CYC_BREAKOUT) eS4=true; else eS3=true; }
+      return;
+   }
+
    if(cy.entryEdge)
    {
       if(cy.entryDir==DIR_LONG)      { if(cy.entryKind==3) eL3=true; else if(cy.entryKind==4) eL4=true; }

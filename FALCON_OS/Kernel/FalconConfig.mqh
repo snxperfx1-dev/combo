@@ -136,6 +136,7 @@ input int     InpCycleEvalBars   = 20;         // Bars to resolve each engine's 
 input double  InpCycleEvalATR    = 1.2;        // Favorable move (ATR) that scores a prediction a WIN
 input int     InpBestMinSamples  = 12;         // Min resolved predictions before BEST/learned selection trusts an engine
 input bool    InpCycleRawEntries  = true;       // Selected non-Symphony engine enters on its raw P3/P4 edge (bypass fact gate + zone R:R) — clean A/B/C
+input bool    InpCycleFreeRun      = true;       // FREE RUN: authority engine enters on EVERY fresh in-direction phase edge (expansion/return/breakout) — let an accurate engine trade freely
 input double  InpCycleRawStopATR   = 1.5;       // Raw-entry stop distance (ATR) when bypassing the trade plan
 input double  InpCycleRawTgtATR    = 3.0;       // Raw-entry target distance (ATR)
 
@@ -211,7 +212,7 @@ struct FalconConfig
    bool   useTimeIntel, timeGateEntries;
    double timeQualityFloor;
    // multi-engine wave cycles (comparative A/B/C)
-   bool   runAllCycles, refereeLearn, cycleRawEntries;
+   bool   runAllCycles, refereeLearn, cycleRawEntries, cycleFreeRun;
    int    entryEngine, cycleEvalBars, bestMinSamples;
    double cycleEvalATR, cycleRawStopATR, cycleRawTgtATR;
    // decision
@@ -317,6 +318,7 @@ void FalconConfigInit()
    g_cfg.cycleEvalATR     = InpCycleEvalATR;
    g_cfg.bestMinSamples   = InpBestMinSamples;
    g_cfg.cycleRawEntries  = InpCycleRawEntries;
+   g_cfg.cycleFreeRun     = InpCycleFreeRun;
    g_cfg.cycleRawStopATR  = InpCycleRawStopATR;
    g_cfg.cycleRawTgtATR   = InpCycleRawTgtATR;
 

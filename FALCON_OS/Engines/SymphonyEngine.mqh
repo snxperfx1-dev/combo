@@ -691,6 +691,21 @@ void Sym_RawEntryEdges(bool &eL3,bool &eL4,bool &eS3,bool &eS4)
 
    // LETRA / F16 cycle authority — normalized return/breakout edges.
    WaveCycle cy=g_state.cycles[eff];
+
+   // FREE RUN — let an engine that's accurate at phases trade on EVERY fresh
+   // in-direction phase transition (expansion/return/breakout), not just the
+   // return/breakout entry analogs. Edge-triggered (one shot per transition),
+   // so no per-bar spam; exits still follow the engine's own phase reversal.
+   if(g_cfg.cycleFreeRun)
+   {
+      bool freshEdge = (cy.stage!=cy.prevStage) && cy.stage>=CYC_EXPANSION;
+      if(freshEdge && cy.direction==DIR_LONG)
+      { if(cy.stage==CYC_BREAKOUT) eL4=true; else eL3=true; }
+      else if(freshEdge && cy.direction==DIR_SHORT)
+      { if(cy.stage==CYC_BREAKOUT) eS4=true; else eS3=true; }
+      return;
+   }
+
    if(cy.entryEdge)
    {
       if(cy.entryDir==DIR_LONG)      { if(cy.entryKind==3) eL3=true; else if(cy.entryKind==4) eL4=true; }
