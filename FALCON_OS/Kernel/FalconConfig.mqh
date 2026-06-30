@@ -128,10 +128,18 @@ input double  InpMaxEntryComplete = 85.0;// Block NEW entries when wave completi
 input double  InpMinEntryRoomPct  = 25.0;// Block NEW entries when geometry room to target < this
 input double  InpAttentionATR     = 1.0; // Entry attention: price must be within this many ATR of the active node (0=off)
 
+input string  __sep_cycles      = "════════ MULTI-ENGINE WAVE CYCLES (A/B/C) ════════"; // ──
+input bool    InpRunAllCycles    = true;       // Run LETRA + F16 + Symphony wave cycles simultaneously (comparative)
+input FALCON_ENGINE InpEntryEngine = ENG_SYMPHONY; // Which engine's phase cycle DRIVES entries + the canonical phase
+input bool    InpRefereeLearn    = true;       // Score each engine's demonstrated accuracy (Wave Intelligence referee)
+input int     InpCycleEvalBars   = 20;         // Bars to resolve each engine's directional prediction
+input double  InpCycleEvalATR    = 1.2;        // Favorable move (ATR) that scores a prediction a WIN
+input int     InpBestMinSamples  = 12;         // Min resolved predictions before BEST/learned selection trusts an engine
+
 input string  __sep_money      = "════════ MONEY MANAGER (Symphony v3.0) ════════"; // ──
-input bool    InpUseProfitLadder= true;  // Use v3.0 live-PnL profit ladder (default manager)
-input bool    InpCounterDirBlock= true;  // Block new entries against a net-profitable opposite book
-input double  InpMaxBasketRiskPct= 3.0;  // Max per-direction basket dollar-risk-at-SL (% equity); 0=off
+input bool    InpUseProfitLadder= false; // Use v3.0 live-PnL profit ladder (DISABLED — raw cycle comparison)
+input bool    InpCounterDirBlock= false; // Block new entries against a net-profitable opposite book (DISABLED)
+input double  InpMaxBasketRiskPct= 0.0;  // Max per-direction basket dollar-risk-at-SL (% equity); 0=off (DISABLED)
 input double  InpLadderR1        = 0.7;  // Rung 1 trigger (PnL >= R1 x basket risk) -> bank + breakeven
 input double  InpLadderR2        = 1.5;  // Rung 2 trigger -> bank + trail
 input double  InpLadderR3        = 2.5;  // Rung 3 trigger -> bank + trail runner
@@ -199,6 +207,10 @@ struct FalconConfig
    // time intelligence (TIE — Engine 8.0)
    bool   useTimeIntel, timeGateEntries;
    double timeQualityFloor;
+   // multi-engine wave cycles (comparative A/B/C)
+   bool   runAllCycles, refereeLearn;
+   int    entryEngine, cycleEvalBars, bestMinSamples;
+   double cycleEvalATR;
    // decision
    int    minConf;  double maxThreat, maxConflict, execProbArm;
    bool   requireConfluence;
@@ -294,6 +306,13 @@ void FalconConfigInit()
    g_cfg.useTimeIntel     = InpUseTimeIntel;
    g_cfg.timeGateEntries  = InpTimeGateEntries;
    g_cfg.timeQualityFloor = InpTimeQualityFloor;
+
+   g_cfg.runAllCycles     = InpRunAllCycles;
+   g_cfg.entryEngine      = (int)InpEntryEngine;
+   g_cfg.refereeLearn     = InpRefereeLearn;
+   g_cfg.cycleEvalBars    = InpCycleEvalBars;
+   g_cfg.cycleEvalATR     = InpCycleEvalATR;
+   g_cfg.bestMinSamples   = InpBestMinSamples;
 
    g_cfg.minConf          = InpMinConf;
    g_cfg.maxThreat        = InpMaxThreat;

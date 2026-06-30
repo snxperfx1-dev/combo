@@ -722,6 +722,103 @@ struct FalconRisk
 };
 
 //==================================================================
+// SUB-STATE : MULTI-ENGINE WAVE CYCLES (the comparative framework)
+//   Don't replace the phase engine — run THREE wave-cycle engines on
+//   the SAME shared observations and let the market decide which has
+//   the highest predictive power:
+//     ENG_LETRA    — the per-TF fixed-structure lifecycle FSM
+//     ENG_F16      — the recursive curve-tree node ownership lens
+//     ENG_SYMPHONY — the impulse + retracement-fraction phase model
+//   Each emits a NORMALIZED forecast (phase · stage · direction ·
+//   maturity · objective · invalidation · confidence · next event).
+//   A Wave Intelligence referee then scores each engine's demonstrated
+//   accuracy and forms a consensus / picks the best. Phases remain
+//   OUTPUTS — the referee never branches on a label, only on evidence.
+//==================================================================
+enum FALCON_ENGINE
+{
+   ENG_LETRA     = 0,
+   ENG_F16       = 1,
+   ENG_SYMPHONY  = 2,
+   ENG_CONSENSUS = 3,   // selector only (not a column)
+   ENG_BEST      = 4    // selector only — follow the best demonstrated edge
+};
+#define FALCON_NCYCLES 3   // LETRA / F16 / SYMPHONY columns
+
+// normalized lifecycle stage shared across all engines for comparison
+#define CYC_NONE      0
+#define CYC_EXPANSION 1
+#define CYC_RETRACE   2
+#define CYC_RETURN    3   // demand/supply return into zone  -> P3 entry analog
+#define CYC_BREAKOUT  4   // new extreme / continuation       -> P4 entry analog
+
+struct WaveCycle
+{
+   int    engineId;
+   int    phase;          // canonical PH_ (label)
+   string phaseLabel;
+   int    stage;          // normalized CYC_* lifecycle stage
+   int    prevStage;
+   double maturity;       // 0..100 wave completion
+   int    direction;      // DIR_*
+   double objective;      // expected target price
+   double invalidation;   // price that invalidates the read
+   double confidence;     // 0..100 engine self-confidence
+   string nextEvent;      // expected next event (human readable)
+   // entry trigger (this engine's own P3/P4 analog)
+   bool   entryArmed;     // stage is a return/breakout
+   bool   entryEdge;      // transitioned INTO a return/breakout this bar
+   int    entryKind;      // 3 (return) or 4 (breakout)
+   int    entryDir;       // DIR_* of the armed entry
+   // referee-filled demonstrated performance (rolling)
+   double accuracy;       // directional accuracy %% (EWMA)
+   double objAccuracy;    // objective-reach accuracy %%
+   double avgLeadBars;    // mean early-detection lead vs the field
+   int    samples;        // resolved predictions
+   int    wins;
+};
+
+struct WaveReferee
+{
+   int    selectedEngine; // engine currently DRIVING (resolved from InpEntryEngine/BEST)
+   string selectedName;
+   int    consensusDir;   // DIR_* agreed by >=2 engines (else NONE)
+   int    consensusStage;
+   double consensusConf;
+   double deviationStage; // disagreement in stage (0..4)
+   double deviationObjATR;// disagreement in objective (ATR units)
+   int    bestEngine;     // highest demonstrated directional accuracy
+   double bestAccuracy;
+   int    leader;         // engine that most often leads the others (early warning)
+   string note;
+};
+
+string FalconEngineStr(const int e)
+{
+   switch(e)
+   {
+      case ENG_LETRA:     return("LETRA");
+      case ENG_F16:       return("F16");
+      case ENG_SYMPHONY:  return("SYMPHONY");
+      case ENG_CONSENSUS: return("CONSENSUS");
+      case ENG_BEST:      return("BEST");
+      default:            return("?");
+   }
+}
+
+string FalconStageStr(const int s)
+{
+   switch(s)
+   {
+      case CYC_EXPANSION: return("Expansion");
+      case CYC_RETRACE:   return("Retracement");
+      case CYC_RETURN:    return("Return");
+      case CYC_BREAKOUT:  return("Breakout");
+      default:            return("—");
+   }
+}
+
+//==================================================================
 // MASTER STATE
 //==================================================================
 struct FalconMarketState
@@ -756,6 +853,8 @@ struct FalconMarketState
    FalconParticipants participants;
    FalconCurveLocator curveLocator;
    FalconTime         timeIntel;
+   WaveCycle          cycles[FALCON_NCYCLES];  // [0]LETRA [1]F16 [2]SYMPHONY
+   WaveReferee        referee;
    FalconSelfAwareness self;
    FalconIntelligence intel;
    FalconEntryCycle   entryCycle;
