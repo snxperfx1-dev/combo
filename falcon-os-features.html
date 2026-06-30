@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>FALCON OS — Feature Brief</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  @page { size: A4; margin: 0; }
+  :root{
+    --ink:#070a0f; --panel:#10151f; --line:#232a36;
+    --hair:rgba(201,161,74,0.22); --hair2:rgba(255,255,255,0.07);
+    --gold:#c9a14a; --gold-bright:#e3c378; --blue-bright:#7fb4d4;
+    --txt:#e8e9ec; --txt-dim:#a7adb8; --txt-faint:#6b7280;
+    --green:#6fae7a; --red:#c06a5e;
+  }
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  html,body{ background:var(--ink); color:var(--txt);
+    font-family:"Inter","Helvetica Neue",Arial,sans-serif; font-size:14px; line-height:1.6;
+    -webkit-font-smoothing:antialiased; }
+  .serif{ font-family:"DM Serif Display",Georgia,serif; }
+  .mono{ font-family:"JetBrains Mono",Menlo,Consolas,monospace; }
+
+  .page{ position:relative; width:210mm; min-height:297mm; margin:0 auto;
+    padding:26mm 22mm 22mm 22mm; overflow:hidden;
+    background:
+      radial-gradient(120% 80% at 85% -10%, rgba(201,161,74,0.10), transparent 55%),
+      radial-gradient(90% 60% at -10% 110%, rgba(91,143,176,0.08), transparent 55%),
+      linear-gradient(180deg,#080b11 0%, #070a0f 60%, #060810 100%);
+    border-bottom:1px solid #000; }
+  .page::before{ content:""; position:absolute; inset:14mm 12mm; pointer-events:none;
+    border:1px solid var(--hair); border-radius:2px; opacity:.5; }
+  .page-inner{ position:relative; z-index:2; }
+  @media print{ .page{ page-break-after:always; } .page:last-child{ page-break-after:auto; } }
+
+  .rh{ position:absolute; top:12mm; left:22mm; right:22mm; z-index:3;
+    display:flex; justify-content:space-between; align-items:center;
+    font-size:8.5px; letter-spacing:.28em; text-transform:uppercase; color:var(--txt-faint); }
+  .rh .mark{ color:var(--gold); letter-spacing:.34em; }
+  .rf{ position:absolute; bottom:11mm; left:22mm; right:22mm; z-index:3;
+    display:flex; justify-content:space-between; align-items:center;
+    font-size:8.5px; letter-spacing:.26em; text-transform:uppercase; color:var(--txt-faint);
+    border-top:1px solid var(--hair2); padding-top:5px; }
+
+  .eyebrow{ font-size:9.5px; letter-spacing:.42em; text-transform:uppercase; color:var(--gold);
+    display:flex; align-items:center; gap:10px; margin-bottom:16px; }
+  .eyebrow::before{ content:""; width:26px; height:1px; background:var(--gold); display:inline-block; }
+  h1.title{ font-size:46px; line-height:1.05; font-weight:400; letter-spacing:-.5px; }
+  h2.section{ font-size:31px; line-height:1.08; font-weight:400; letter-spacing:-.3px; margin:0 0 14px; }
+  .lead{ font-size:13px; color:var(--txt-dim); max-width:64ch; }
+  .grad{ background:linear-gradient(100deg,var(--gold-bright),var(--gold) 55%,#9c7a33);
+    -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; }
+  .gold{ color:var(--gold); } .blue{ color:var(--blue-bright); } .dim{ color:var(--txt-dim); } .faint{ color:var(--txt-faint); }
+  p{ margin:10px 0; } .green{ color:var(--green); }
+  .rule{ height:1px; background:linear-gradient(90deg,var(--hair),transparent); margin:16px 0; }
+
+  .cover{ display:flex; flex-direction:column; height:245mm; }
+  .cover .topbar{ display:flex; justify-content:space-between; align-items:center;
+    font-size:9px; letter-spacing:.34em; text-transform:uppercase; color:var(--txt-faint); }
+  .cover .center{ margin-top:auto; margin-bottom:auto; }
+  .cover h1{ font-size:62px; line-height:1.0; }
+  .seal{ width:54px; height:54px; border:1px solid var(--gold); border-radius:50%;
+    display:flex; align-items:center; justify-content:center; color:var(--gold); font-size:18px; }
+  .cover .meta{ display:flex; gap:34px; margin-top:30px; }
+  .cover .meta div{ border-left:1px solid var(--hair); padding-left:12px; }
+  .cover .meta .k{ font-size:8.5px; letter-spacing:.3em; text-transform:uppercase; color:var(--txt-faint); }
+  .cover .meta .v{ font-size:13px; color:var(--txt); margin-top:3px; }
+  .confbar{ display:flex; justify-content:space-between; font-size:9px; letter-spacing:.3em;
+    text-transform:uppercase; color:var(--txt-faint); border-top:1px solid var(--hair2); padding-top:12px; }
+
+  .stats{ display:grid; grid-template-columns:repeat(4,1fr); gap:0; border:1px solid var(--hair2);
+    border-radius:3px; overflow:hidden; margin:20px 0; }
+  .stats > div{ padding:16px 14px; border-right:1px solid var(--hair2);
+    background:linear-gradient(180deg,rgba(255,255,255,0.015),transparent); }
+  .stats > div:last-child{ border-right:none; }
+  .stats .n{ font-size:34px; line-height:1; color:var(--gold-bright); }
+  .stats .l{ font-size:9.5px; color:var(--txt-dim); margin-top:8px; line-height:1.4; }
+
+  .layer{ border:1px solid var(--hair2); border-radius:3px; padding:9px 15px; margin-bottom:5px;
+    background:linear-gradient(90deg,rgba(201,161,74,0.05),rgba(255,255,255,0.012) 40%,transparent); position:relative; }
+  .layer::before{ content:""; position:absolute; left:0; top:0; bottom:0; width:2px; background:var(--gold); opacity:.55; }
+  .layer .lh{ display:flex; align-items:baseline; gap:12px; }
+  .layer .num{ font-size:10px; letter-spacing:.2em; color:var(--gold); }
+  .layer .name{ font-size:15px; font-weight:600; }
+  .layer .role{ font-size:9px; letter-spacing:.24em; text-transform:uppercase; color:var(--blue-bright); margin-left:auto; }
+  .pills{ display:flex; flex-wrap:wrap; gap:5px; margin-top:6px; }
+  .pill{ font-size:9px; padding:3px 9px; border:1px solid var(--hair2); border-radius:20px;
+    color:var(--txt-dim); background:rgba(255,255,255,0.02); white-space:nowrap; }
+  .pill.g{ border-color:var(--hair); color:var(--gold-bright); }
+  .pill.new{ border-color:rgba(111,174,122,0.35); color:var(--green); }
+
+  .grid2{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .grid3{ display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
+  .card{ border:1px solid var(--hair2); border-radius:3px; padding:14px 15px;
+    background:linear-gradient(180deg,rgba(255,255,255,0.018),transparent); }
+  .card .ct{ font-size:9px; letter-spacing:.26em; text-transform:uppercase; color:var(--gold); }
+  .card h3{ margin:6px 0 7px; font-size:14.5px; font-weight:600; }
+  .card p{ font-size:11px; color:var(--txt-dim); margin:5px 0 0; }
+
+  .feat{ border:1px solid var(--hair2); border-left:2px solid var(--gold); border-radius:3px;
+    padding:13px 16px; margin-bottom:9px; background:linear-gradient(90deg,rgba(201,161,74,0.05),transparent 60%); }
+  .feat h3{ font-size:15px; font-weight:600; display:flex; align-items:baseline; gap:10px; }
+  .feat h3 .tag{ font-size:8.5px; letter-spacing:.22em; text-transform:uppercase; color:var(--green);
+    border:1px solid rgba(111,174,122,0.35); padding:2px 7px; border-radius:20px; margin-left:auto; }
+  .feat p{ font-size:11.5px; color:var(--txt-dim); margin:6px 0 0; }
+
+  table{ width:100%; border-collapse:collapse; margin-top:14px; font-size:11px; }
+  th,td{ text-align:left; padding:9px 10px; border-bottom:1px solid var(--hair2); vertical-align:top; }
+  th{ font-size:8.5px; letter-spacing:.2em; text-transform:uppercase; color:var(--gold); }
+  td.k{ color:var(--txt); font-weight:600; width:30%; }
+  td.v{ color:var(--txt-dim); }
+
+  .step{ display:flex; gap:12px; padding:7px 0; border-bottom:1px solid var(--hair2); }
+  .step .sn{ font-size:10px; color:var(--gold); width:28px; flex:none; letter-spacing:.1em; padding-top:2px; }
+  .step .st{ font-size:12.5px; font-weight:600; }
+  .step .sd{ font-size:10px; color:var(--txt-faint); }
+  .flow{ display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-top:4px; font-size:11px; color:var(--txt-dim); }
+  .flow b{ color:var(--gold-bright); font-weight:600; } .flow .ar{ color:var(--gold); }
+</style>
+</head>
+<body>
+
+<!-- ============ COVER ============ -->
+<section class="page">
+ <div class="cover page-inner">
+   <div class="topbar">
+     <span>FALCON OS</span>
+     <div class="seal serif">F</div>
+     <span>Feature Brief · v4.5</span>
+   </div>
+   <div class="center">
+     <div class="eyebrow">Investor Feature Brief · Confidential</div>
+     <h1 class="serif">The Self-Learning<br><span class="grad">Trading Intelligence</span><br>Operating System</h1>
+     <p class="lead" style="margin-top:22px">
+       FALCON OS unifies three trading-intelligence platforms — LETRA 37, F16 Raptor / Senseei,
+       and Symphony — into one modular operating system: a single shared market state, a
+       deterministic per-candle pipeline, a genuinely multi-timeframe fractal model, and a
+       bounded self-learning layer that adapts from its own results. Seventy-plus subsystems,
+       each doing one job, composing every trade.
+     </p>
+     <div class="meta">
+       <div><div class="k">Document</div><div class="v">Feature Brief</div></div>
+       <div><div class="k">Build</div><div class="v">v4.54</div></div>
+       <div><div class="k">Instrument</div><div class="v">XAUUSD · MT5</div></div>
+       <div><div class="k">Status</div><div class="v">Architecture complete</div></div>
+     </div>
+   </div>
+   <div class="confbar"><span>Confidential &amp; Proprietary</span><span>Not for distribution</span><span>2025</span></div>
+ </div>
+</section>
+
+<!-- ============ OVERVIEW ============ -->
+<section class="page"><div class="rh"><span class="mark">FALCON OS</span><span>Feature Brief</span></div>
+ <div class="page-inner">
+   <div class="eyebrow">What it is</div>
+   <h2 class="section">One operating system.<br>Seventy-plus subsystems. <span class="grad">One source of truth.</span></h2>
+   <p class="lead">FALCON OS is a complete redesign — not a bundle of indicators. Every calculation
+     exists exactly once and is written to a single shared market state. Every subsystem reads
+     from it. One deterministic pipeline runs on every candle, in the same order, every time.</p>
+
+   <div class="stats">
+     <div><div class="n">70+</div><div class="l">Subsystems unified across 6 layers</div></div>
+     <div><div class="n">7</div><div class="l">Absolute timeframes modelled in parallel (W1→M1)</div></div>
+     <div><div class="n">3</div><div class="l">Self-learning feedback systems</div></div>
+     <div><div class="n">1×</div><div class="l">Each calculation runs once per candle</div></div>
+   </div>
+
+   <div class="grid3">
+     <div class="card"><div class="ct">Observes</div><h3>Market &amp; Memory</h3>
+       <p>Physics, structure, liquidity, convexity, waves, order blocks and supply/demand — plus a persistent "invisible network" memory of where price has reacted before.</p></div>
+     <div class="card"><div class="ct">Reasons &amp; Decides</div><h3>Intelligence</h3>
+       <p>Belief, hypothesis, prediction and validation feed one decision authority that emits a single directive per bar — no competing voices.</p></div>
+     <div class="card"><div class="ct">Executes &amp; Learns</div><h3>Execution</h3>
+       <p>Precision entries, structural stops, owner-driven targets, disciplined money management — and a bounded layer that learns which setups pay.</p></div>
+   </div>
+
+   <div class="rule"></div>
+   <p class="dim" style="font-size:11.5px"><span class="gold">The differentiator —</span>
+     most trading systems are a fixed rule set on a single chart timeframe. FALCON OS is a
+     fractal model that knows <i>where price is on the curve at every scale</i>, lets each
+     subsystem own one decision, and corrects itself from its own track record within hard,
+     auditable risk limits.</p>
+ </div>
+ <div class="rf"><span>01 · Overview</span><span>FALCON OS — Confidential</span></div>
+</section>
+
+<!-- ============ ARCHITECTURE ============ -->
+<section class="page"><div class="rh"><span class="mark">FALCON OS</span><span>Architecture</span></div>
+ <div class="page-inner">
+   <div class="eyebrow">Architecture</div>
+   <h2 class="section">Six layers.<br>One direction of flow.</h2>
+   <p class="lead">Data flows down, decisions flow up, and nothing crosses a layer boundary except
+     through the shared state object. Each layer has one job.</p>
+   <div style="margin-top:18px">
+     <div class="layer"><div class="lh"><span class="num">01</span><span class="name">Market Engine</span><span class="role">Observes</span></div>
+       <div class="pills"><span class="pill">Physics</span><span class="pill">Structure</span><span class="pill">Liquidity</span><span class="pill">Convexity</span><span class="pill">Wave</span><span class="pill">FU</span><span class="pill">Order Blocks</span><span class="pill">Supply/Demand</span><span class="pill">HTF</span></div></div>
+     <div class="layer"><div class="lh"><span class="num">02</span><span class="name">Memory Engine</span><span class="role">Remembers</span></div>
+       <div class="pills"><span class="pill">Invisible Network</span><span class="pill">Authority</span><span class="pill">Conversation Graph</span><span class="pill">Campaign Ownership</span><span class="pill">Curve Tree</span><span class="pill">Participants</span></div></div>
+     <div class="layer"><div class="lh"><span class="num">03</span><span class="name">Intelligence Engine</span><span class="role">Reasons</span></div>
+       <div class="pills"><span class="pill">Belief</span><span class="pill">Hypothesis</span><span class="pill">Prediction</span><span class="pill">Validation</span><span class="pill">Threat</span><span class="pill">Opportunity</span><span class="pill">Energy Resolution</span></div></div>
+     <div class="layer"><div class="lh"><span class="num">04</span><span class="name">Decision Engine</span><span class="role">Decides</span></div>
+       <div class="pills"><span class="pill g">BUY</span><span class="pill g">SELL</span><span class="pill g">WAIT</span><span class="pill g">ATTACK</span><span class="pill g">DEFEND</span><span class="pill g">EXIT</span><span class="pill g">SCALE</span><span class="pill g">NO TRADE</span></div></div>
+     <div class="layer"><div class="lh"><span class="num">05</span><span class="name">Execution Engine</span><span class="role">Executes</span></div>
+       <div class="pills"><span class="pill">Trade Plan</span><span class="pill">Risk</span><span class="pill">Position</span><span class="pill">Money Manager</span><span class="pill new">Self-Learning</span><span class="pill">Session</span></div></div>
+     <div class="layer"><div class="lh"><span class="num">06</span><span class="name">Visualization Engine</span><span class="role">Displays</span></div>
+       <div class="pills"><span class="pill">13 unified tabs</span><span class="pill">Flight HUD</span><span class="pill new">Learning tab</span><span class="pill">Diagnostics</span></div></div>
+   </div>
+   <div class="rule"></div>
+   <p class="dim" style="font-size:11px">A lightweight <span class="gold">kernel</span> — shared state, event bus, scheduler,
+     configuration profiles, structured logging, and a persistence layer — ties every module together
+     without coupling them. New engines plug into the event bus without touching the core pipeline.</p>
+ </div>
+ <div class="rf"><span>02 · Architecture</span><span>FALCON OS — Confidential</span></div>
+</section>
+
+<!-- ============ MULTI-TIMEFRAME ============ -->
+<section class="page"><div class="rh"><span class="mark">FALCON OS</span><span>Fractal Model</span></div>
+ <div class="page-inner">
+   <div class="eyebrow">Signature Capability</div>
+   <h2 class="section">Truly multi-timeframe.<br><span class="grad">The chart is just a viewport.</span></h2>
+   <p class="lead">Most algorithms live on one chart timeframe — change the chart and the strategy changes.
+     FALCON OS models seven <i>absolute</i> timeframes in parallel and lets ownership cascade down the
+     fractal, so the result is the same on any chart.</p>
+
+   <div class="feat"><h3>Absolute fractal ladder <span class="tag">Core</span></h3>
+     <p>Structure, curves, zones and ownership are computed on W1 · D1 · H4 · H1 · M15 · M5 · M1
+       simultaneously — not derived from whatever chart it's attached to. The operating scale is a
+       deliberate, tested choice, not an accident.</p></div>
+   <div class="feat"><h3>Ownership cascade</h3>
+     <p>The highest timeframe in control "owns" price. Direction, invalidation and destination are
+       inherited from that owning curve and escalate automatically when a higher timeframe takes over.</p></div>
+   <div class="feat"><h3>Per-timeframe zones</h3>
+     <p>Liquidity pools, order blocks and supply/demand are built on every rung — so a trade can be
+       priced against the zone of the timeframe that actually governs it, not just the local one.</p></div>
+   <div class="feat"><h3>The Curve Locator — "you are here" <span class="tag">Novel</span></h3>
+     <p>A single continuous coordinate of where price sits between a curve's origin and destination,
+       anchored to the owning timeframe and never undefined — it degrades gracefully instead of
+       resetting. The system always knows how much curve remains, so it never enters a move that is
+       already over.</p></div>
+ </div>
+ <div class="rf"><span>03 · Fractal Model</span><span>FALCON OS — Confidential</span></div>
+</section>
+
+<!-- ============ SUBSYSTEMS COMPOSE THE TRADE ============ -->
+<section class="page"><div class="rh"><span class="mark">FALCON OS</span><span>Decision Contract</span></div>
+ <div class="page-inner">
+   <div class="eyebrow">How a trade is built</div>
+   <h2 class="section">Every subsystem does its job —<br><span class="grad">not just casts a vote.</span></h2>
+   <p class="lead">Conventional systems average dozens of indicators into one fuzzy score. FALCON OS does
+     the opposite: each subsystem owns exactly one field of the trade, and every one can veto. A trade
+     is a composed plan, not a blended number.</p>
+   <table>
+     <tr><th>Decision</th><th>Owned by</th><th>What it contributes</th></tr>
+     <tr><td class="k">Direction</td><td class="v">Curve / Campaign ownership</td><td class="v">Who owns price — the side is inherited, never voted.</td></tr>
+     <tr><td class="k">Permission</td><td class="v">Higher-timeframe stack</td><td class="v">The macro context must not oppose the trade.</td></tr>
+     <tr><td class="k">Location</td><td class="v">Liquidity · Order Block · Supply/Demand</td><td class="v">Price must be at a real engagement zone, not mid-air.</td></tr>
+     <tr><td class="k">Confirmation</td><td class="v">Structure engine</td><td class="v">No change-of-character against the trade.</td></tr>
+     <tr><td class="k">Stop</td><td class="v">Zone invalidation</td><td class="v">Placed where the idea is wrong — not a fixed distance.</td></tr>
+     <tr><td class="k">Target</td><td class="v">Convexity · Return Zone · Network</td><td class="v">The owner-driven destination, escalating by timeframe.</td></tr>
+     <tr><td class="k">Size</td><td class="v">Participants · Campaign control</td><td class="v">Conviction scaling within hard risk limits.</td></tr>
+     <tr><td class="k">Go / No-go</td><td class="v">Threat &amp; reward:risk gate</td><td class="v">Only fires when the composed reward:risk clears the bar.</td></tr>
+   </table>
+   <div class="rule"></div>
+   <p class="dim" style="font-size:11px">The precision-entry core (ported from the proven Symphony phase engine) supplies the
+     <span class="gold">timing</span>; the subsystems supply the <span class="gold">plan</span>. Each blocked trade records
+     <i>why</i> — fully explainable, never a black box.</p>
+ </div>
+ <div class="rf"><span>04 · Decision Contract</span><span>FALCON OS — Confidential</span></div>
+</section>
+
+<!-- ============ MONEY MANAGEMENT ============ -->
+<section class="page"><div class="rh"><span class="mark">FALCON OS</span><span>Capital Discipline</span></div>
+ <div class="page-inner">
+   <div class="eyebrow">Money management</div>
+   <h2 class="section">Disciplined capital.<br><span class="grad">Bounded by design.</span></h2>
+   <p class="lead">Risk control is rules and mathematics, never emotion or martingale. Three mechanisms
+     govern every campaign.</p>
+   <div class="grid3" style="margin-top:6px">
+     <div class="card"><div class="ct">Lock</div><h3>Counter-direction lock</h3>
+       <p>Never opens against a book that is currently in profit — it refuses to fight its own winning campaign, which is the single biggest source of chop in lesser systems.</p></div>
+     <div class="card"><div class="ct">Ceiling</div><h3>Pre-entry basket ceiling</h3>
+       <p>Position size is computed so total per-direction risk-at-stop stays under a fixed % of equity — correct at entry, no trimming after the fact.</p></div>
+     <div class="card"><div class="ct">Ladder</div><h3>Live-P&amp;L profit ladder</h3>
+       <p>Banks progressively at realised reward-to-risk milestones, moves stops to protect, and rides the remainder — anchored to live positions, surviving internal resets.</p></div>
+   </div>
+   <div class="rule"></div>
+   <div class="eyebrow" style="margin-top:6px">Hard limits — always on</div>
+   <div class="pills">
+     <span class="pill g">Max risk % per trade</span><span class="pill g">Max lots per entry</span>
+     <span class="pill g">Per-direction basket ceiling</span><span class="pill g">Drawdown protection</span>
+     <span class="pill g">Session filter</span><span class="pill g">Breach cooldown</span>
+   </div>
+   <p class="dim" style="font-size:11px; margin-top:14px">Risk is governed per <span class="gold">campaign</span> and never netted across opposing
+     directions — each side's exposure is evaluated on its own, with a portfolio-level backstop. The system
+     can hold long and short campaigns simultaneously on a hedging account by design.</p>
+ </div>
+ <div class="rf"><span>05 · Capital Discipline</span><span>FALCON OS — Confidential</span></div>
+</section>
+
+<!-- ============ LEARNING ============ -->
+<section class="page"><div class="rh"><span class="mark">FALCON OS</span><span>Self-Learning</span></div>
+ <div class="page-inner">
+   <div class="eyebrow">It learns from itself</div>
+   <h2 class="section">Self-correcting.<br><span class="grad">Bounded. Auditable.</span></h2>
+   <p class="lead">FALCON OS keeps a track record of its own decisions and adapts — within hard limits,
+     using interpretable statistics, not a black box. Every learned value is visible on the dashboard
+     and persisted across sessions.</p>
+
+   <div class="feat"><h3>Adaptive edge learning <span class="tag">Active</span></h3>
+     <p>Attributes every closed trade's result to the context it was taken in. Contexts that pay get
+       sized up; contexts that persistently lose get throttled or vetoed. It learns which of its own
+       setups have an edge — and presses them.</p></div>
+   <div class="feat"><h3>Regret / missed-trade learning <span class="tag">Active</span></h3>
+     <p>When a trade is blocked, it shadows the outcome. If a filter is repeatedly blocking trades that
+       <i>would have won</i>, it learns the filter is too strict and starts taking those setups — while
+       keeping filters that genuinely avoided losses.</p></div>
+   <div class="feat"><h3>Full transparency</h3>
+     <p>A dedicated dashboard tab shows exactly what the system has learned — every context, its win rate,
+       its expectancy, and its current sizing. A per-trade journal exports to CSV for independent audit.</p></div>
+
+   <div class="rule"></div>
+   <p class="dim" style="font-size:11px"><span class="gold">Guardrails —</span> a minimum sample is required before any adaptation;
+     size multipliers are clamped; estimates are recency-weighted to track regime change; and the
+     learning can <i>never</i> override direction integrity, structural invalidation, or the hard risk
+     limits. Adaptation tunes the system; it cannot break it.</p>
+ </div>
+ <div class="rf"><span>06 · Self-Learning</span><span>FALCON OS — Confidential</span></div>
+</section>
+
+<!-- ============ PIPELINE + TRANSPARENCY ============ -->
+<section class="page"><div class="rh"><span class="mark">FALCON OS</span><span>Pipeline &amp; Transparency</span></div>
+ <div class="page-inner">
+   <div class="eyebrow">Deterministic by design</div>
+   <h2 class="section">Same sequence.<br>Every bar. <span class="grad">Always.</span></h2>
+   <div class="flow" style="margin:10px 0 16px">
+     <b>Observe</b><span class="ar">→</span><b>Remember</b><span class="ar">→</span><b>Locate on curve</b>
+     <span class="ar">→</span><b>Reason</b><span class="ar">→</span><b>Decide</b><span class="ar">→</span><b>Compose plan</b>
+     <span class="ar">→</span><b>Execute</b><span class="ar">→</span><b>Learn</b><span class="ar">→</span><b>Display</b>
+   </div>
+   <div class="step"><div class="sn">01</div><div><div class="st">Market &amp; Memory updated</div><div class="sd">Physics → structure → liquidity → convexity → wave → network → campaign — each once.</div></div></div>
+   <div class="step"><div class="sn">02</div><div><div class="st">Curve Locator updated</div><div class="sd">Continuous multi-timeframe "you are here", with graceful degradation.</div></div></div>
+   <div class="step"><div class="sn">03</div><div><div class="st">Intelligence &amp; Decision</div><div class="sd">Belief → prediction → validation → one directive: BUY / SELL / WAIT / … / NO TRADE.</div></div></div>
+   <div class="step"><div class="sn">04</div><div><div class="st">Trade plan composed &amp; executed</div><div class="sd">Each subsystem fills its field; money management sizes and protects.</div></div></div>
+   <div class="step"><div class="sn">05</div><div><div class="st">Learning &amp; visualization</div><div class="sd">Closed trades update the learned tables; 13 tabs refresh from shared state.</div></div></div>
+
+   <div class="rule"></div>
+   <div class="grid2">
+     <div class="card"><div class="ct">Transparency</div><h3>Nothing hidden</h3>
+       <p>13 dashboard tabs, a Flight-HUD overlay, structured logs, per-module health checks, a dedicated Learning tab, and a CSV trade journal with a Python analyzer for independent verification.</p></div>
+     <div class="card"><div class="ct">Determinism</div><h3>Reproducible</h3>
+       <p>Given the same inputs, the same outputs — every time. One shared state means intelligence and execution can never disagree about the market.</p></div>
+   </div>
+ </div>
+ <div class="rf"><span>07 · Pipeline &amp; Transparency</span><span>FALCON OS — Confidential</span></div>
+</section>
+
+<!-- ============ CLOSING ============ -->
+<section class="page"><div class="rh"><span class="mark">FALCON OS</span><span>Summary</span></div>
+ <div class="page-inner">
+   <div class="eyebrow">Summary</div>
+   <h2 class="section">Built for<br><span class="grad">what comes next.</span></h2>
+   <p class="lead">FALCON OS is a modular, deterministic, fractal trading operating system with a unified
+     state model, a precision execution core, disciplined capital management, and a bounded
+     self-learning layer — all fully transparent and auditable.</p>
+
+   <div class="grid2" style="margin-top:18px">
+     <div class="card"><div class="ct">What is built</div><h3>Complete</h3>
+       <p>Unified architecture · single shared state · 7-timeframe fractal model · per-timeframe zones · Curve Locator · subsystem-composed trade plan · v3.0 money management · adaptive + regret learning · full diagnostics.</p></div>
+     <div class="card"><div class="ct">What is next</div><h3>Roadmap</h3>
+       <p>Walk-forward optimisation harness with out-of-sample validation · expanded learning context · optional management-mode learning · live forward-test on validated parameters.</p></div>
+   </div>
+
+   <div class="rule"></div>
+   <div class="card" style="border-left:2px solid var(--blue-bright)">
+     <div class="ct" style="color:var(--blue-bright)">Methodology note</div>
+     <p style="color:var(--txt-dim); font-size:11.5px">This brief describes <b style="color:#e8e9ec">capabilities and architecture</b>, not a track record.
+       Like any systematic strategy, FALCON OS must be validated by walk-forward backtesting and forward
+       testing before capital is committed; learned behaviour is bounded precisely so that adaptation
+       cannot exceed pre-set risk limits. No performance is represented or guaranteed.</p>
+   </div>
+
+   <div style="margin-top:auto"></div>
+   <div class="confbar" style="margin-top:34px"><span>Confidential &amp; Proprietary</span><span>Feature Brief · v4.54</span><span>Not for distribution</span></div>
+ </div>
+ <div class="rf"><span>08 · Summary</span><span>FALCON OS — Confidential</span></div>
+</section>
+
+</body>
+</html>
