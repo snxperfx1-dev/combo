@@ -311,7 +311,6 @@ void CurveTreeRun()
    g_state.curve.childCount      = kids;
 
    // ---- FORECAST (planning layer) — future inheritance of the curve ----
-   double comp = g_state.physics.compression;
    bool   budgetLeft = (treeDepth < budgetDepth);
    g_state.curve.childExpected     = (budgetLeft && comp >= 50.0);
    g_state.curve.expectedSpawnBars = (int)FalconClamp(20.0 - comp/8.0, 3, 20);
