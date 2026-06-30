@@ -22,8 +22,8 @@
 //==================================================================
 // KERNEL
 //==================================================================
-#include "Kernel/FalconConfig.mqh"
 #include "Kernel/FalconState.mqh"
+#include "Kernel/FalconConfig.mqh"
 #include "Kernel/FalconSeries.mqh"
 #include "Kernel/FalconEventBus.mqh"
 #include "Kernel/FalconLog.mqh"

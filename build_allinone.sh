@@ -8,8 +8,8 @@ OUT=FalconOS_AllInOne.mq5
 VER="${1:-3.28}"
 
 ORDER=(
-  "Kernel/FalconConfig.mqh"
   "Kernel/FalconState.mqh"
+  "Kernel/FalconConfig.mqh"
   "Kernel/FalconSeries.mqh"
   "Kernel/FalconEventBus.mqh"
   "Kernel/FalconLog.mqh"
