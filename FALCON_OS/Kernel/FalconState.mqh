@@ -386,6 +386,7 @@ struct FalconCurve
    int    budgetDepth;    // compression-derived recursion budget (1..4)
    bool   recursionComplete; // treeDepth >= budgetDepth (recursion spent)
    int    ownerNodeDir;   // direction of the OWNING node (shallowest alive w/ energy)
+   int    ownerNodeId;    // id of the OWNING node (changes on ownership TRANSFER — entry scoping)
    double ownerNodeEnergy;// energy of the owning node (0..100)
    int    ownerNodeDepth; // recursion depth of the owning node
    double ownerNodeOrigin;

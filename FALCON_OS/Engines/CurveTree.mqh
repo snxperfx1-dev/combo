@@ -292,6 +292,7 @@ void CurveTreeRun()
    g_state.curve.budgetDepth     = budgetDepth;
    g_state.curve.recursionComplete = recursionComplete;
    g_state.curve.ownerNodeDir    = ownDirT;
+   g_state.curve.ownerNodeId     = (ownF>=0 ? ct_tree[ownF].id : 0);
    g_state.curve.ownerNodeEnergy = (ownF>=0 ? ct_tree[ownF].energy : 0.0);
    g_state.curve.ownerNodeDepth  = (ownF>=0 ? ct_tree[ownF].depth  : 0);
    g_state.curve.ownerNodeOrigin = ownOrig;

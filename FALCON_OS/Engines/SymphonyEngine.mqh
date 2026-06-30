@@ -90,6 +90,8 @@ bool     talon_beShort = false;     // short campaign breakeven earned
 double   talon_peakLong  = 0.0;     // peak favorable excursion (ATR) — long campaign
 double   talon_peakShort = 0.0;     // peak favorable excursion (ATR) — short campaign
 int      sym_lastEntryBar = -100000;// bar index of the most recent entry (re-entry cooldown)
+int      sym_ownerEntryLong  = -1; // owner curve-node id we last entered LONG on  (one-entry-per-curve)
+int      sym_ownerEntryShort = -1; // owner curve-node id we last entered SHORT on
 
 // Re-entry lockout — once a campaign for the CURRENT impulse has been closed
 // (by trail-stop or composite exit), block re-entry in that direction until a
@@ -1101,6 +1103,8 @@ void Sym_PlaceEntry(const int dir,const string tag,const double riskCash,const d
       TJ_RecordEntry(ee_lastTicket,dir,tag,entry,sl,lots);
       TG_Record(ee_lastTicket,dir,entry,sl,target,atrNow);   // model + categorize this entry's geometry/range band
       sym_lastEntryBar = g_barCounter;                        // arm the re-entry cooldown
+      if(dir==DIR_LONG) sym_ownerEntryLong = g_state.curve.ownerNodeId;  // scope to the owner curve
+      else              sym_ownerEntryShort= g_state.curve.ownerNodeId;
       AD_RecordEntry(ee_lastTicket, adBucket, lots*MathAbs(entry-sl)*g_cfg.contractValue, g_state.intel.executionProbability);
       g_state.exec.entry=entry; g_state.exec.stop=sl; g_state.exec.lots=lots; g_state.exec.riskCash=riskCash;
       g_state.exec.target=target; g_state.exec.target2=t2; g_state.exec.reward=rr;
@@ -1213,6 +1217,21 @@ void SymphonyExecuteTrading()
    // so consecutive phase transitions don't rapid-fire follow-up entries.
    if(g_cfg.reentryCooldown>0 && (g_barCounter - sym_lastEntryBar) < g_cfg.reentryCooldown)
    { L3=false; L4=false; S3=false; S4=false; }
+
+   // ONE ENTRY PER OWNER CURVE — the STRUCTURAL fix for "great entry then
+   // terrible one". The terrible follow-ups are correctly-detected phase
+   // repeats on the SAME owner curve, later/extended. Trade each owner curve
+   // ONCE per direction; only re-arm when ownership TRANSFERS to a new curve
+   // (the owning node id changes). This trades the MOVE, not the phase repeats.
+   if(g_cfg.oneEntryPerCurve)
+   {
+      int oid=g_state.curve.ownerNodeId;
+      if(oid>0)
+      {
+         if(oid==sym_ownerEntryLong) { L3=false; L4=false; }
+         if(oid==sym_ownerEntryShort){ S3=false; S4=false; }
+      }
+   }
 
    double impL = sym_anchorHigh - sym_anchorLow;
    double impS = sym_anchorHigh - sym_anchorLow;

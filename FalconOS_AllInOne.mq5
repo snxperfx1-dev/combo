@@ -5,7 +5,7 @@
 //|   Risk: PYRO thermal + TALON curve-convergent structural grip.   |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "5.25"
+#property version   "5.26"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -400,6 +400,7 @@ struct FalconCurve
    int    budgetDepth;    // compression-derived recursion budget (1..4)
    bool   recursionComplete; // treeDepth >= budgetDepth (recursion spent)
    int    ownerNodeDir;   // direction of the OWNING node (shallowest alive w/ energy)
+   int    ownerNodeId;    // id of the OWNING node (changes on ownership TRANSFER — entry scoping)
    double ownerNodeEnergy;// energy of the owning node (0..100)
    int    ownerNodeDepth; // recursion depth of the owning node
    double ownerNodeOrigin;
@@ -1123,6 +1124,7 @@ input bool    InpEntryAtZone     = true;  // FREE-RUN too: only enter when price
 input bool    InpEntryNeedRoom   = true;  // FREE-RUN too: require curve ROOM (capacity left, not late/exhausted on the owner leg) before entering
 input bool    InpOneEntryPerDir   = true;  // Only ONE entry per direction at a time — no pyramiding the same move (stops the terrible follow-up after a good entry)
 input int     InpReentryCooldown  = 4;     // Bars to wait after ANY entry before another can fire (anti rapid-fire follow-ups); 0=off
+input bool    InpOneEntryPerCurve = true;  // STRUCTURAL: trade each OWNER curve only ONCE per direction — re-arm only when ownership TRANSFERS to a new curve
 input string  __sep_plan        = "════════ TRADE PLAN (subsystem-composed) ════════"; // ──
 input bool    InpUseTradePlan    = true;  // Compose stop/target/size from subsystems (off: Symphony anchor+-ATR / ARC)
 input double  InpMinRR           = 4.0;   // Min reward:risk (from subsystem stop+target) to take an entry
@@ -1275,6 +1277,7 @@ struct FalconConfig
    bool   useFactGate, factNeedZone;
    bool   entryAtZone, entryNeedRoom;
    bool   oneEntryPerDir;  int reentryCooldown;
+   bool   oneEntryPerCurve;
    double factPartThreat, factNetPressure;
    bool   useTradePlan;
    double minRR, stopBufATR;
@@ -1425,6 +1428,7 @@ void FalconConfigInit()
    g_cfg.entryNeedRoom    = InpEntryNeedRoom;
    g_cfg.oneEntryPerDir   = InpOneEntryPerDir;
    g_cfg.reentryCooldown  = InpReentryCooldown;
+   g_cfg.oneEntryPerCurve = InpOneEntryPerCurve;
    g_cfg.factPartThreat   = InpFactPartThreat;
    g_cfg.factNetPressure  = InpFactNetPressure;
    g_cfg.useTradePlan     = InpUseTradePlan;
@@ -3917,6 +3921,7 @@ void CurveTreeRun()
    g_state.curve.budgetDepth     = budgetDepth;
    g_state.curve.recursionComplete = recursionComplete;
    g_state.curve.ownerNodeDir    = ownDirT;
+   g_state.curve.ownerNodeId     = (ownF>=0 ? ct_tree[ownF].id : 0);
    g_state.curve.ownerNodeEnergy = (ownF>=0 ? ct_tree[ownF].energy : 0.0);
    g_state.curve.ownerNodeDepth  = (ownF>=0 ? ct_tree[ownF].depth  : 0);
    g_state.curve.ownerNodeOrigin = ownOrig;
@@ -7399,6 +7404,8 @@ bool     talon_beShort = false;     // short campaign breakeven earned
 double   talon_peakLong  = 0.0;     // peak favorable excursion (ATR) — long campaign
 double   talon_peakShort = 0.0;     // peak favorable excursion (ATR) — short campaign
 int      sym_lastEntryBar = -100000;// bar index of the most recent entry (re-entry cooldown)
+int      sym_ownerEntryLong  = -1; // owner curve-node id we last entered LONG on  (one-entry-per-curve)
+int      sym_ownerEntryShort = -1; // owner curve-node id we last entered SHORT on
 
 // Re-entry lockout — once a campaign for the CURRENT impulse has been closed
 // (by trail-stop or composite exit), block re-entry in that direction until a
@@ -8410,6 +8417,8 @@ void Sym_PlaceEntry(const int dir,const string tag,const double riskCash,const d
       TJ_RecordEntry(ee_lastTicket,dir,tag,entry,sl,lots);
       TG_Record(ee_lastTicket,dir,entry,sl,target,atrNow);   // model + categorize this entry's geometry/range band
       sym_lastEntryBar = g_barCounter;                        // arm the re-entry cooldown
+      if(dir==DIR_LONG) sym_ownerEntryLong = g_state.curve.ownerNodeId;  // scope to the owner curve
+      else              sym_ownerEntryShort= g_state.curve.ownerNodeId;
       AD_RecordEntry(ee_lastTicket, adBucket, lots*MathAbs(entry-sl)*g_cfg.contractValue, g_state.intel.executionProbability);
       g_state.exec.entry=entry; g_state.exec.stop=sl; g_state.exec.lots=lots; g_state.exec.riskCash=riskCash;
       g_state.exec.target=target; g_state.exec.target2=t2; g_state.exec.reward=rr;
@@ -8522,6 +8531,21 @@ void SymphonyExecuteTrading()
    // so consecutive phase transitions don't rapid-fire follow-up entries.
    if(g_cfg.reentryCooldown>0 && (g_barCounter - sym_lastEntryBar) < g_cfg.reentryCooldown)
    { L3=false; L4=false; S3=false; S4=false; }
+
+   // ONE ENTRY PER OWNER CURVE — the STRUCTURAL fix for "great entry then
+   // terrible one". The terrible follow-ups are correctly-detected phase
+   // repeats on the SAME owner curve, later/extended. Trade each owner curve
+   // ONCE per direction; only re-arm when ownership TRANSFERS to a new curve
+   // (the owning node id changes). This trades the MOVE, not the phase repeats.
+   if(g_cfg.oneEntryPerCurve)
+   {
+      int oid=g_state.curve.ownerNodeId;
+      if(oid>0)
+      {
+         if(oid==sym_ownerEntryLong) { L3=false; L4=false; }
+         if(oid==sym_ownerEntryShort){ S3=false; S4=false; }
+      }
+   }
 
    double impL = sym_anchorHigh - sym_anchorLow;
    double impS = sym_anchorHigh - sym_anchorLow;
