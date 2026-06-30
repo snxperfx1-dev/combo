@@ -522,22 +522,84 @@ void IE_EntryCycle(FalconIntelligence &x)
 }
 
 //==================================================================
+// CONCRETE REASONING — the reasoning is the DEEP STRUCTURAL ENGINES,
+// not belief/probability blends. confidence / threat / opportunity /
+// executionProbability are derived ONLY from: phases, curve tree,
+// campaign ownership, curve locator, structure, and true multi-TF.
+// The belief / energy-resolution / forecast / hypothesis / prediction
+// / validation engines are REMOVED from the decision path (per design
+// law: phases are outputs, structure is the reasoning).
+//==================================================================
+void IE_ConcreteReason(FalconIntelligence &x)
+{
+   FalconWave         w  = g_state.wave;
+   FalconHTF          h  = g_state.htf;
+   FalconCurve        c  = g_state.curve;
+   FalconCampaign     cm = g_state.campaign;
+   FalconStructure    st = g_state.structure;
+   FalconConvexity    cv = g_state.convexity;
+   FalconCurveLocator cl = g_state.curveLocator;
+
+   int    owner = (cm.owner!=DIR_NONE ? cm.owner : c.ownerDir);   // campaign / curve ownership
+   double mtf   = h.alignment;                                    // true multi-TF agreement
+   double ctrl  = MathMax(cm.controlScore, c.life);               // ownership control / curve life
+   double room  = cv.geometryCapacity;                            // remaining geometry (concrete)
+   bool   structAgree = (st.trend==owner && owner!=DIR_NONE);     // structure
+   bool   chochAgainst= (owner!=DIR_NONE && st.choch==-owner);
+   bool   htfOpposes  = (h.stackDir!=DIR_NONE && owner!=DIR_NONE && h.stackDir!=owner);
+   bool   advancing   = (!g_cfg.useCurveLocator) || cl.advancing; // curve locator
+   double locPos      = (g_cfg.useCurveLocator ? cl.pos : 0.5);
+
+   // --- belief / energy / forecast fields REMOVED (zeroed; no longer reasoned on) ---
+   x.beliefExpansion=0; x.beliefConvexity=0; x.beliefCreation=0;
+   x.beliefAbsorption=0; x.beliefRetracement=0; x.beliefReturn=0;
+   x.expansionEnergy=0; x.dissipatedEnergy=0; x.dissipationProgress=0;
+   x.attractorPrice=0; x.attractorScore=0;
+
+   // residual / resolution derived CONCRETELY from curve geometry + locator
+   x.residualEnergy  = FalconClamp(room,0,100);
+   x.resolutionState = (locPos>=0.92 ? RES_RESOLVED : locPos>=0.60 ? RES_PARTIALLY_RESOLVED : RES_UNRESOLVED);
+   x.failureSwingProb= FalconClamp(((chochAgainst?40.0:0.0)+(htfOpposes?30.0:0.0)
+                       +(!advancing?20.0:0.0)+(locPos>=0.85?20.0:0.0))/100.0,0,1);
+   x.immediateExecutionProb = FalconClamp((locPos<0.5 && advancing?0.55:0.20)+(structAgree?0.20:0.0),0,1);
+
+   // CONFIDENCE / THREAT / OPPORTUNITY — concrete structural conviction
+   x.confidence = FalconClamp(0.40*mtf + 0.22*ctrl + (structAgree?14.0:0.0) + (advancing?8.0:0.0)
+                  + (h.fractalAgreement?10.0:0.0) - (chochAgainst?25.0:0.0) - (htfOpposes?15.0:0.0),0,100);
+   x.threat     = FalconClamp((chochAgainst?38.0:0.0) + (htfOpposes?22.0:0.0) + (100.0-room)*0.18
+                  + (locPos>=0.80?18.0:0.0) + (!advancing?10.0:0.0),0,100);
+   x.opportunity= FalconClamp(x.confidence*0.6 + room*0.25 - x.threat*0.3 + (locPos<0.5&&advancing?15.0:0.0),0,100);
+   x.opportunityGrade = (owner==DIR_NONE?"NONE": x.opportunity<25?"DEVELOPING": x.opportunity<45?"GOOD": x.opportunity<70?"STRONG":"EXCEPTIONAL");
+
+   // EXECUTION PROBABILITY — concrete: ownership · multi-TF · room · locator · structure
+   double ep = 0.35*(mtf/100.0) + 0.22*(ctrl/100.0) + 0.18*(room/100.0)
+             + 0.13*(advancing?1.0:0.0) + 0.12*(structAgree?1.0:0.0);
+   ep *= (chochAgainst?0.35:1.0);
+   ep *= (locPos>=0.85?0.45:1.0);
+   x.executionProbability = FalconClamp(ep,0,1);
+
+   // concrete labels (derived FROM phase/ownership, never driving anything)
+   x.hypothesisDir  = owner;
+   x.hypothesisProb = x.executionProbability;
+   x.hypothesis     = FalconDirStr(owner)+" owner — "+FalconPhaseStr(w.phase);
+   x.predictionPrice= (g_state.frz.active ? g_state.frz.targetPrice : w.objective);
+   x.prediction     = "owner destination"+(x.predictionPrice!=0?(" @ "+DoubleToString(x.predictionPrice,_Digits)):"");
+   x.predictionProb = x.executionProbability;
+   x.validated      = structAgree;
+   x.validationScore= x.confidence;
+}
+
+//==================================================================
 // MASTER ENTRY — Intelligence Engine pipeline step
 //==================================================================
 void IntelligenceEngineRun()
 {
    FalconIntelligence x=g_state.intel;
-   IE_EnergyResolution(x);
-   IE_Beliefs(x);
-   IE_Forecast(x);
-   IE_Hypothesis(x);
-   IE_Prediction(x);
-   IE_Validation(x);
-   IE_Narrative(x);
+   IE_ConcreteReason(x);   // reasoning = phases · curve tree · ownership · locator · structure · multi-TF
+   IE_Narrative(x);        // phase -> human-readable timing/intent/story (descriptive OUTPUT only)
    g_state.intel=x;
-   IE_EntryCycle(x);   // build-vs-execute brain (reads finalized intel)
-   // back-fill campaign remaining energy now that residual is known
-   g_state.campaign.remainingEnergy=x.residualEnergy;
+   IE_EntryCycle(x);       // concrete build-vs-execute brain (ownership / terminal / zones)
+   g_state.campaign.remainingEnergy = x.residualEnergy;   // = remaining curve geometry
 }
 
 #endif // FALCON_INTEL_ENGINE_MQH

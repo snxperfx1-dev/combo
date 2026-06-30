@@ -169,35 +169,20 @@ void DecisionEngineRun()
    //-- TIME / CYCLE conflict proxy (HTF stack disagreement) --------
    double timeAlign    = h.alignment;
    double timeConflict = h.conflict;
+   int    resCode      = x.resolutionState;
 
-   double residual  = x.residualEnergy;
-   double attractor = x.attractorScore;
-   double stackPct  = h.alignment;
-   int    eligN     = n.liveCount;
-   int    resCode   = x.resolutionState;
-
-   //-- THREAT (Senseei formula + participant pressure) ------------
-   double threat = FalconClamp(conflict*0.40 + residual*0.28 + timeConflict*0.12
-                   + ((vPress!=DIR_NONE && vPress!=master)?18.0:0.0)
-                   + (resCode==RES_PARTIALLY_RESOLVED?10.0:0.0)
-                   + g_state.participants.interference*0.08
-                   + ((master==DIR_LONG  && g_state.participants.seller>70.0)?12.0:0.0)
-                   + ((master==DIR_SHORT && g_state.participants.buyer >70.0)?12.0:0.0),0,100);
-
-   //-- CONFIDENCE --------------------------------------------------
-   double confidence = FalconClamp(alignment*0.40 + timeAlign*0.12 + stackPct*0.18
-                       + attractor*0.15 + MathMin(15.0,eligN*1.2) - threat*0.20,0,100);
-
-   //-- OPPORTUNITY -------------------------------------------------
-   double oppScore = FalconClamp(alignment*0.40 + attractor*0.30 + stackPct*0.30 - threat*0.35,0,100);
-   string oppGrade = DE_OppGrade(master,conflict,oppScore);
+   //-- CONVICTION IS NOW CONCRETE — confidence / threat / opportunity are
+   //   computed by the Intelligence Engine from the DEEP STRUCTURAL ENGINES
+   //   (phases · curve tree · ownership · curve locator · structure · multi-TF),
+   //   NOT from belief/energy blends. The Decision Engine consumes them as-is.
+   double threat     = x.threat;
+   double confidence = x.confidence;
+   double oppScore   = x.opportunity;
+   string oppGrade   = (x.opportunityGrade!="" ? x.opportunityGrade : DE_OppGrade(master,conflict,oppScore));
 
    //-- WRITE meta into intel + execution snapshot ------------------
    x.alignment       = alignment;
    x.conflict        = conflict;
-   x.confidence      = confidence;
-   x.threat          = threat;
-   x.opportunity     = oppScore;
    x.opportunityGrade= oppGrade;
 
    //==============================================================
