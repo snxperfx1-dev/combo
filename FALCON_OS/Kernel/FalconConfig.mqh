@@ -135,6 +135,9 @@ input bool    InpRefereeLearn    = true;       // Score each engine's demonstrat
 input int     InpCycleEvalBars   = 20;         // Bars to resolve each engine's directional prediction
 input double  InpCycleEvalATR    = 1.2;        // Favorable move (ATR) that scores a prediction a WIN
 input int     InpBestMinSamples  = 12;         // Min resolved predictions before BEST/learned selection trusts an engine
+input bool    InpCycleRawEntries  = true;       // Selected non-Symphony engine enters on its raw P3/P4 edge (bypass fact gate + zone R:R) — clean A/B/C
+input double  InpCycleRawStopATR   = 1.5;       // Raw-entry stop distance (ATR) when bypassing the trade plan
+input double  InpCycleRawTgtATR    = 3.0;       // Raw-entry target distance (ATR)
 
 input string  __sep_money      = "════════ MONEY MANAGER (Symphony v3.0) ════════"; // ──
 input bool    InpUseProfitLadder= false; // Use v3.0 live-PnL profit ladder (DISABLED — raw cycle comparison)
@@ -208,9 +211,9 @@ struct FalconConfig
    bool   useTimeIntel, timeGateEntries;
    double timeQualityFloor;
    // multi-engine wave cycles (comparative A/B/C)
-   bool   runAllCycles, refereeLearn;
+   bool   runAllCycles, refereeLearn, cycleRawEntries;
    int    entryEngine, cycleEvalBars, bestMinSamples;
-   double cycleEvalATR;
+   double cycleEvalATR, cycleRawStopATR, cycleRawTgtATR;
    // decision
    int    minConf;  double maxThreat, maxConflict, execProbArm;
    bool   requireConfluence;
@@ -313,6 +316,9 @@ void FalconConfigInit()
    g_cfg.cycleEvalBars    = InpCycleEvalBars;
    g_cfg.cycleEvalATR     = InpCycleEvalATR;
    g_cfg.bestMinSamples   = InpBestMinSamples;
+   g_cfg.cycleRawEntries  = InpCycleRawEntries;
+   g_cfg.cycleRawStopATR  = InpCycleRawStopATR;
+   g_cfg.cycleRawTgtATR   = InpCycleRawTgtATR;
 
    g_cfg.minConf          = InpMinConf;
    g_cfg.maxThreat        = InpMaxThreat;

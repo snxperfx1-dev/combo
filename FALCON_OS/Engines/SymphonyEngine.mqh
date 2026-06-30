@@ -859,7 +859,7 @@ bool SymphonyBrainConfirms(const int dir)
 //   conviction, and the entry must clear the subsystem reward:risk gate.
 //   Otherwise falls back to Symphony's anchor ± 0.25 ATR stop.
 //==================================================================
-void Sym_PlaceEntry(const int dir,const string tag,const double riskCash,const double atrNow)
+void Sym_PlaceEntry(const int dir,const string tag,const double riskCash,const double atrNow,const bool raw=false)
 {
    double entry = (dir==DIR_LONG ? SymbolInfoDouble(_Symbol,SYMBOL_ASK)
                                  : SymbolInfoDouble(_Symbol,SYMBOL_BID));
@@ -869,7 +869,20 @@ void Sym_PlaceEntry(const int dir,const string tag,const double riskCash,const d
    double adMult   = AD_SizeMult(adBucket);     // size by learned edge
    double saMult   = SA_Throttle();             // global self-awareness throttle
 
-   if(g_cfg.useTradePlan)
+   if(raw)
+   {
+      // RAW A/B/C mode: the engine enters on its own edge with a clean ATR
+      // stop/target — no zone/R:R gate — so each wave model can be measured
+      // on identical terms (its directional edge, not Symphony's geometry).
+      double s = g_cfg.cycleRawStopATR*atrNow;
+      double t = g_cfg.cycleRawTgtATR *atrNow;
+      sl     = (dir==DIR_LONG ? entry - s : entry + s);
+      target = (dir==DIR_LONG ? entry + t : entry - t);
+      t2     = target;
+      rr     = (s>0.0 ? t/s : 0.0);
+      lots   = Sym_SizeLots(dir, riskCash*adMult*saMult, entry, sl);
+   }
+   else if(g_cfg.useTradePlan)
    {
       FalconTradePlan pl = ComposeTradePlan(dir, entry, atrNow);
       if(!pl.valid)          return;
@@ -886,8 +899,8 @@ void Sym_PlaceEntry(const int dir,const string tag,const double riskCash,const d
    bool slOk = (dir==DIR_LONG ? (sl>0 && entry>sl) : (sl>0 && sl>entry));
    if(!slOk || lots<=0.0) return;
 
-   // bank the runner at the subsystem destination: composed target -> position TP
-   double tpOrder = (g_cfg.useTradePlan && g_cfg.targetTP && target>0.0) ? target : 0.0;
+   // bank the runner at the destination: composed (or raw) target -> position TP
+   double tpOrder = (target>0.0 && (raw || (g_cfg.useTradePlan && g_cfg.targetTP))) ? target : 0.0;
    if(EE_SendMarketOrder(dir>0?+1:-1, lots, sl, "SYM "+tag, tpOrder))
    {
       if(dir==DIR_LONG){ sym_lastLongTradeTime=gTime[0]; sym_longCampaignOpen=true; }
@@ -941,10 +954,19 @@ void SymphonyExecuteTrading()
    bool eL3,eL4,eS3,eS4;
    Sym_RawEntryEdges(eL3,eL4,eS3,eS4);
 
-   bool L3 = (eL3 && !longLocked  && !MM_CounterDirBlocked(DIR_LONG)  && SymphonyFactsConfirm(DIR_LONG)  && SymphonyBrainConfirms(DIR_LONG));
-   bool L4 = (eL4 && !longLocked  && !MM_CounterDirBlocked(DIR_LONG)  && SymphonyFactsConfirm(DIR_LONG)  && SymphonyBrainConfirms(DIR_LONG));
-   bool S3 = (eS3 && !shortLocked && !MM_CounterDirBlocked(DIR_SHORT) && SymphonyFactsConfirm(DIR_SHORT) && SymphonyBrainConfirms(DIR_SHORT));
-   bool S4 = (eS4 && !shortLocked && !MM_CounterDirBlocked(DIR_SHORT) && SymphonyFactsConfirm(DIR_SHORT) && SymphonyBrainConfirms(DIR_SHORT));
+   // RAW comparison mode: a non-Symphony engine enters on its OWN edge,
+   // bypassing the Symphony fact/brain gate (which is tuned to Symphony's
+   // "price-back-at-zone" phase-3 and would veto LETRA/F16's lifecycle
+   // edges). This is what makes the A/B/C test fair. Symphony authority
+   // keeps its full discretionary gate.
+   bool rawMode = (g_cfg.cycleRawEntries && !symAuth);
+   bool gateL = rawMode || (SymphonyFactsConfirm(DIR_LONG)  && SymphonyBrainConfirms(DIR_LONG));
+   bool gateS = rawMode || (SymphonyFactsConfirm(DIR_SHORT) && SymphonyBrainConfirms(DIR_SHORT));
+
+   bool L3 = (eL3 && !longLocked  && !MM_CounterDirBlocked(DIR_LONG)  && gateL);
+   bool L4 = (eL4 && !longLocked  && !MM_CounterDirBlocked(DIR_LONG)  && gateL);
+   bool S3 = (eS3 && !shortLocked && !MM_CounterDirBlocked(DIR_SHORT) && gateS);
+   bool S4 = (eS4 && !shortLocked && !MM_CounterDirBlocked(DIR_SHORT) && gateS);
 
    string engTag = FalconEngineStr(g_cfg.entryEngine==ENG_BEST?g_state.referee.bestEngine:g_cfg.entryEngine);
 
@@ -953,24 +975,24 @@ void SymphonyExecuteTrading()
 
    // LONG P3
    if(L3 && sym_lastLongTradeTime!=barTime)
-      Sym_PlaceEntry(DIR_LONG,engTag+" P3 Long",riskCash,atrNow);
+      Sym_PlaceEntry(DIR_LONG,engTag+" P3 Long",riskCash,atrNow,rawMode);
 
    // LONG P4
    if(L4 && sym_lastLongTradeTime!=barTime && (!symAuth || impL>0))
    {
       bool breakout = (!symAuth) || (closeNow>sym_anchorHigh || closeNow>gHigh[shiftNow+1] + 0.20*atrNow);
-      if(breakout) Sym_PlaceEntry(DIR_LONG,engTag+" P4 Long",riskCash,atrNow);
+      if(breakout) Sym_PlaceEntry(DIR_LONG,engTag+" P4 Long",riskCash,atrNow,rawMode);
    }
 
    // SHORT P3
    if(S3 && sym_lastShortTradeTime!=barTime)
-      Sym_PlaceEntry(DIR_SHORT,engTag+" P3 Short",riskCash,atrNow);
+      Sym_PlaceEntry(DIR_SHORT,engTag+" P3 Short",riskCash,atrNow,rawMode);
 
    // SHORT P4
    if(S4 && sym_lastShortTradeTime!=barTime && (!symAuth || impS>0))
    {
       bool breakout = (!symAuth) || (closeNow<sym_anchorLow || closeNow<gLow[shiftNow+1] - 0.20*atrNow);
-      if(breakout) Sym_PlaceEntry(DIR_SHORT,engTag+" P4 Short",riskCash,atrNow);
+      if(breakout) Sym_PlaceEntry(DIR_SHORT,engTag+" P4 Short",riskCash,atrNow,rawMode);
    }
 }
 
