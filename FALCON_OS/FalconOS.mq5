@@ -181,6 +181,7 @@ int OnInit()
    CurveTreeInit();
    TimeEngineInit();
    CurveLocatorInit();
+   WaveRefereeInit();
    AdaptiveInit();
    SelfAwarenessInit();
    MissTradeInit();
