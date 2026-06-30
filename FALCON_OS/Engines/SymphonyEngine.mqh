@@ -1710,16 +1710,23 @@ void SymphonyCaptureExit()
       double pnl=PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP);
       if(pnl<=0.0) continue;                                       // only CAPTURE profit
       long type=PositionGetInteger(POSITION_TYPE);
+      // PLANNER trades (RETURN/REVERSAL can be COUNTER to the owner curve) are
+      // banked in EITHER direction once the move is done + in profit, so they
+      // get the same capture-at-done discipline as Symphony's owner-dir trades.
+      bool isPlan = (StringFind(PositionGetString(POSITION_COMMENT),"PLAN")>=0);
+      if(isPlan){ if(EE_CloseFull(ticket)) FalconPublish(EVT_EXIT_FIRED,(type==POSITION_TYPE_BUY?1:-1),"PLAN capture-at-done"); continue; }
       if(type==POSITION_TYPE_BUY  && odir==DIR_LONG)  { if(EE_CloseFull(ticket)) FalconPublish(EVT_EXIT_FIRED, 1); }
       if(type==POSITION_TYPE_SELL && odir==DIR_SHORT) { if(EE_CloseFull(ticket)) FalconPublish(EVT_EXIT_FIRED,-1); }
    }
 }
 
 //==================================================================
-// MASTER — Symphony manage step (manage open trades, then exits, then entries)
-//   Called from the pipeline's execution stage when g_cfg.useSymphony.
+// MANAGE-ONLY — every exit/trade-management subsystem EXCEPT entries.
+//   Runs for BOTH planner and Symphony positions (all iterate by magic),
+//   so planner trades get the SAME management as Symphony trades. Called
+//   whenever EITHER source can hold positions (useSymphony OR usePlanner).
 //==================================================================
-void SymphonyTradeManage()
+void SymphonyManageOpenTrades()
 {
    SymphonyUpdateCampaignLockout(); // detect closed campaigns -> lock the impulse (no churn)
    if(g_cfg.useProfitLadder)        // v3.0 default: live-PnL ladder + BE/trail protection
@@ -1735,7 +1742,16 @@ void SymphonyTradeManage()
    SymphonyCaptureExit();   // bank profit when the curve reaches its destination (no trailing)
    TG_Manage();             // WIDE-range trades: bank partial + move to BE once well in profit
    SymphonyManageExits();   // composite ARC + institutional + phase reversal exit (suppressed in raw/free)
-   SymphonyExecuteTrading();// Phase 3/4 entries
+}
+
+//==================================================================
+// MASTER — Symphony manage step (manage open trades, then exits, then entries)
+//   Called from the pipeline's execution stage when g_cfg.useSymphony.
+//==================================================================
+void SymphonyTradeManage()
+{
+   SymphonyManageOpenTrades();  // full trade management (planner + symphony)
+   SymphonyExecuteTrading();    // Phase 3/4 entries (Symphony only)
 }
 
 #endif // FALCON_SYMPHONY_ENGINE_MQH

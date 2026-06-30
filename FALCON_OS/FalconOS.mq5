@@ -149,6 +149,8 @@ void FalconPipeline()
    // never double-trade. Risk = lot sizing + drawdown protection only.
    if(g_cfg.useSymphony)
       SymphonyTradeManage();
+   else if(g_cfg.usePlanner)
+      SymphonyManageOpenTrades();   // planner-only mode: planner trades still get FULL Symphony management
 
    // TRADE PLANNING LAYER — assemble persistent plans from every engine, then
    // execute the highest-priority ready one (Symphony's own entries yield when
