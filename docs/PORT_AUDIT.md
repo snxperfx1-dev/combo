@@ -91,11 +91,14 @@ Legend: ✅ ported · 🟡 partial/simplified · ❌ missing · ⛔ removed by d
 
 These were in the originals, are **not** deliberate removals, and could be ported:
 
-1. **Time Intelligence Engine (TIE)** — F16 ENGINE 8.0. The 5-cycle temporal / session-probability stack. FALCON only has a binary session filter. *(biggest gap)*
-2. **Full recursive Curve Tree** — F16 F72 event-driven `CurveNode` array with compression-budget depth. FALCON has a simplified per-rung tree. *(the spec's "curve tree" is only partially realised)*
+1. ~~**Time Intelligence Engine (TIE)**~~ — ✅ **PORTED (v4.60)** as `Engines/TimeEngine.mqh`: a 5-cycle temporal stack (session · hour-volatility · killzone · weekday · week-position) → continuous `timeQuality` + path probability + soft permit. Informational by default (hard session window stays separate); optional soft entry gate `InpTimeGateEntries`.
+2. ~~**Full recursive Curve Tree**~~ — ✅ **PORTED (v4.60)** as `Engines/CurveTree.mqh`: the F16 F72 event-driven `CurveNode` array — CHoCH-against-owner spawns inverse children within a compression budget (1..4), energy rises on progress / decays on stall, owner = shallowest living node with energy (Principle 8), emergent node phase, compression persistence (Principle 10), narrative lineage, 0.5/0.618 migration band. Additive: enriches `g_state.curve`, does not change ownership/phase authority.
 3. **M1 Early-Warning Engine** — LETRA 12I. (Mitigated: M1 now exists as a ladder rung, but no dedicated early-warning trigger.)
 4. **Induction-zone fine classification** — LETRA S14 (zones ported, sub-types simplified).
 5. **Slippage / trade-opportunity modelling** — LETRA S18 (not modelled).
+
+> **As of v4.60 the two headline gaps (TIE + recursive Curve Tree) are closed.**
+> Remaining items (3–5) are minor refinements, not whole missing engines.
 
 ## E. Removed BY DESIGN (your decisions — listed for completeness)
 
