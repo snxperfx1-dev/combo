@@ -5,7 +5,7 @@
 //|   Risk: PYRO thermal + TALON curve-convergent structural grip.   |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "6.00"
+#property version   "6.01"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -1300,7 +1300,7 @@ input double  InpArcPartialFrac    = 0.33;// Fraction banked when price REACHES 
 input double  InpArcPartialMinATR  = 1.5; // Min favorable excursion (ATR) before any ARC partial is allowed
 
 input string  __sep_planner     = "════════ TRADE PLANNING LAYER (FALCON OS 9.0) ════════"; // ──
-input bool    InpUsePlanner      = false; // Use the Trade Planning Layer: engines compose persistent plans; Decision executes ready ones (off: Symphony entries)
+input bool    InpUsePlanner      = true;  // LIVE: Trade Planning Layer drives entries — engines compose plans, Decision executes ready ones
 input int     InpPlanExpiryBars  = 40;    // Bars a plan waits for its triggers before it expires
 input bool    InpPlanNeedSweep   = false; // Require a liquidity sweep to complete before a plan can trigger
 input bool    InpPlanNeedStruct  = true;  // Require structural confirmation (BOS/CHoCH not against) before a plan can trigger

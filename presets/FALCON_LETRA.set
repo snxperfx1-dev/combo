@@ -7,6 +7,7 @@
 InpMagic=770010
 InpOperatingTF=5
 InpUseSymphony=true
+InpUsePlanner=true
 InpRunAllCycles=true
 InpEntryEngine=0
 InpCycleFreeRun=true
