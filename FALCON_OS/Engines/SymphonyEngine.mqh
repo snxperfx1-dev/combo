@@ -259,7 +259,7 @@ void SymphonyBridgeToWave()
 //   g_cfg (pivotLen / impulseAtrMult / retrMin / retrMax /
 //   inducLookback / inducZoneWidth).
 //==================================================================
-void SymphonyUpdatePhases()
+void SymphonyComputePhases()
 {
    int barsAvail = FalconBars();
    int pivotLen  = g_cfg.pivotLen;
@@ -529,10 +529,60 @@ void SymphonyUpdatePhases()
          }
       }
    }
+}
 
-   // ---- Symphony is the SINGLE phase/direction source of truth: map its
-   //      impulse+phase model onto the canonical FalconWave so the whole OS
-   //      (memory/intel/decision/execution/viz) reads the SAME phase engine. ----
+//==================================================================
+// ENGINE 3 — SYMPHONY wave cycle (the impulse + retracement-fraction
+//   phase model). Normalizes sym_* into the shared WaveCycle so the
+//   referee can score it against LETRA and F16 on the same yardstick.
+//   Lives here because it reads the sym_* phase state. Reuses the
+//   normalization helpers from WaveCycleIntel.mqh (included earlier).
+//==================================================================
+void CycleSymphony_Compute()
+{
+   WaveCycle cy; ZeroMemory(cy);
+   Cycle_CarryPerf(cy, g_state.cycles[ENG_SYMPHONY]);
+   int prevStage = g_state.cycles[ENG_SYMPHONY].stage;
+
+   int dir = (sym_mode==1 ? DIR_LONG : sym_mode==-1 ? DIR_SHORT : DIR_NONE);
+   int p   = (dir==DIR_LONG ? sym_phaseLong : dir==DIR_SHORT ? sym_phaseShort : 0);
+
+   cy.engineId  = ENG_SYMPHONY;
+   cy.direction = dir;
+   cy.maturity  = (p<=0?5.0 : p==1?25.0 : p==2?45.0 : p==3?70.0 : 92.0);
+   cy.objective = (dir==DIR_LONG  && sym_arcLong >0.0 ? sym_arcLong
+                  : dir==DIR_SHORT && sym_arcShort>0.0 ? sym_arcShort
+                  : dir==DIR_LONG ? Sym_DestLong() : dir==DIR_SHORT ? Sym_DestShort() : 0.0);
+   cy.invalidation = (dir==DIR_LONG ? sym_anchorLow : dir==DIR_SHORT ? sym_anchorHigh : 0.0);
+   bool hasZone = (dir==DIR_LONG ? (sym_longInducLow!=0.0||sym_longInducHigh!=0.0)
+                                 : (sym_shortInducLow!=0.0||sym_shortInducHigh!=0.0));
+   cy.confidence = FalconClamp(50.0 + (hasZone?15.0:0.0) + (p==4?15.0:p==3?10.0:0.0), 0, 100);
+
+   int stage, ph; string nxt;
+   if(dir==DIR_NONE || p<=0){ stage=CYC_NONE; ph=PH_TRANSITION; nxt="awaiting impulse"; }
+   else if(p==1){ stage=CYC_EXPANSION; ph=PH_EXPANSION;   nxt="retrace into zone"; }
+   else if(p==2){ stage=CYC_RETRACE;   ph=PH_RETRACEMENT; nxt="return to flip / inducement"; }
+   else if(p==3){ stage=CYC_RETURN;    ph=(dir==DIR_LONG?PH_DEMAND_RETURN:PH_SUPPLY_RETURN); nxt="breakout to new extreme"; }
+   else        { stage=CYC_BREAKOUT;   ph=(dir==DIR_LONG?PH_NEW_HIGH:PH_NEW_LOW); nxt="extend to ARC target"; }
+
+   cy.stage      = stage;
+   cy.phase      = ph;
+   cy.phaseLabel = FalconPhaseStr(ph);
+   cy.nextEvent  = nxt;
+   Cycle_FillEntry(cy, prevStage);
+
+   g_state.cycles[ENG_SYMPHONY] = cy;
+}
+
+//==================================================================
+// BACK-COMPAT WRAPPER — compute phases then bridge to the canonical
+// wave (preserves the original single-authority behaviour). The
+// multi-engine pipeline (Part D) calls SymphonyComputePhases() and
+// routes the bridge through the configurable PhaseAuthorityApply().
+//==================================================================
+void SymphonyUpdatePhases()
+{
+   SymphonyComputePhases();
    SymphonyBridgeToWave();
 }
 

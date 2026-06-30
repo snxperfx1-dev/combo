@@ -37,6 +37,7 @@
 #include "Engines/CurveTree.mqh"           // Intelligence Layer — F72 recursive event-driven curve tree (curves inside curves)
 #include "Engines/TimeEngine.mqh"          // Intelligence Layer — TIE (Engine 8.0) 5-cycle temporal stack
 #include "Engines/CurveLocator.mqh"        // Intelligence Layer — always-on multi-TF curve position
+#include "Engines/WaveCycleIntel.mqh"      // Intelligence Layer — comparative multi-engine wave cycles (LETRA/F16) + referee
 #include "Engines/IntelligenceEngine.mqh"  // Intelligence Layer — reasoning
 #include "Engines/DecisionEngine.mqh"      // Decision Layer
 #include "Engines/ExecutionEngine.mqh"     // Execution Layer

@@ -19,6 +19,7 @@ ORDER=(
   "Engines/CurveTree.mqh"
   "Engines/TimeEngine.mqh"
   "Engines/CurveLocator.mqh"
+  "Engines/WaveCycleIntel.mqh"
   "Engines/IntelligenceEngine.mqh"
   "Engines/DecisionEngine.mqh"
   "Engines/ExecutionEngine.mqh"
