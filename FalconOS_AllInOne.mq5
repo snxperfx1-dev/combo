@@ -5,7 +5,7 @@
 //|   Risk: PYRO thermal + TALON curve-convergent structural grip.   |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "6.15"
+#property version   "6.16"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -9282,6 +9282,7 @@ void SymphonyTradeManage()
 
 
 int g_planSeq = 0;
+string pln_execState = "";   // WHY the planner did / didn't fire this bar (diagnostics)
 
 void PlannerInit()
 {
@@ -9561,44 +9562,49 @@ void PlannerRun()
 //==================================================================
 void PlannerExecute()
 {
-   if(!g_cfg.usePlanner || !g_cfg.enableTrading) return;
-   double atr=g_state.physics.atr; if(atr<=0.0) atr=FalconATR(1); if(atr<=0.0) return;
+   pln_execState="";
+   if(!g_cfg.usePlanner || !g_cfg.enableTrading){ pln_execState="off"; return; }
+   double atr=g_state.physics.atr; if(atr<=0.0) atr=FalconATR(1); if(atr<=0.0){ pln_execState="no atr"; return; }
    double equity=AccountInfoDouble(ACCOUNT_EQUITY);
    double riskCash=equity*g_cfg.riskPercent*0.01;
 
    // portfolio gating
-   if(!EE_IsTradeTime()) return;
-   if(g_cfg.blockIfBreach && !ee_lastRiskOk) return;
-   if(ee_riskCooldown>0) return;
+   if(!EE_IsTradeTime()){ pln_execState="out of session"; return; }
+   if(g_cfg.blockIfBreach && !ee_lastRiskOk){ pln_execState="risk breach block"; return; }
+   if(ee_riskCooldown>0){ pln_execState="risk cooldown"; return; }
    // cooldown: dual mode uses the PLANNER's own last entry; legacy uses any entry.
    {
       int lastBar = g_cfg.dualSourceFire ? pln_lastEntryBar : MathMax(sym_lastEntryBar,pln_lastEntryBar);
-      if(g_cfg.reentryCooldown>0 && (g_barCounter - lastBar) < g_cfg.reentryCooldown) return;
+      if(g_cfg.reentryCooldown>0 && (g_barCounter - lastBar) < g_cfg.reentryCooldown){ pln_execState="cooldown"; return; }
    }
 
    int openL=g_state.exec.openLongCount, openS=g_state.exec.openShortCount;
-   if(g_cfg.maxOpenPositions>0 && (openL+openS)>=g_cfg.maxOpenPositions) return;
+   if(g_cfg.maxOpenPositions>0 && (openL+openS)>=g_cfg.maxOpenPositions){ pln_execState="max-pos ("+IntegerToString(openL+openS)+")"; return; }
 
    // select highest-priority TRIGGERED plan
-   int best=-1, bestPr=-1;
+   int best=-1, bestPr=-1; int nWait=0,nArm=0,nTrig=0;
    for(int i=0;i<FALCON_MAX_PLANS;i++)
    {
-      if(!g_state.plans[i].active || g_state.plans[i].state!=PLAN_TRIGGERED) continue;
+      if(!g_state.plans[i].active) continue;
+      if(g_state.plans[i].state==PLAN_WAITING)   nWait++;
+      if(g_state.plans[i].state==PLAN_ARMED)     nArm++;
+      if(g_state.plans[i].state==PLAN_TRIGGERED) nTrig++;
+      if(g_state.plans[i].state!=PLAN_TRIGGERED) continue;
       if(g_state.plans[i].priority>bestPr){ bestPr=g_state.plans[i].priority; best=i; }
    }
-   if(best<0) return;
+   if(best<0){ pln_execState="no triggered plan (W"+IntegerToString(nWait)+"/A"+IntegerToString(nArm)+"/T"+IntegerToString(nTrig)+")"; return; }
 
    FalconPlan p=g_state.plans[best];
    int dir=p.dir;
 
    // noHedge stays portfolio-wide (never hold opposite directions).
-   if(g_cfg.noHedge)       { if(dir==DIR_LONG && openS>0) return; if(dir==DIR_SHORT && openL>0) return; }
+   if(g_cfg.noHedge)       { if(dir==DIR_LONG && openS>0){ pln_execState="no-hedge (opp open)"; return; } if(dir==DIR_SHORT && openL>0){ pln_execState="no-hedge (opp open)"; return; } }
    // one-per-dir: dual mode scopes to the PLANNER's own positions; legacy is portfolio-wide.
    if(g_cfg.oneEntryPerDir)
    {
       int dL = g_cfg.dualSourceFire ? g_state.exec.openLongPlan  : openL;
       int dS = g_cfg.dualSourceFire ? g_state.exec.openShortPlan : openS;
-      if(dir==DIR_LONG && dL>0) return; if(dir==DIR_SHORT && dS>0) return;
+      if(dir==DIR_LONG && dL>0){ pln_execState="one-per-dir"; return; } if(dir==DIR_SHORT && dS>0){ pln_execState="one-per-dir"; return; }
    }
    if(g_cfg.oneEntryPerCurve)
    {
@@ -9607,8 +9613,8 @@ void PlannerExecute()
       {
          int ownL = g_cfg.dualSourceFire ? pln_ownerEntryLong  : sym_ownerEntryLong;
          int ownS = g_cfg.dualSourceFire ? pln_ownerEntryShort : sym_ownerEntryShort;
-         if(dir==DIR_LONG  && (oid==ownL || (!g_cfg.dualSourceFire && oid==pln_ownerEntryLong)))  return;
-         if(dir==DIR_SHORT && (oid==ownS || (!g_cfg.dualSourceFire && oid==pln_ownerEntryShort))) return;
+         if(dir==DIR_LONG  && (oid==ownL || (!g_cfg.dualSourceFire && oid==pln_ownerEntryLong))) { pln_execState="one-per-curve"; return; }
+         if(dir==DIR_SHORT && (oid==ownS || (!g_cfg.dualSourceFire && oid==pln_ownerEntryShort))){ pln_execState="one-per-curve"; return; }
       }
    }
 
@@ -9616,6 +9622,7 @@ void PlannerExecute()
    // owner-destination target (T2). All exit infra (band model, owner
    // scoping, cooldown arm) is reused via Sym_PlaceEntry.
    Sym_PlaceEntry(dir, "PLAN "+FalconPlanTypeStr(p.type), riskCash, atr, true, p.t2);
+   pln_execState="FIRING "+FalconPlanTypeStr(p.type);
    p.state=PLAN_EXECUTED;
    g_state.plans[best]=p;
    FalconPublish(EVT_ORDER_SENT, dir, "plan executed");
@@ -9855,6 +9862,7 @@ string VZ_Body(const int tab)
          s+="Last entry  : "+(e.lastEntrySource==""?"— none yet":(e.lastEntrySource+"  <"+e.lastEntryTag+">"
             +(e.lastEntryTime>0?("  "+TimeToString(e.lastEntryTime,TIME_MINUTES)):"")))+"\n";
          s+="Sym entries : "+(g_cfg.useSymphony?(sym_entryState==""?"idle":sym_entryState):"OFF (useSymphony=false)")+"\n";
+         s+="Planner     : "+(g_cfg.usePlanner?(pln_execState==""?"idle":pln_execState):"OFF (usePlanner=false)")+"\n";
          s+="Trade State : "+FalconTradeStateStr(e.tradeState)+"   Last exit "+FalconExitStateStr(e.exitState)+"\n";
          s+="Entry/Stop  : "+VZ_Px(e.entry)+" / "+VZ_Px(e.stop)+"\n";
          s+="Target      : "+VZ_Px(e.target)+"   R:R "+DoubleToString(e.reward,2)+"\n";
