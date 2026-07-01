@@ -373,6 +373,8 @@ string VZ_Body(const int tab)
       case 15: // PLANS — the Trade Planning Layer queue (FALCON OS 9.0)
       {
          s+="PLANNER     : "+(g_cfg.usePlanner?"ON":"off")+"   live plans "+IntegerToString(g_state.planCount)+"\n";
+         s+="Regime      : "+(g_state.regimeLabel==""?"—":g_state.regimeLabel)+"  score "+DoubleToString(g_state.regimeScore,0)
+            +"  (cont "+IntegerToString(g_state.planContCount)+" / rev "+IntegerToString(g_state.planRevCount)+" / ret "+IntegerToString(g_state.planRetCount)+")\n";
          s+="── FORECAST (what the engines expect next) ──\n";
          s+="Wave next   : "+FalconPhaseStr(w.expectedNextPhase)+"  ret "+VZ_Px(w.expectedReturnZone)
             +"  p"+DoubleToString(w.forecastProb,0)+"%  ~"+IntegerToString(w.expectedBars)+"b"
@@ -463,9 +465,68 @@ void VZ_FlightHUD()
    VZ_HLine(VIZ_OBJ+"_induc", lq.inducePrice, clrGold,        STYLE_DASHDOT);
 }
 
+//------------------------------------------------------------------
+// PLAN CHART VIZ (#5) — draw ARMED/TRIGGERED plans on the chart: a zone
+// box (colored by type), the stop line, and the T2 owner-destination.
+// Self-cleans per slot when a plan is no longer drawable.
+//------------------------------------------------------------------
+void VZ_PlanBox(const string tag,const double top,const double bot,const color col)
+{
+   if(top<=0.0 || bot<=0.0){ ObjectDelete(0,tag); return; }
+   datetime t1=gTime[0]-PeriodSeconds()*24;
+   datetime t2=gTime[0]+PeriodSeconds()*8;
+   if(ObjectFind(0,tag)<0)
+   {
+      ObjectCreate(0,tag,OBJ_RECTANGLE,0,t1,top,t2,bot);
+      ObjectSetInteger(0,tag,OBJPROP_BACK,true);
+      ObjectSetInteger(0,tag,OBJPROP_FILL,true);
+      ObjectSetInteger(0,tag,OBJPROP_SELECTABLE,false);
+   }
+   ObjectSetInteger(0,tag,OBJPROP_TIME,0,t1);  ObjectSetDouble(0,tag,OBJPROP_PRICE,0,top);
+   ObjectSetInteger(0,tag,OBJPROP_TIME,1,t2);  ObjectSetDouble(0,tag,OBJPROP_PRICE,1,bot);
+   ObjectSetInteger(0,tag,OBJPROP_COLOR,col);
+}
+
+void VZ_PlanSeg(const string tag,const double price,const color col,const int style)
+{
+   if(price<=0.0){ ObjectDelete(0,tag); return; }
+   datetime t1=gTime[0]-PeriodSeconds()*24;
+   datetime t2=gTime[0]+PeriodSeconds()*8;
+   if(ObjectFind(0,tag)<0)
+   {
+      ObjectCreate(0,tag,OBJ_TREND,0,t1,price,t2,price);
+      ObjectSetInteger(0,tag,OBJPROP_RAY_RIGHT,false);
+      ObjectSetInteger(0,tag,OBJPROP_SELECTABLE,false);
+      ObjectSetInteger(0,tag,OBJPROP_WIDTH,1);
+   }
+   ObjectSetInteger(0,tag,OBJPROP_TIME,0,t1);  ObjectSetDouble(0,tag,OBJPROP_PRICE,0,price);
+   ObjectSetInteger(0,tag,OBJPROP_TIME,1,t2);  ObjectSetDouble(0,tag,OBJPROP_PRICE,1,price);
+   ObjectSetInteger(0,tag,OBJPROP_COLOR,col);
+   ObjectSetInteger(0,tag,OBJPROP_STYLE,style);
+}
+
+void VZ_DrawPlans()
+{
+   for(int i=0;i<FALCON_MAX_PLANS;i++)
+   {
+      string zb=VIZ_OBJ+"_pl"+IntegerToString(i)+"_z";
+      string sb=VIZ_OBJ+"_pl"+IntegerToString(i)+"_s";
+      string tb=VIZ_OBJ+"_pl"+IntegerToString(i)+"_t";
+      FalconPlan p=g_state.plans[i];
+      bool draw = g_cfg.showPlans && p.active && p.state>=PLAN_ARMED && p.state<=PLAN_TRIGGERED;
+      if(!draw){ ObjectDelete(0,zb); ObjectDelete(0,sb); ObjectDelete(0,tb); continue; }
+      color zc = (p.type==PT_CONTINUATION? clrSeaGreen : p.type==PT_RETURN? clrDarkOrange : clrCrimson);
+      if(p.state==PLAN_TRIGGERED) zc = (p.dir==DIR_LONG? clrLime : clrRed);
+      VZ_PlanBox(zb, p.zoneTop, p.zoneBot, zc);
+      VZ_PlanSeg(sb, p.stop, clrTomato, STYLE_DOT);
+      VZ_PlanSeg(tb, p.t2,   clrDeepSkyBlue, STYLE_DASH);
+   }
+}
+
 void VisualizationRun()
 {
    VZ_FlightHUD();   // self-cleans when disabled
+   VZ_DrawPlans();   // #5 draw ARMED/TRIGGERED plans (self-cleans per slot)
    if(!g_cfg.showDashboard) return;
 
    int tab=g_cfg.dashboardTab;
@@ -492,6 +553,7 @@ void VisualizationDeinit()
    ObjectDelete(0,VIZ_OBJ+"_entry"); ObjectDelete(0,VIZ_OBJ+"_stop");
    ObjectDelete(0,VIZ_OBJ+"_tgt");   ObjectDelete(0,VIZ_OBJ+"_ftop");
    ObjectDelete(0,VIZ_OBJ+"_fbot");  ObjectDelete(0,VIZ_OBJ+"_induc");
+   ObjectsDeleteAll(0,VIZ_OBJ+"_pl");   // #5 plan boxes/lines
 }
 
 //------------------------------------------------------------------

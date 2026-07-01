@@ -74,7 +74,7 @@ void TradeJournalInit()
       "conf","execProb","threat","conflict","opp","oppGrade",
       "mcScore","mcConfirm","validation","action","owner",
       "phase","completion","geomCap","ownerCtrl","htfAlign","intent","timing",
-      "profit","resultR","mfeR","maeR","win");
+      "profit","resultR","mfeR","maeR","win","source","planType");
    FileFlush(tj_fileHandle);
    FalconLog("INFO","TradeJournal","-> "+tj_fileName+" (Common\\Files)");
 }
@@ -197,7 +197,13 @@ void TJ_Finalize(const int idx)
          DoubleToString(resultR,3),
          DoubleToString(mfeR,3),
          DoubleToString(maeR,3),
-         (string)win);
+         (string)win,
+         (StringFind(tj[idx].tag,"PLAN")>=0?"PLANNER":"SYMPHONY"),
+         (StringFind(tj[idx].tag,"CONTINUATION")>=0?"CONTINUATION":
+          StringFind(tj[idx].tag,"REVERSAL")>=0?"REVERSAL":
+          StringFind(tj[idx].tag,"RETURN")>=0?"RETURN":
+          StringFind(tj[idx].tag,"P3")>=0?"P3":
+          StringFind(tj[idx].tag,"P4")>=0?"P4":"OTHER"));
       FileFlush(tj_fileHandle);
    }
    tj[idx].open = false;

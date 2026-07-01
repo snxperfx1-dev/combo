@@ -99,6 +99,15 @@ input bool    InpOneEntryPerDir   = true;  // Only ONE entry per direction at a 
 input int     InpReentryCooldown  = 4;     // Bars to wait after ANY entry before another can fire (anti rapid-fire follow-ups); 0=off
 input bool    InpOneEntryPerCurve = true;  // STRUCTURAL: trade each OWNER curve only ONCE per direction — re-arm only when ownership TRANSFERS to a new curve
 input bool    InpDualSourceFire   = true;  // Let the PLANNER and SYMPHONY each hold their OWN entry simultaneously (per-source guards). maxPos + noHedge stay portfolio-wide
+input string  __sep_plandata    = "════════ PLANNER DATA USES ════════"; // ──
+input bool    InpPlanConvictionSize = true;  // #1 Scale lot size by the plan's conviction (confidence + execProb): 0.5x..1.5x
+input bool    InpPlanExitBrain      = true;  // #2 Plans manage open trades: an opposing high-conviction plan banks partial + moves to BE
+input double  InpPlanExitConf        = 70.0; // #2 Min opposing-plan confidence that triggers a defensive bank/tighten
+input bool    InpPlanEscalateTarget  = true; // #2 Extend a runner's TP to the continuation plan's (escalating) owner destination
+input bool    InpShowPlans           = true; // #5 Draw ARMED/TRIGGERED plans on the chart (zone box, stop, T1/T2/T3)
+input bool    InpPlanAlerts          = false;// #6 Terminal/push alert when a high-conviction plan ARMS (off in backtest by default)
+input double  InpPlanAlertConf       = 75.0; // #6 Min plan confidence to raise an alert
+input bool    InpTimeScheduleEntries = true; // #8 Only open entries inside the best time window (kill-zone / just before an hourly turn)
 input string  __sep_plan        = "════════ TRADE PLAN (subsystem-composed) ════════"; // ──
 input bool    InpUseTradePlan    = true;  // Compose stop/target/size from subsystems (off: Symphony anchor+-ATR / ARC)
 input double  InpMinRR           = 4.0;   // Min reward:risk (from subsystem stop+target) to take an entry
@@ -261,6 +270,10 @@ struct FalconConfig
    bool   oneEntryPerDir;  int reentryCooldown;
    bool   oneEntryPerCurve;
    bool   dualSourceFire;
+   // planner data uses
+   bool   planConvictionSize, planExitBrain, planEscalateTarget;
+   double planExitConf, planAlertConf;
+   bool   showPlans, planAlerts, timeScheduleEntries;
    double factPartThreat, factNetPressure;
    bool   useTradePlan;
    double minRR, stopBufATR;
@@ -418,6 +431,14 @@ void FalconConfigInit()
    g_cfg.reentryCooldown  = InpReentryCooldown;
    g_cfg.oneEntryPerCurve = InpOneEntryPerCurve;
    g_cfg.dualSourceFire   = InpDualSourceFire;
+   g_cfg.planConvictionSize = InpPlanConvictionSize;
+   g_cfg.planExitBrain      = InpPlanExitBrain;
+   g_cfg.planExitConf       = InpPlanExitConf;
+   g_cfg.planEscalateTarget = InpPlanEscalateTarget;
+   g_cfg.showPlans          = InpShowPlans;
+   g_cfg.planAlerts         = InpPlanAlerts;
+   g_cfg.planAlertConf      = InpPlanAlertConf;
+   g_cfg.timeScheduleEntries= InpTimeScheduleEntries;
    g_cfg.factPartThreat   = InpFactPartThreat;
    g_cfg.factNetPressure  = InpFactNetPressure;
    g_cfg.useTradePlan     = InpUseTradePlan;

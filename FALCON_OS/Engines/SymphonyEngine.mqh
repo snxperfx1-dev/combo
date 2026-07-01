@@ -1181,6 +1181,10 @@ void SymphonyExecuteTrading()
    if(!EE_IsTradeTime()){ sym_entryState="out of session"; return; }
    if(g_cfg.blockIfBreach && !ee_lastRiskOk){ sym_entryState="risk breach block"; return; }
    if(ee_riskCooldown>0){ sym_entryState="risk cooldown"; return; }
+   // #8 TIME SCHEDULING — only open entries inside the best window (kill-zone /
+   // just before an hourly turn), matching the planner's own scheduling.
+   if(g_cfg.timeScheduleEntries && g_cfg.useTimeIntel && !g_state.timeIntel.bestEntryWindow)
+   { sym_entryState="waiting for time window"; return; }
 
    // Re-entry lockout: a campaign for THIS impulse was already closed -> wait for
    // a fresh impulse before re-engaging this direction (kills exit/re-enter churn).
@@ -1721,6 +1725,92 @@ void SymphonyCaptureExit()
 }
 
 //==================================================================
+// PLAN EXIT-BRAIN (#2) — open trades LISTEN to the plan book.
+//   • DEFENSE: an opposing high-conviction plan (REVERSAL/RETURN against
+//     the position) banks a partial + moves the stop to breakeven — early
+//     warning that a new owner is taking control.
+//   • ESCALATION: a same-direction CONTINUATION plan whose owner-destination
+//     target (t2) extends beyond the position's TP pushes the TP out, so a
+//     runner rides to the owner destination instead of the entry-TF target.
+//   Reads g_state.plans (populated by the planner). By magic -> covers BOTH
+//   planner and Symphony positions.
+//==================================================================
+bool plan_defendedLong  = false;   // banked once per opposing-signal episode
+bool plan_defendedShort = false;
+
+void PlanManageOpenTrades()
+{
+   if(!g_cfg.usePlanner) return;
+   if(!g_cfg.planExitBrain && !g_cfg.planEscalateTarget) return;
+
+   // scan the plan book for the strongest opposing-armed conviction + best
+   // same-direction continuation target, per side.
+   double oppConfLong=0.0, oppConfShort=0.0;     // opposing conviction vs a LONG / vs a SHORT
+   double contTgtLong=0.0, contTgtShort=0.0;     // continuation escalating target per side
+   for(int i=0;i<FALCON_MAX_PLANS;i++)
+   {
+      FalconPlan p=g_state.plans[i];
+      if(!p.active || p.state<PLAN_ARMED || p.state>PLAN_TRIGGERED) continue;
+      bool counter = (p.type==PT_REVERSAL || p.type==PT_RETURN);
+      if(counter && p.dir==DIR_SHORT && p.confidence>oppConfLong)  oppConfLong=p.confidence;   // short plan threatens longs
+      if(counter && p.dir==DIR_LONG  && p.confidence>oppConfShort) oppConfShort=p.confidence;  // long plan threatens shorts
+      if(p.type==PT_CONTINUATION && p.t2>0.0)
+      {
+         if(p.dir==DIR_LONG  && (contTgtLong==0.0  || p.t2>contTgtLong))  contTgtLong=p.t2;
+         if(p.dir==DIR_SHORT && (contTgtShort==0.0 || p.t2<contTgtShort)) contTgtShort=p.t2;
+      }
+   }
+   // reset the "already banked" latch when the opposing threat clears
+   if(oppConfLong  < g_cfg.planExitConf) plan_defendedLong=false;
+   if(oppConfShort < g_cfg.planExitConf) plan_defendedShort=false;
+
+   double atr=g_state.physics.atr; if(atr<=0.0) atr=FalconATR(1);
+   double minLot=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN); if(minLot<=0) minLot=0.01;
+
+   int total=PositionsTotal();
+   for(int i=total-1;i>=0;i--)
+   {
+      ulong ticket=PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
+      if(PositionGetInteger(POSITION_MAGIC)!=g_cfg.magic) continue;
+      long type=PositionGetInteger(POSITION_TYPE);
+      bool isLong=(type==POSITION_TYPE_BUY);
+      double entry=PositionGetDouble(POSITION_PRICE_OPEN);
+      double vol  =PositionGetDouble(POSITION_VOLUME);
+      double pnl  =PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP);
+      double curTP=PositionGetDouble(POSITION_TP);
+
+      // ---- DEFENSE: opposing high-conviction plan armed ----
+      if(g_cfg.planExitBrain)
+      {
+         double oppConf = isLong ? oppConfLong : oppConfShort;
+         bool   already = isLong ? plan_defendedLong : plan_defendedShort;
+         if(oppConf>=g_cfg.planExitConf && pnl>0.0 && !already)
+         {
+            if(vol >= 2.0*minLot) EE_ClosePartial(ticket, vol*0.5);      // bank half
+            double be=(isLong?entry+atr*0.05:entry-atr*0.05);           // move remainder to BE
+            EE_ModifySL(ticket, be);
+            if(isLong) plan_defendedLong=true; else plan_defendedShort=true;
+            FalconPublish(EVT_EXIT_FIRED,(isLong?1:-1),"plan-defense (opposing plan armed)");
+         }
+      }
+
+      // ---- ESCALATION: extend a runner's TP to the owner destination ----
+      if(g_cfg.planEscalateTarget)
+      {
+         double newTP = isLong ? contTgtLong : contTgtShort;
+         if(newTP>0.0)
+         {
+            // only ever push the TP FURTHER away (let the winner run)
+            if(isLong  && (curTP==0.0 || newTP>curTP+atr*0.10)) EE_ModifyTP(ticket,newTP);
+            if(!isLong && (curTP==0.0 || newTP<curTP-atr*0.10)) EE_ModifyTP(ticket,newTP);
+         }
+      }
+   }
+}
+
+//==================================================================
 // MANAGE-ONLY — every exit/trade-management subsystem EXCEPT entries.
 //   Runs for BOTH planner and Symphony positions (all iterate by magic),
 //   so planner trades get the SAME management as Symphony trades. Called
@@ -1740,6 +1830,7 @@ void SymphonyManageOpenTrades()
       SymphonyArcPartial();
    }
    SymphonyCaptureExit();   // bank profit when the curve reaches its destination (no trailing)
+   PlanManageOpenTrades();  // #2 exit-brain: opposing-plan defense + escalating-target extension
    TG_Manage();             // WIDE-range trades: bank partial + move to BE once well in profit
    SymphonyManageExits();   // composite ARC + institutional + phase reversal exit (suppressed in raw/free)
 }

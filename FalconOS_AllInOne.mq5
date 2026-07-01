@@ -5,7 +5,7 @@
 //|   Risk: PYRO thermal + TALON curve-convergent structural grip.   |
 //+------------------------------------------------------------------+
 #property copyright "FALCON OS"
-#property version   "6.16"
+#property version   "6.17"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -973,6 +973,11 @@ struct FalconMarketState
    WaveReferee        referee;
    FalconPlan         plans[FALCON_MAX_PLANS]; // Trade Planning Layer (FALCON OS 9.0)
    int                planCount;
+   // ---- PLAN-DERIVED REGIME (from the plan-type mix) ----
+   int                regime;        // 0=TREND 1=CHOP/TRANSITION 2=NEUTRAL
+   string             regimeLabel;   // human-readable
+   double             regimeScore;   // -100 (reversal-heavy) .. +100 (continuation-heavy)
+   int                planContCount, planRevCount, planRetCount; // armed+ counts by type
    FalconSelfAwareness self;
    FalconIntelligence intel;
    FalconEntryCycle   entryCycle;
@@ -1225,6 +1230,15 @@ input bool    InpOneEntryPerDir   = true;  // Only ONE entry per direction at a 
 input int     InpReentryCooldown  = 4;     // Bars to wait after ANY entry before another can fire (anti rapid-fire follow-ups); 0=off
 input bool    InpOneEntryPerCurve = true;  // STRUCTURAL: trade each OWNER curve only ONCE per direction — re-arm only when ownership TRANSFERS to a new curve
 input bool    InpDualSourceFire   = true;  // Let the PLANNER and SYMPHONY each hold their OWN entry simultaneously (per-source guards). maxPos + noHedge stay portfolio-wide
+input string  __sep_plandata    = "════════ PLANNER DATA USES ════════"; // ──
+input bool    InpPlanConvictionSize = true;  // #1 Scale lot size by the plan's conviction (confidence + execProb): 0.5x..1.5x
+input bool    InpPlanExitBrain      = true;  // #2 Plans manage open trades: an opposing high-conviction plan banks partial + moves to BE
+input double  InpPlanExitConf        = 70.0; // #2 Min opposing-plan confidence that triggers a defensive bank/tighten
+input bool    InpPlanEscalateTarget  = true; // #2 Extend a runner's TP to the continuation plan's (escalating) owner destination
+input bool    InpShowPlans           = true; // #5 Draw ARMED/TRIGGERED plans on the chart (zone box, stop, T1/T2/T3)
+input bool    InpPlanAlerts          = false;// #6 Terminal/push alert when a high-conviction plan ARMS (off in backtest by default)
+input double  InpPlanAlertConf       = 75.0; // #6 Min plan confidence to raise an alert
+input bool    InpTimeScheduleEntries = true; // #8 Only open entries inside the best time window (kill-zone / just before an hourly turn)
 input string  __sep_plan        = "════════ TRADE PLAN (subsystem-composed) ════════"; // ──
 input bool    InpUseTradePlan    = true;  // Compose stop/target/size from subsystems (off: Symphony anchor+-ATR / ARC)
 input double  InpMinRR           = 4.0;   // Min reward:risk (from subsystem stop+target) to take an entry
@@ -1387,6 +1401,10 @@ struct FalconConfig
    bool   oneEntryPerDir;  int reentryCooldown;
    bool   oneEntryPerCurve;
    bool   dualSourceFire;
+   // planner data uses
+   bool   planConvictionSize, planExitBrain, planEscalateTarget;
+   double planExitConf, planAlertConf;
+   bool   showPlans, planAlerts, timeScheduleEntries;
    double factPartThreat, factNetPressure;
    bool   useTradePlan;
    double minRR, stopBufATR;
@@ -1544,6 +1562,14 @@ void FalconConfigInit()
    g_cfg.reentryCooldown  = InpReentryCooldown;
    g_cfg.oneEntryPerCurve = InpOneEntryPerCurve;
    g_cfg.dualSourceFire   = InpDualSourceFire;
+   g_cfg.planConvictionSize = InpPlanConvictionSize;
+   g_cfg.planExitBrain      = InpPlanExitBrain;
+   g_cfg.planExitConf       = InpPlanExitConf;
+   g_cfg.planEscalateTarget = InpPlanEscalateTarget;
+   g_cfg.showPlans          = InpShowPlans;
+   g_cfg.planAlerts         = InpPlanAlerts;
+   g_cfg.planAlertConf      = InpPlanAlertConf;
+   g_cfg.timeScheduleEntries= InpTimeScheduleEntries;
    g_cfg.factPartThreat   = InpFactPartThreat;
    g_cfg.factNetPressure  = InpFactNetPressure;
    g_cfg.useTradePlan     = InpUseTradePlan;
@@ -5800,6 +5826,22 @@ bool EE_ModifySL(const ulong ticket,const double newSL)
    return(res.retcode==TRADE_RETCODE_DONE);
 }
 
+// Modify only the take-profit (preserves the current stop). Used by the
+// planner exit-brain to extend a runner's TP to the escalating owner target.
+bool EE_ModifyTP(const ulong ticket,const double newTP)
+{
+   if(!PositionSelectByTicket(ticket)) return(false);
+   MqlTradeRequest req; MqlTradeResult res; ZeroMemory(req); ZeroMemory(res);
+   req.action  = TRADE_ACTION_SLTP;
+   req.symbol  = _Symbol;
+   req.magic   = g_cfg.magic;
+   req.position= ticket;
+   req.sl      = PositionGetDouble(POSITION_SL);
+   req.tp      = NormalizeDouble(newTP,_Digits);
+   if(!OrderSend(req,res)) return(false);
+   return(res.retcode==TRADE_RETCODE_DONE);
+}
+
 void EE_Trailing()
 {
    if(!g_cfg.trailEnable) return;
@@ -6837,7 +6879,7 @@ void TradeJournalInit()
       "conf","execProb","threat","conflict","opp","oppGrade",
       "mcScore","mcConfirm","validation","action","owner",
       "phase","completion","geomCap","ownerCtrl","htfAlign","intent","timing",
-      "profit","resultR","mfeR","maeR","win");
+      "profit","resultR","mfeR","maeR","win","source","planType");
    FileFlush(tj_fileHandle);
    FalconLog("INFO","TradeJournal","-> "+tj_fileName+" (Common\\Files)");
 }
@@ -6960,7 +7002,13 @@ void TJ_Finalize(const int idx)
          DoubleToString(resultR,3),
          DoubleToString(mfeR,3),
          DoubleToString(maeR,3),
-         (string)win);
+         (string)win,
+         (StringFind(tj[idx].tag,"PLAN")>=0?"PLANNER":"SYMPHONY"),
+         (StringFind(tj[idx].tag,"CONTINUATION")>=0?"CONTINUATION":
+          StringFind(tj[idx].tag,"REVERSAL")>=0?"REVERSAL":
+          StringFind(tj[idx].tag,"RETURN")>=0?"RETURN":
+          StringFind(tj[idx].tag,"P3")>=0?"P3":
+          StringFind(tj[idx].tag,"P4")>=0?"P4":"OTHER"));
       FileFlush(tj_fileHandle);
    }
    tj[idx].open = false;
@@ -8677,6 +8725,10 @@ void SymphonyExecuteTrading()
    if(!EE_IsTradeTime()){ sym_entryState="out of session"; return; }
    if(g_cfg.blockIfBreach && !ee_lastRiskOk){ sym_entryState="risk breach block"; return; }
    if(ee_riskCooldown>0){ sym_entryState="risk cooldown"; return; }
+   // #8 TIME SCHEDULING — only open entries inside the best window (kill-zone /
+   // just before an hourly turn), matching the planner's own scheduling.
+   if(g_cfg.timeScheduleEntries && g_cfg.useTimeIntel && !g_state.timeIntel.bestEntryWindow)
+   { sym_entryState="waiting for time window"; return; }
 
    // Re-entry lockout: a campaign for THIS impulse was already closed -> wait for
    // a fresh impulse before re-engaging this direction (kills exit/re-enter churn).
@@ -9217,6 +9269,92 @@ void SymphonyCaptureExit()
 }
 
 //==================================================================
+// PLAN EXIT-BRAIN (#2) — open trades LISTEN to the plan book.
+//   • DEFENSE: an opposing high-conviction plan (REVERSAL/RETURN against
+//     the position) banks a partial + moves the stop to breakeven — early
+//     warning that a new owner is taking control.
+//   • ESCALATION: a same-direction CONTINUATION plan whose owner-destination
+//     target (t2) extends beyond the position's TP pushes the TP out, so a
+//     runner rides to the owner destination instead of the entry-TF target.
+//   Reads g_state.plans (populated by the planner). By magic -> covers BOTH
+//   planner and Symphony positions.
+//==================================================================
+bool plan_defendedLong  = false;   // banked once per opposing-signal episode
+bool plan_defendedShort = false;
+
+void PlanManageOpenTrades()
+{
+   if(!g_cfg.usePlanner) return;
+   if(!g_cfg.planExitBrain && !g_cfg.planEscalateTarget) return;
+
+   // scan the plan book for the strongest opposing-armed conviction + best
+   // same-direction continuation target, per side.
+   double oppConfLong=0.0, oppConfShort=0.0;     // opposing conviction vs a LONG / vs a SHORT
+   double contTgtLong=0.0, contTgtShort=0.0;     // continuation escalating target per side
+   for(int i=0;i<FALCON_MAX_PLANS;i++)
+   {
+      FalconPlan p=g_state.plans[i];
+      if(!p.active || p.state<PLAN_ARMED || p.state>PLAN_TRIGGERED) continue;
+      bool counter = (p.type==PT_REVERSAL || p.type==PT_RETURN);
+      if(counter && p.dir==DIR_SHORT && p.confidence>oppConfLong)  oppConfLong=p.confidence;   // short plan threatens longs
+      if(counter && p.dir==DIR_LONG  && p.confidence>oppConfShort) oppConfShort=p.confidence;  // long plan threatens shorts
+      if(p.type==PT_CONTINUATION && p.t2>0.0)
+      {
+         if(p.dir==DIR_LONG  && (contTgtLong==0.0  || p.t2>contTgtLong))  contTgtLong=p.t2;
+         if(p.dir==DIR_SHORT && (contTgtShort==0.0 || p.t2<contTgtShort)) contTgtShort=p.t2;
+      }
+   }
+   // reset the "already banked" latch when the opposing threat clears
+   if(oppConfLong  < g_cfg.planExitConf) plan_defendedLong=false;
+   if(oppConfShort < g_cfg.planExitConf) plan_defendedShort=false;
+
+   double atr=g_state.physics.atr; if(atr<=0.0) atr=FalconATR(1);
+   double minLot=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN); if(minLot<=0) minLot=0.01;
+
+   int total=PositionsTotal();
+   for(int i=total-1;i>=0;i--)
+   {
+      ulong ticket=PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
+      if(PositionGetInteger(POSITION_MAGIC)!=g_cfg.magic) continue;
+      long type=PositionGetInteger(POSITION_TYPE);
+      bool isLong=(type==POSITION_TYPE_BUY);
+      double entry=PositionGetDouble(POSITION_PRICE_OPEN);
+      double vol  =PositionGetDouble(POSITION_VOLUME);
+      double pnl  =PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP);
+      double curTP=PositionGetDouble(POSITION_TP);
+
+      // ---- DEFENSE: opposing high-conviction plan armed ----
+      if(g_cfg.planExitBrain)
+      {
+         double oppConf = isLong ? oppConfLong : oppConfShort;
+         bool   already = isLong ? plan_defendedLong : plan_defendedShort;
+         if(oppConf>=g_cfg.planExitConf && pnl>0.0 && !already)
+         {
+            if(vol >= 2.0*minLot) EE_ClosePartial(ticket, vol*0.5);      // bank half
+            double be=(isLong?entry+atr*0.05:entry-atr*0.05);           // move remainder to BE
+            EE_ModifySL(ticket, be);
+            if(isLong) plan_defendedLong=true; else plan_defendedShort=true;
+            FalconPublish(EVT_EXIT_FIRED,(isLong?1:-1),"plan-defense (opposing plan armed)");
+         }
+      }
+
+      // ---- ESCALATION: extend a runner's TP to the owner destination ----
+      if(g_cfg.planEscalateTarget)
+      {
+         double newTP = isLong ? contTgtLong : contTgtShort;
+         if(newTP>0.0)
+         {
+            // only ever push the TP FURTHER away (let the winner run)
+            if(isLong  && (curTP==0.0 || newTP>curTP+atr*0.10)) EE_ModifyTP(ticket,newTP);
+            if(!isLong && (curTP==0.0 || newTP<curTP-atr*0.10)) EE_ModifyTP(ticket,newTP);
+         }
+      }
+   }
+}
+
+//==================================================================
 // MANAGE-ONLY — every exit/trade-management subsystem EXCEPT entries.
 //   Runs for BOTH planner and Symphony positions (all iterate by magic),
 //   so planner trades get the SAME management as Symphony trades. Called
@@ -9236,6 +9374,7 @@ void SymphonyManageOpenTrades()
       SymphonyArcPartial();
    }
    SymphonyCaptureExit();   // bank profit when the curve reaches its destination (no trailing)
+   PlanManageOpenTrades();  // #2 exit-brain: opposing-plan defense + escalating-target extension
    TG_Manage();             // WIDE-range trades: bank partial + move to BE once well in profit
    SymphonyManageExits();   // composite ARC + institutional + phase reversal exit (suppressed in raw/free)
 }
@@ -9464,6 +9603,7 @@ void Plan_Refresh(const int idx,const int dir,const double price,const double at
    if(g_barCounter - p.createdBar > g_cfg.planExpiryBars){ p.state=PLAN_EXPIRED; g_state.plans[idx]=p; return; }
 
    // STATE MACHINE
+   int prevState = p.state;   // for #6 arm alerts
    bool waitChild = g_state.curve.waitForChild;     // curve tree says: wait for the child/transfer
    if(waitChild)                                                        p.state=PLAN_DORMANT;
    else if(p.rr < g_cfg.minRR || p.confidence < g_cfg.planMinConf)      p.state=PLAN_WAITING;
@@ -9471,6 +9611,18 @@ void Plan_Refresh(const int idx,const int dir,const double price,const double at
    else if(!p.inWindow)                                                 p.state=PLAN_ARMED;
    else if(p.sweepDone && p.structDone && p.hasRoom)                    p.state=PLAN_TRIGGERED;
    else                                                                 p.state=PLAN_ARMED;
+
+   // #6 ALERT — fire once when a high-conviction plan crosses INTO ARMED/TRIGGERED.
+   if(g_cfg.planAlerts && p.confidence>=g_cfg.planAlertConf
+      && prevState<PLAN_ARMED && p.state>=PLAN_ARMED && p.state<=PLAN_TRIGGERED)
+   {
+      string msg=StringFormat("[FALCON] %s %s ARMED %s  zone %s-%s  SL %s  T2 %s  conf %.0f RR %.1f",
+                  _Symbol, FalconPlanTypeStr(p.type), (dir==DIR_LONG?"LONG":"SHORT"),
+                  DoubleToString(p.zoneBot,_Digits), DoubleToString(p.zoneTop,_Digits),
+                  DoubleToString(p.stop,_Digits), DoubleToString(p.t2,_Digits), p.confidence, p.rr);
+      Alert(msg);
+      if(MQLInfoInteger(MQL_TESTER)==0) SendNotification(msg);
+   }
 
    g_state.plans[idx]=p;
 }
@@ -9552,6 +9704,26 @@ void PlannerRun()
       if(g_state.plans[i].active &&
          g_state.plans[i].state!=PLAN_EXECUTED && g_state.plans[i].state!=PLAN_EXPIRED && g_state.plans[i].state!=PLAN_CANCELLED) c++;
    g_state.planCount=c;
+
+   // 4) PLAN-DERIVED REGIME (#4) — the MIX of armed-or-better plan types is a
+   //    regime signal: continuation-heavy = trend (size up, hold), reversal
+   //    fighting continuation = transitional/choppy (size down / stand aside).
+   int nc=0,nr=0,nt=0;
+   for(int i=0;i<FALCON_MAX_PLANS;i++)
+   {
+      FalconPlan pp=g_state.plans[i];
+      if(!pp.active || pp.state<PLAN_ARMED || pp.state>PLAN_TRIGGERED) continue;
+      if(pp.type==PT_CONTINUATION) nc++;
+      else if(pp.type==PT_REVERSAL) nr++;
+      else if(pp.type==PT_RETURN)   nt++;
+   }
+   g_state.planContCount=nc; g_state.planRevCount=nr; g_state.planRetCount=nt;
+   int cr = nc+nr;
+   g_state.regimeScore = (cr>0 ? 100.0*(double)(nc-nr)/(double)cr : 0.0);
+   if(nc>0 && nr==0)      { g_state.regime=0; g_state.regimeLabel="TREND"; }
+   else if(nc>0 && nr>0)  { g_state.regime=1; g_state.regimeLabel="TRANSITION"; }
+   else if(nr>0)          { g_state.regime=1; g_state.regimeLabel="REVERSAL RISK"; }
+   else                   { g_state.regime=2; g_state.regimeLabel="NEUTRAL"; }
 }
 
 //==================================================================
@@ -9621,8 +9793,12 @@ void PlannerExecute()
    // FIRE — structural stop (computed in Sym_PlaceEntry) + the plan's
    // owner-destination target (T2). All exit infra (band model, owner
    // scoping, cooldown arm) is reused via Sym_PlaceEntry.
-   Sym_PlaceEntry(dir, "PLAN "+FalconPlanTypeStr(p.type), riskCash, atr, true, p.t2);
-   pln_execState="FIRING "+FalconPlanTypeStr(p.type);
+   // #1 CONVICTION-SCALED SIZE: concentrate risk where the plan is most sure.
+   double convMult = 1.0;
+   if(g_cfg.planConvictionSize)
+      convMult = FalconClamp(0.5 + (p.confidence/100.0)*0.5 + p.execProb*0.5, 0.5, 1.5);
+   Sym_PlaceEntry(dir, "PLAN "+FalconPlanTypeStr(p.type), riskCash*convMult, atr, true, p.t2);
+   pln_execState="FIRING "+FalconPlanTypeStr(p.type)+"  x"+DoubleToString(convMult,2);
    p.state=PLAN_EXECUTED;
    g_state.plans[best]=p;
    FalconPublish(EVT_ORDER_SENT, dir, "plan executed");
@@ -10002,6 +10178,8 @@ string VZ_Body(const int tab)
       case 15: // PLANS — the Trade Planning Layer queue (FALCON OS 9.0)
       {
          s+="PLANNER     : "+(g_cfg.usePlanner?"ON":"off")+"   live plans "+IntegerToString(g_state.planCount)+"\n";
+         s+="Regime      : "+(g_state.regimeLabel==""?"—":g_state.regimeLabel)+"  score "+DoubleToString(g_state.regimeScore,0)
+            +"  (cont "+IntegerToString(g_state.planContCount)+" / rev "+IntegerToString(g_state.planRevCount)+" / ret "+IntegerToString(g_state.planRetCount)+")\n";
          s+="── FORECAST (what the engines expect next) ──\n";
          s+="Wave next   : "+FalconPhaseStr(w.expectedNextPhase)+"  ret "+VZ_Px(w.expectedReturnZone)
             +"  p"+DoubleToString(w.forecastProb,0)+"%  ~"+IntegerToString(w.expectedBars)+"b"
@@ -10092,9 +10270,68 @@ void VZ_FlightHUD()
    VZ_HLine(VIZ_OBJ+"_induc", lq.inducePrice, clrGold,        STYLE_DASHDOT);
 }
 
+//------------------------------------------------------------------
+// PLAN CHART VIZ (#5) — draw ARMED/TRIGGERED plans on the chart: a zone
+// box (colored by type), the stop line, and the T2 owner-destination.
+// Self-cleans per slot when a plan is no longer drawable.
+//------------------------------------------------------------------
+void VZ_PlanBox(const string tag,const double top,const double bot,const color col)
+{
+   if(top<=0.0 || bot<=0.0){ ObjectDelete(0,tag); return; }
+   datetime t1=gTime[0]-PeriodSeconds()*24;
+   datetime t2=gTime[0]+PeriodSeconds()*8;
+   if(ObjectFind(0,tag)<0)
+   {
+      ObjectCreate(0,tag,OBJ_RECTANGLE,0,t1,top,t2,bot);
+      ObjectSetInteger(0,tag,OBJPROP_BACK,true);
+      ObjectSetInteger(0,tag,OBJPROP_FILL,true);
+      ObjectSetInteger(0,tag,OBJPROP_SELECTABLE,false);
+   }
+   ObjectSetInteger(0,tag,OBJPROP_TIME,0,t1);  ObjectSetDouble(0,tag,OBJPROP_PRICE,0,top);
+   ObjectSetInteger(0,tag,OBJPROP_TIME,1,t2);  ObjectSetDouble(0,tag,OBJPROP_PRICE,1,bot);
+   ObjectSetInteger(0,tag,OBJPROP_COLOR,col);
+}
+
+void VZ_PlanSeg(const string tag,const double price,const color col,const int style)
+{
+   if(price<=0.0){ ObjectDelete(0,tag); return; }
+   datetime t1=gTime[0]-PeriodSeconds()*24;
+   datetime t2=gTime[0]+PeriodSeconds()*8;
+   if(ObjectFind(0,tag)<0)
+   {
+      ObjectCreate(0,tag,OBJ_TREND,0,t1,price,t2,price);
+      ObjectSetInteger(0,tag,OBJPROP_RAY_RIGHT,false);
+      ObjectSetInteger(0,tag,OBJPROP_SELECTABLE,false);
+      ObjectSetInteger(0,tag,OBJPROP_WIDTH,1);
+   }
+   ObjectSetInteger(0,tag,OBJPROP_TIME,0,t1);  ObjectSetDouble(0,tag,OBJPROP_PRICE,0,price);
+   ObjectSetInteger(0,tag,OBJPROP_TIME,1,t2);  ObjectSetDouble(0,tag,OBJPROP_PRICE,1,price);
+   ObjectSetInteger(0,tag,OBJPROP_COLOR,col);
+   ObjectSetInteger(0,tag,OBJPROP_STYLE,style);
+}
+
+void VZ_DrawPlans()
+{
+   for(int i=0;i<FALCON_MAX_PLANS;i++)
+   {
+      string zb=VIZ_OBJ+"_pl"+IntegerToString(i)+"_z";
+      string sb=VIZ_OBJ+"_pl"+IntegerToString(i)+"_s";
+      string tb=VIZ_OBJ+"_pl"+IntegerToString(i)+"_t";
+      FalconPlan p=g_state.plans[i];
+      bool draw = g_cfg.showPlans && p.active && p.state>=PLAN_ARMED && p.state<=PLAN_TRIGGERED;
+      if(!draw){ ObjectDelete(0,zb); ObjectDelete(0,sb); ObjectDelete(0,tb); continue; }
+      color zc = (p.type==PT_CONTINUATION? clrSeaGreen : p.type==PT_RETURN? clrDarkOrange : clrCrimson);
+      if(p.state==PLAN_TRIGGERED) zc = (p.dir==DIR_LONG? clrLime : clrRed);
+      VZ_PlanBox(zb, p.zoneTop, p.zoneBot, zc);
+      VZ_PlanSeg(sb, p.stop, clrTomato, STYLE_DOT);
+      VZ_PlanSeg(tb, p.t2,   clrDeepSkyBlue, STYLE_DASH);
+   }
+}
+
 void VisualizationRun()
 {
    VZ_FlightHUD();   // self-cleans when disabled
+   VZ_DrawPlans();   // #5 draw ARMED/TRIGGERED plans (self-cleans per slot)
    if(!g_cfg.showDashboard) return;
 
    int tab=g_cfg.dashboardTab;
@@ -10121,6 +10358,7 @@ void VisualizationDeinit()
    ObjectDelete(0,VIZ_OBJ+"_entry"); ObjectDelete(0,VIZ_OBJ+"_stop");
    ObjectDelete(0,VIZ_OBJ+"_tgt");   ObjectDelete(0,VIZ_OBJ+"_ftop");
    ObjectDelete(0,VIZ_OBJ+"_fbot");  ObjectDelete(0,VIZ_OBJ+"_induc");
+   ObjectsDeleteAll(0,VIZ_OBJ+"_pl");   // #5 plan boxes/lines
 }
 
 //------------------------------------------------------------------

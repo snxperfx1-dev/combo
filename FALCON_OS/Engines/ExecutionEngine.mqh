@@ -522,6 +522,22 @@ bool EE_ModifySL(const ulong ticket,const double newSL)
    return(res.retcode==TRADE_RETCODE_DONE);
 }
 
+// Modify only the take-profit (preserves the current stop). Used by the
+// planner exit-brain to extend a runner's TP to the escalating owner target.
+bool EE_ModifyTP(const ulong ticket,const double newTP)
+{
+   if(!PositionSelectByTicket(ticket)) return(false);
+   MqlTradeRequest req; MqlTradeResult res; ZeroMemory(req); ZeroMemory(res);
+   req.action  = TRADE_ACTION_SLTP;
+   req.symbol  = _Symbol;
+   req.magic   = g_cfg.magic;
+   req.position= ticket;
+   req.sl      = PositionGetDouble(POSITION_SL);
+   req.tp      = NormalizeDouble(newTP,_Digits);
+   if(!OrderSend(req,res)) return(false);
+   return(res.retcode==TRADE_RETCODE_DONE);
+}
+
 void EE_Trailing()
 {
    if(!g_cfg.trailEnable) return;

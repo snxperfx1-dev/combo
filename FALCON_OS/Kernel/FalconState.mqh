@@ -959,6 +959,11 @@ struct FalconMarketState
    WaveReferee        referee;
    FalconPlan         plans[FALCON_MAX_PLANS]; // Trade Planning Layer (FALCON OS 9.0)
    int                planCount;
+   // ---- PLAN-DERIVED REGIME (from the plan-type mix) ----
+   int                regime;        // 0=TREND 1=CHOP/TRANSITION 2=NEUTRAL
+   string             regimeLabel;   // human-readable
+   double             regimeScore;   // -100 (reversal-heavy) .. +100 (continuation-heavy)
+   int                planContCount, planRevCount, planRetCount; // armed+ counts by type
    FalconSelfAwareness self;
    FalconIntelligence intel;
    FalconEntryCycle   entryCycle;

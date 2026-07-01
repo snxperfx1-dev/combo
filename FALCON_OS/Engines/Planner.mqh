@@ -212,6 +212,7 @@ void Plan_Refresh(const int idx,const int dir,const double price,const double at
    if(g_barCounter - p.createdBar > g_cfg.planExpiryBars){ p.state=PLAN_EXPIRED; g_state.plans[idx]=p; return; }
 
    // STATE MACHINE
+   int prevState = p.state;   // for #6 arm alerts
    bool waitChild = g_state.curve.waitForChild;     // curve tree says: wait for the child/transfer
    if(waitChild)                                                        p.state=PLAN_DORMANT;
    else if(p.rr < g_cfg.minRR || p.confidence < g_cfg.planMinConf)      p.state=PLAN_WAITING;
@@ -219,6 +220,18 @@ void Plan_Refresh(const int idx,const int dir,const double price,const double at
    else if(!p.inWindow)                                                 p.state=PLAN_ARMED;
    else if(p.sweepDone && p.structDone && p.hasRoom)                    p.state=PLAN_TRIGGERED;
    else                                                                 p.state=PLAN_ARMED;
+
+   // #6 ALERT — fire once when a high-conviction plan crosses INTO ARMED/TRIGGERED.
+   if(g_cfg.planAlerts && p.confidence>=g_cfg.planAlertConf
+      && prevState<PLAN_ARMED && p.state>=PLAN_ARMED && p.state<=PLAN_TRIGGERED)
+   {
+      string msg=StringFormat("[FALCON] %s %s ARMED %s  zone %s-%s  SL %s  T2 %s  conf %.0f RR %.1f",
+                  _Symbol, FalconPlanTypeStr(p.type), (dir==DIR_LONG?"LONG":"SHORT"),
+                  DoubleToString(p.zoneBot,_Digits), DoubleToString(p.zoneTop,_Digits),
+                  DoubleToString(p.stop,_Digits), DoubleToString(p.t2,_Digits), p.confidence, p.rr);
+      Alert(msg);
+      if(MQLInfoInteger(MQL_TESTER)==0) SendNotification(msg);
+   }
 
    g_state.plans[idx]=p;
 }
@@ -300,6 +313,26 @@ void PlannerRun()
       if(g_state.plans[i].active &&
          g_state.plans[i].state!=PLAN_EXECUTED && g_state.plans[i].state!=PLAN_EXPIRED && g_state.plans[i].state!=PLAN_CANCELLED) c++;
    g_state.planCount=c;
+
+   // 4) PLAN-DERIVED REGIME (#4) — the MIX of armed-or-better plan types is a
+   //    regime signal: continuation-heavy = trend (size up, hold), reversal
+   //    fighting continuation = transitional/choppy (size down / stand aside).
+   int nc=0,nr=0,nt=0;
+   for(int i=0;i<FALCON_MAX_PLANS;i++)
+   {
+      FalconPlan pp=g_state.plans[i];
+      if(!pp.active || pp.state<PLAN_ARMED || pp.state>PLAN_TRIGGERED) continue;
+      if(pp.type==PT_CONTINUATION) nc++;
+      else if(pp.type==PT_REVERSAL) nr++;
+      else if(pp.type==PT_RETURN)   nt++;
+   }
+   g_state.planContCount=nc; g_state.planRevCount=nr; g_state.planRetCount=nt;
+   int cr = nc+nr;
+   g_state.regimeScore = (cr>0 ? 100.0*(double)(nc-nr)/(double)cr : 0.0);
+   if(nc>0 && nr==0)      { g_state.regime=0; g_state.regimeLabel="TREND"; }
+   else if(nc>0 && nr>0)  { g_state.regime=1; g_state.regimeLabel="TRANSITION"; }
+   else if(nr>0)          { g_state.regime=1; g_state.regimeLabel="REVERSAL RISK"; }
+   else                   { g_state.regime=2; g_state.regimeLabel="NEUTRAL"; }
 }
 
 //==================================================================
@@ -369,8 +402,12 @@ void PlannerExecute()
    // FIRE — structural stop (computed in Sym_PlaceEntry) + the plan's
    // owner-destination target (T2). All exit infra (band model, owner
    // scoping, cooldown arm) is reused via Sym_PlaceEntry.
-   Sym_PlaceEntry(dir, "PLAN "+FalconPlanTypeStr(p.type), riskCash, atr, true, p.t2);
-   pln_execState="FIRING "+FalconPlanTypeStr(p.type);
+   // #1 CONVICTION-SCALED SIZE: concentrate risk where the plan is most sure.
+   double convMult = 1.0;
+   if(g_cfg.planConvictionSize)
+      convMult = FalconClamp(0.5 + (p.confidence/100.0)*0.5 + p.execProb*0.5, 0.5, 1.5);
+   Sym_PlaceEntry(dir, "PLAN "+FalconPlanTypeStr(p.type), riskCash*convMult, atr, true, p.t2);
+   pln_execState="FIRING "+FalconPlanTypeStr(p.type)+"  x"+DoubleToString(convMult,2);
    p.state=PLAN_EXECUTED;
    g_state.plans[best]=p;
    FalconPublish(EVT_ORDER_SENT, dir, "plan executed");
