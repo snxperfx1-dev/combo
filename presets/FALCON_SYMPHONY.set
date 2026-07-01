@@ -1,0 +1,48 @@
+; ==================================================================
+; FALCON OS — PRESET: SYMPHONY FREE-RUN  (v5.17)
+; Matches the corrected DEFAULT frame. Trades held by TALON (late
+; breakeven/profit-lock) + position SL/TP only — risk layer never closes.
+; Min R:R = 4 | Max 2 positions | No hedging
+; ==================================================================
+InpMagic=770020
+InpOperatingTF=5
+InpUseSymphony=true
+InpUsePlanner=true
+InpRunAllCycles=true
+InpEntryEngine=2
+InpCycleFreeRun=true
+InpCycleRawEntries=true
+InpCycleRawStopATR=1.0
+InpCycleRawTgtATR=4.5
+InpUseTradePlan=true
+InpMinRR=4.0
+InpEnableTrading=true
+InpRiskPercent=0.5
+InpMaxLots=1.0
+InpMaxOpenPositions=2
+InpTrailEnable=false
+InpRiskAutoClose=false
+InpDDProtect=true
+InpMaxDrawdownPct=12.0
+InpDDFlattenPct=20.0
+InpSessionFilter=false
+InpUseProfitLadder=false
+InpCounterDirBlock=false
+InpNoHedge=true
+InpMaxBasketRiskPct=0.0
+InpTargetTP=true
+InpUseThermalRisk=false
+InpUseTalon=false
+InpCaptureAtDone=true
+InpCaptureCurvePos=0.90
+InpTalonStructLen=6
+InpTalonBufATR=0.35
+InpTalonBaseATR=3.5
+InpTalonConvSpanATR=6.0
+InpTalonMinTighten=0.30
+InpTalonBeATR=2.5
+InpTalonGiveback=0.45
+InpTalonLockArmATR=2.5
+InpArcPartialFrac=0.33
+InpArcPartialMinATR=1.5
+InpDashboardTab=14
